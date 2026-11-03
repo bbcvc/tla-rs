@@ -320,6 +320,9 @@ dependencies = [
 [[package]]
 name = "tla-ast"
 version = "0.1.0"
+dependencies = [
+ "tla-intern",
+]
 
 [[package]]
 name = "tla-intern"
