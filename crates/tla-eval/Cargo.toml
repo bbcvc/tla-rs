@@ -6,6 +6,7 @@ edition.workspace = true
 license.workspace = true
 
 [dependencies]
+stacker.workspace = true
 thiserror.workspace = true
 tla-ast.workspace = true
 tla-parser.workspace = true

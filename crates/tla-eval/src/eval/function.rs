@@ -6,7 +6,7 @@ use tla_resolve::{Bound, DefBody, DefId, ExceptKey, ExceptUpdate, Expr, ExprKind
 use tla_value::{Error, Key, LazyFunc, LazySet, Symbol, Value};
 
 use super::bound::{Binder, Variable, bind_frame, binders, tuple_items};
-use super::{At, describe};
+use super::{At, STACK_OVERFLOW, describe, is_stack_low};
 use crate::env::{Captured, Env, Frame, SpecRef};
 use crate::{EvalError, Evaluator, Result};
 
@@ -93,6 +93,9 @@ impl Evaluator {
         });
         let source: Arc<dyn std::any::Any + Send + Sync> = lambda.clone();
         let apply = Arc::new(move |argument: &Value| {
+            if is_stack_low() {
+                return Err(Error(STACK_OVERFLOW.to_owned()));
+            }
             let mut env = lambda.captured.env();
             bind_argument(lambda.bounds.get(), argument, &mut env.frame)?;
             evaluator.eval(lambda.body.get(), &mut env).map_err(|error| Error(error.message))
@@ -173,6 +176,9 @@ impl Evaluator {
         let DefBody::Function { bounds, body } = &info.body else {
             unreachable!("only a function definition is applied in place")
         };
+        if is_stack_low() {
+            return Err(self.error(env, expr, STACK_OVERFLOW));
+        }
         let parent = self.scope_frame(scope, env)?;
         let frame = Arc::new(Frame::new(Vec::new(), info.frame_size, parent));
         // As in the lazy function, which keeps the state and the laziness of its application.

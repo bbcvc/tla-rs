@@ -11,7 +11,7 @@ use std::sync::{Arc, OnceLock};
 use tla_resolve::{Builtin, ConstId, DefBody, DefId, Expr, ExprKind, Local, OpRef, Scope};
 use tla_value::{Error, Value};
 
-use super::At;
+use super::{At, STACK_OVERFLOW, is_stack_low};
 use crate::env::{Env, Frame, Slot, SpecRef, StateRef, Thunk};
 use crate::native::OperatorKind;
 use crate::{Arg, ConstBinding, Ctx, EvalError, Evaluator, Native, Operator, Result};
@@ -79,6 +79,9 @@ impl Evaluator {
         keep_lazy: bool,
     ) -> Result<Value> {
         let info = self.spec.def(def);
+        if is_stack_low() {
+            return Err(EvalError::at(&self.spec, info.module, info.span, STACK_OVERFLOW));
+        }
         let frame = Arc::new(Frame::new(slots, info.frame_size, parent));
         let mut env = Env { frame, module: info.module, state, next, keep_lazy };
         match &info.body {
@@ -359,6 +362,9 @@ impl Evaluator {
     pub(super) fn force(&self, thunk: &Thunk, expr: &Expr, env: &Env<'_>) -> Result<Value> {
         if !Arc::ptr_eq(thunk.expr.spec(), &self.spec) {
             return Err(self.error(env, expr, "An argument of another specification was read"));
+        }
+        if is_stack_low() {
+            return Err(self.error(env, expr, STACK_OVERFLOW));
         }
         let is_cached = thunk.captured.is_in_states_of(env);
         if is_cached && let Some(value) = thunk.value.get() {

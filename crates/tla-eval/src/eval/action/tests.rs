@@ -836,6 +836,33 @@ Step == x' = x + 1 /\ y' = y /\ Primed(') /\ Enabled(ENABLED)
 }
 
 #[test]
+fn fails_as_tlc_does_on_a_recursion_too_deep_for_the_stack() {
+    let source = r#"---- MODULE M ----
+EXTENDS Naturals
+VARIABLE x
+RECURSIVE R(_), A(_)
+R(n) == R(n + 1)
+A(n) == A(n + 1)
+f[n \in Nat] == f[n + 1]
+g[n \in Nat] == [m \in {n} |-> g[n + 1][n + 1]]
+Value == x' = R(0)
+Function == x' = f[0]
+Constructed == x' = g[0][0]
+Walked == A(0)
+====
+"#;
+    let evaluator = evaluator(source);
+    let current = state(vec![Value::Int(0)]);
+    for name in ["Value", "Function", "Constructed", "Walked"] {
+        let error = next_states(&evaluator, name, &current).unwrap_err();
+        assert!(
+            error.message.starts_with("This was a Java StackOverflowError."),
+            "{name}: {error}"
+        );
+    }
+}
+
+#[test]
 fn builds_lazily_a_function_that_applies_the_recursive_function_around_it() {
     let source = r#"---- MODULE M ----
 EXTENDS Naturals

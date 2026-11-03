@@ -38,6 +38,21 @@ impl<T> At<T> for tla_value::Result<T> {
 
 const TEMPORAL_ERROR: &str = "TLC cannot evaluate a temporal formula in a state";
 
+/// What TLC reports for a Java StackOverflowError, which a recursion too deep for its stack
+/// raises, such as an incorrect recursive definition.
+pub(crate) const STACK_OVERFLOW: &str = "This was a Java StackOverflowError. It was probably the result\nof an incorrect recursive function definition that caused TLC to enter\nan infinite loop when trying to compute the function or its application\nto an element in its putative domain.";
+
+/// The stack an evaluating thread keeps when it cuts off a recursion, enough to fail with
+/// [`STACK_OVERFLOW`] instead of overflowing.
+const STACK_RESERVE: usize = 256 * 1024;
+
+/// Whether the thread is close enough to the end of its stack that the evaluation stops, as TLC
+/// stops at a StackOverflowError. Every unbounded recursion goes through a call of a definition,
+/// the application of a lazy function, or the reading of an argument, which check it.
+pub(crate) fn is_stack_low() -> bool {
+    stacker::remaining_stack().is_some_and(|remaining| remaining < STACK_RESERVE)
+}
+
 impl Evaluator {
     /// Evaluates a module-level definition without parameters.
     pub(crate) fn eval_zero_arity(

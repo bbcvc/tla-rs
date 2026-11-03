@@ -23,7 +23,7 @@ pub(crate) use self::run::Computation;
 use self::run::{Run, env};
 pub use self::split::NextAction;
 use super::bound::{Variable, bind_frame};
-use super::describe;
+use super::{STACK_OVERFLOW, describe, is_stack_low};
 use crate::env::{Frame, Slot};
 use crate::native::OperatorKind;
 use crate::{ConstBinding, EvalError, Evaluator, Result};
@@ -369,6 +369,9 @@ impl Evaluator {
         let Some(target) = self.walked(def, args.len()) else {
             return self.guard(expr, site, run, action, rest);
         };
+        if is_stack_low() {
+            return Err(self.error(&env(site, run), expr, STACK_OVERFLOW));
+        }
         let callee = self.entered(def, target, scope, args, site, run)?;
         let info = self.spec.def(target);
         let DefBody::Expr(body) = &info.body else { unreachable!("a walked definition") };
