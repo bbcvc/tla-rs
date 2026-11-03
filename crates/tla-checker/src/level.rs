@@ -235,3 +235,32 @@ fn children(expr: &Expr) -> Vec<&Expr> {
         _ => Vec::new(),
     }
 }
+
+/// Calls `each` with every subexpression of `expr`, those of the instance arguments of a call
+/// included.
+pub fn for_each_child<'e>(expr: &'e Expr, each: &mut dyn FnMut(&'e Expr)) {
+    let all = |exprs: &'e [Expr], each: &mut dyn FnMut(&'e Expr)| exprs.iter().for_each(&mut *each);
+    match &expr.kind {
+        ExprKind::Call { scope, args, .. } => {
+            instance_args(scope).for_each(&mut *each);
+            all(args, each);
+        }
+        ExprKind::CallParam { args, .. }
+        | ExprKind::CallConst { args, .. }
+        | ExprKind::Builtin { args, .. } => all(args, each),
+        ExprKind::UnboundedQuant { body, .. } => each(body),
+        ExprKind::BoxAction { action, sub }
+        | ExprKind::AngleAction { action, sub }
+        | ExprKind::Fairness { action, sub, .. } => {
+            each(action);
+            each(sub);
+        }
+        _ => children(expr).into_iter().for_each(each),
+    }
+}
+
+/// Calls `each` with `expr` and every expression in it.
+pub fn visit<'e>(expr: &'e Expr, each: &mut dyn FnMut(&'e Expr)) {
+    each(expr);
+    for_each_child(expr, &mut |child| visit(child, each));
+}

@@ -3,15 +3,22 @@
 
 use std::rc::Rc;
 
-use tla_eval::Value;
-use tla_resolve::{DefId, Level};
+use tla_eval::Frames;
+use tla_resolve::Level;
 
-/// What evaluates a part of a liveness formula: a module-level definition, with the slots of its
-/// frame that a quantifier unrolled bound to values.
-#[derive(Clone, Debug)]
+/// What evaluates a part of a liveness formula: an expression of the spec, by its index among
+/// those the translation kept, in the frames of the calls the translation expanded, with the
+/// variables of the quantifiers it unrolled bound.
+#[derive(Clone)]
 pub struct Eval {
-    pub def: DefId,
-    pub bound: Rc<[(usize, Value)]>,
+    pub frames: Frames,
+    pub expr: usize,
+}
+
+impl std::fmt::Debug for Eval {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(formatter, "Eval({})", self.expr)
+    }
 }
 
 /// A part of a formula below temporal level, which the model checker evaluates.
@@ -19,6 +26,8 @@ pub struct Eval {
 pub struct Atom {
     /// Atoms are equal only to themselves.
     pub id: usize,
+    /// The place of a state predicate's results among those of the others.
+    pub slot: usize,
     pub kind: AtomKind,
 }
 
@@ -28,9 +37,13 @@ pub enum AtomKind {
     State(Eval),
     /// `ENABLED <<A>>_v` of a fairness condition.
     Enabled(Eval),
-    /// An action. One a fairness condition takes is `<<A>>_v`: `A` without stuttering on `v`,
-    /// which can't hold where the condition's `ENABLED` doesn't.
-    Action { action: Eval, unchanged: Option<Eval>, enabled: Option<Rc<Atom>> },
+    /// An action. One a fairness condition takes is `<<A>>_v`: `A` on a step that changes the
+    /// subscript `v`, which can't hold where the condition's `ENABLED` doesn't.
+    ///
+    /// When the action is the spec's next-state relation, every step of the behavior graph
+    /// but a stuttering one satisfies it, since the search found it as a successor, and it
+    /// isn't evaluated.
+    Action { action: Eval, unchanged: Option<Eval>, enabled: Option<Rc<Atom>>, is_next: bool },
 }
 
 /// A liveness formula.
@@ -403,13 +416,13 @@ mod tests {
     use super::*;
 
     fn atom(id: usize, is_action: bool) -> Live {
-        let eval = Eval { def: DefId(0), bound: Rc::from([]) };
+        let eval = Eval { frames: crate::liveness::tests::frames(), expr: 0 };
         let kind = if is_action {
-            AtomKind::Action { action: eval, unchanged: None, enabled: None }
+            AtomKind::Action { action: eval, unchanged: None, enabled: None, is_next: false }
         } else {
             AtomKind::State(eval)
         };
-        Live::Atom(Rc::new(Atom { id, kind }))
+        Live::Atom(Rc::new(Atom { id, slot: 0, kind }))
     }
 
     #[test]

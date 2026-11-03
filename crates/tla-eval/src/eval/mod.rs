@@ -56,37 +56,6 @@ pub(crate) fn is_stack_low() -> bool {
 }
 
 impl Evaluator {
-    /// Evaluates a module-level definition without parameters with some slots of its frame set.
-    pub(crate) fn eval_with_slots(
-        &self,
-        def: DefId,
-        bound: &[(usize, Value)],
-        state: Option<&State>,
-        next: Option<&State>,
-    ) -> Result<Value> {
-        if bound.is_empty() {
-            return self.eval_zero_arity(def, state, next);
-        }
-        let info = self.spec.def(def);
-        if info.depth > 0 || !info.params.is_empty() {
-            let message =
-                format!("{} isn't a module-level definition without parameters.", info.name);
-            return Err(EvalError::at(&self.spec, info.module, info.span, message));
-        }
-        let mut slots = vec![Slot::Value(Value::FALSE); info.frame_size];
-        for (slot, value) in bound {
-            slots[*slot] = Slot::Value(value.clone());
-        }
-        self.enter(
-            def,
-            None,
-            slots,
-            state.map(StateRef::Complete),
-            next.map(StateRef::Complete),
-            Default::default(),
-        )
-    }
-
     /// Evaluates a module-level definition without parameters.
     pub(crate) fn eval_zero_arity(
         &self,
