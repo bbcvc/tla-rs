@@ -734,35 +734,42 @@ impl Value {
         }
     }
 
-    /// `self \cup other`, enumerated when both sides are.
+    /// `self \cup other`.
     pub fn cup(&self, other: &Value) -> Result<Value> {
-        if self.is_enumerable() && other.is_enumerable() {
-            if self.is_empty()? {
+        self.combine(Operation::Cup, other)
+    }
+
+    /// `self \cap other`.
+    pub fn cap(&self, other: &Value) -> Result<Value> {
+        self.combine(Operation::Cap, other)
+    }
+
+    /// `self \ other`.
+    pub fn minus(&self, other: &Value) -> Result<Value> {
+        self.combine(Operation::Minus, other)
+    }
+
+    /// Combines two sets as TLC does: two set enumerations or intervals at once, a set
+    /// enumeration or interval with any other set element by element, and other sets lazily. A
+    /// non-set operand fails only when the result is used.
+    fn combine(&self, operation: Operation, other: &Value) -> Result<Value> {
+        let is_sorted = |value: &Value| matches!(value, Value::Set(_) | Value::Interval(..));
+        if is_sorted(self) && is_sorted(other) {
+            if operation == Operation::Cup && self.is_empty()? {
                 return Ok(other.clone());
             }
-            let mut elements = self.elements()?.to_vec();
-            elements.extend(other.elements()?.iter().cloned());
-            return Value::set(elements);
+            if let Ok(merged) = operation.lazy(self, other).elements() {
+                return Ok(Value::Set(merged));
+            }
+            return combine_reducible(operation, self, other);
         }
-        Ok(Value::lazy(LazySet::Cup(self.clone(), other.clone())))
-    }
-
-    /// `self \cap other`, enumerated when either side is.
-    pub fn cap(&self, other: &Value) -> Result<Value> {
-        let set = Value::lazy(LazySet::Cap(self.clone(), other.clone()));
-        if self.is_enumerable() || other.is_enumerable() {
-            return Ok(Value::Set(set.elements()?));
+        if is_reducible(self) {
+            return combine_reducible(operation, self, other);
         }
-        Ok(set)
-    }
-
-    /// `self \ other`, enumerated when the left side is.
-    pub fn minus(&self, other: &Value) -> Result<Value> {
-        let set = Value::lazy(LazySet::Minus(self.clone(), other.clone()));
-        if self.is_enumerable() {
-            return Ok(Value::Set(set.elements()?));
+        if operation != Operation::Minus && is_reducible(other) {
+            return combine_reducible(operation, other, self);
         }
-        Ok(set)
+        Ok(operation.lazy(self, other))
     }
 
     /// `UNION self`, enumerated when every set in it is.
@@ -773,6 +780,65 @@ impl Value {
         }
         Ok(set)
     }
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Operation {
+    Cup,
+    Cap,
+    Minus,
+}
+
+impl Operation {
+    fn lazy(self, left: &Value, right: &Value) -> Value {
+        let (left, right) = (left.clone(), right.clone());
+        Value::lazy(match self {
+            Operation::Cup => LazySet::Cup(left, right),
+            Operation::Cap => LazySet::Cap(left, right),
+            Operation::Minus => LazySet::Minus(left, right),
+        })
+    }
+}
+
+/// TLC's `Reducible` sets, a set enumeration or an interval, which combine with another set
+/// element by element.
+fn is_reducible(value: &Value) -> bool {
+    matches!(value, Value::Set(_) | Value::MixedSet(_) | Value::Interval(..))
+}
+
+/// Combines a set enumeration or interval with another set by testing each of its elements, in
+/// the order the enumeration holds them, for membership in the other set.
+fn combine_reducible(operation: Operation, set: &Value, other: &Value) -> Result<Value> {
+    let elements = match set {
+        Value::Set(elements) | Value::MixedSet(elements) => elements.clone(),
+        _ => set.elements()?,
+    };
+    if operation != Operation::Cup {
+        let mut kept = Vec::new();
+        for element in elements.iter() {
+            if other.contains(element)? == (operation == Operation::Cap) {
+                kept.push(element.clone());
+            }
+        }
+        return Value::set(kept);
+    }
+    if elements.is_empty() {
+        return Ok(other.clone());
+    }
+    if !is_reducible(other) {
+        return Ok(operation.lazy(set, other));
+    }
+    let mut combined = elements.to_vec();
+    let others = match other {
+        Value::Set(others) | Value::MixedSet(others) => others.clone(),
+        _ => other.elements()?,
+    };
+    for element in others.iter() {
+        if !set.contains(element)? {
+            combined.push(element.clone());
+        }
+    }
+    Value::set(combined)
 }
 
 fn product_size(sets: &[&Value], overflow: impl Fn() -> Error) -> Result<i32> {
@@ -910,5 +976,23 @@ mod tests {
             message(mixed.elements()),
             "Attempted to compare string \"a\" with non-string:\n1"
         );
+    }
+
+    /// tla-ts's ValueSemanticsCases: TLC combines a set enumeration with another set element by
+    /// element, putting the enumeration first, and `S \cup {}` is `S`.
+    #[test]
+    fn combines_sets_as_tlc_does() {
+        assert!(nat().cup(&Value::empty_set()).unwrap().equals(&nat()).unwrap());
+        assert_eq!(
+            message(nat().cup(&ints(&[0])).unwrap().equals(&nat())),
+            "Attempted to enumerate S \\cup T when S:\n{0}\nand T:\nNat\nare not both enumerable"
+        );
+        assert_eq!(format(&nat().cap(&ints(&[-1, 2])).unwrap()), "{2}");
+        let mixed = Value::set(vec![Value::Int(1), Value::str("a")]).unwrap();
+        assert!(mixed.cup(&Value::empty_set()).unwrap().contains(&Value::Int(1)).unwrap());
+        assert!(matches!(
+            Value::lazy(LazySet::Subset(ints(&[1]))).minus(&ints(&[1])).unwrap(),
+            Value::Lazy(_)
+        ));
     }
 }

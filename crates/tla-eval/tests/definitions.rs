@@ -47,17 +47,26 @@ Table == LET g[x \in {1, 2}] == {x} IN g
     assert_eq!(printed, ["TRUE", "<<<<<<>>>>>>", "{{2}, {1, 2}}", "<<{1}, {2}>>"]);
 }
 
+/// Evaluation recurses on the Rust stack, so a checker runs it on a thread with a large one, as
+/// TLC runs on a JVM with a large stack.
 #[test]
 fn recurses_hundreds_of_calls_deep() {
-    let printed = show(
-        r#"
+    let printed = std::thread::Builder::new()
+        .stack_size(16 << 20)
+        .spawn(|| {
+            show(
+                r#"
 RECURSIVE Depth(_)
 Depth(S) == IF S = {} THEN <<>> ELSE LET rest == Depth(S \ {CHOOSE x \in S : TRUE}) IN rest
-Big == SUBSET {1, 2, 3, 4, 5, 6, 7, 8}
+Big == {s : s \in SUBSET {1, 2, 3, 4, 5, 6, 7, 8}}
 Expr == Depth(Big)
 "#,
-        &["Expr"],
-    );
+                &["Expr"],
+            )
+        })
+        .unwrap()
+        .join()
+        .unwrap();
     assert_eq!(printed, ["<<>>"]);
 }
 

@@ -54,8 +54,16 @@ fn overridden(value: &Value) -> Option<&'static str> {
 
 fn compare_overridden(left: &Value, right: &Value, verb: &str) -> Result<Ordering> {
     let Some(left_name) = overridden(left) else {
-        let shown = match left.is_enumerable() {
-            true => left.elements().map(Value::Set).unwrap_or_else(|_| left.clone()),
+        // TLC prints the set strictly, enumerating it, which fails as enumerating it fails.
+        let is_combined = matches!(
+            left,
+            Value::Lazy(set) if matches!(
+                **set,
+                LazySet::Cup(..) | LazySet::Cap(..) | LazySet::Minus(..) | LazySet::Filtered { .. } | LazySet::Union(_)
+            )
+        );
+        let shown = match left.is_enumerable() || is_combined {
+            true => Value::Set(left.elements()?),
             false => left.clone(),
         };
         bail!("Attempted to {verb} the set {shown} with the value:\n{right}")
