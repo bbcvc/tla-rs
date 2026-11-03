@@ -129,7 +129,7 @@ mod tests {
     use tla_resolve::{RootName, Spec, resolve};
 
     use super::bind_model;
-    use crate::ConstBinding;
+    use crate::{ConstBinding, Evaluator};
 
     fn spec(source: &str) -> Spec {
         resolve(source, &mut |_: &str| None).unwrap()
@@ -155,6 +155,19 @@ mod tests {
         assert_eq!(formatted, ["3", "{p1, p2}", "Double"]);
         let Some(RootName::Def(limit)) = spec.lookup("Limit") else { panic!() };
         assert!(matches!(&model.overrides[..], [(def, ConstBinding::Value(_))] if *def == limit));
+    }
+
+    #[test]
+    fn overrides_definitions_with_values_and_definitions() {
+        let spec = std::sync::Arc::new(spec(
+            "---- MODULE M ----\nLimit == {1}\nOther(x) == {x, 2}\nPick(x) == {x}\nBoth == Limit \\cup Pick(3)\n====\n",
+        ));
+        let model =
+            bind_model(&spec, &parse_config("CONSTANTS Limit = {a} Pick <- Other").unwrap())
+                .unwrap();
+        let Some(RootName::Def(both)) = spec.lookup("Both") else { panic!() };
+        let evaluator = Evaluator::new(spec, model.constants).with_overrides(model.overrides);
+        assert_eq!(evaluator.eval_def(both, None).unwrap().to_string(), "{a, 2, 3}");
     }
 
     #[test]

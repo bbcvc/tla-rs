@@ -17,7 +17,8 @@ use crate::native::OperatorKind;
 use crate::{Arg, ConstBinding, Ctx, EvalError, Evaluator, Native, Operator, Result, State};
 
 impl Evaluator {
-    /// Calls `def` with `args`, in a new frame whose parent is `parent`.
+    /// Calls `def` with `args`, in a new frame whose parent is `parent`, unless the configuration
+    /// or a native implementation replaces it.
     pub(crate) fn call_def(
         &self,
         def: DefId,
@@ -35,6 +36,12 @@ impl Evaluator {
                 args.len()
             );
             return Err(EvalError::at(&self.spec, info.module, info.span, message));
+        }
+        if let Some(binding) = &self.overrides[def.index()] {
+            return match binding {
+                ConstBinding::Value(value) => Ok(value.clone()),
+                ConstBinding::Def(other) => self.call_def(*other, None, args, state, next),
+            };
         }
         if let Some(native) = self.natives[def.index()] {
             let args: Vec<Arg> = args.into_iter().map(Arg::Value).collect();
@@ -68,7 +75,8 @@ impl Evaluator {
         }
     }
 
-    /// `Op(args)`, a call of a definition.
+    /// `Op(args)`, a call of a definition. A definition the configuration overrides with a value
+    /// yields that value for any arguments, like an operator constant.
     pub(super) fn call(
         &self,
         def: DefId,
@@ -77,6 +85,12 @@ impl Evaluator {
         expr: &Expr,
         env: &mut Env<'_>,
     ) -> Result<Value> {
+        if let Some(binding) = &self.overrides[def.index()] {
+            return match binding {
+                ConstBinding::Value(value) => Ok(value.clone()),
+                ConstBinding::Def(other) => self.call(*other, &Scope::Global, args, expr, env),
+            };
+        }
         let info = self.spec.def(def);
         if let Some(native) = self.natives[def.index()] {
             return self.call_native(native, &info.params, args, expr, env);
@@ -139,6 +153,7 @@ impl Evaluator {
         let op = op.clone();
         if let OperatorKind::Def { def, parent } = &op.0
             && self.natives[def.index()].is_none()
+            && self.overrides[def.index()].is_none()
         {
             if args.len() != self.spec.def(*def).params.len() {
                 return Err(self.arity_error(*def, args.len(), env, expr));

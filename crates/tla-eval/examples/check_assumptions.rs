@@ -18,11 +18,20 @@ use std::time::Instant;
 
 use tla_eval::{Evaluator, bind_model};
 
-#[derive(Debug)]
 enum Outcome {
     Satisfied,
     Violated(String),
     Error(String),
+}
+
+impl std::fmt::Display for Outcome {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Outcome::Satisfied => write!(formatter, "satisfied"),
+            Outcome::Violated(message) => write!(formatter, "violated: {message}"),
+            Outcome::Error(message) => write!(formatter, "error: {message}"),
+        }
+    }
 }
 
 fn check(spec_path: &Path, library: &HashMap<String, PathBuf>) -> Outcome {
@@ -143,7 +152,7 @@ fn main() {
             _ => true,
         };
         if is_mismatch {
-            mismatches.push(format!("{id} (TLC: {status}): {outcome:?}"));
+            mismatches.push(format!("{id} (TLC: {status}): {outcome}"));
         }
     }
     println!("\n{} models disagree with TLC", mismatches.len());
