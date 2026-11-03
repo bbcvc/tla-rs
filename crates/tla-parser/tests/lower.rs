@@ -277,6 +277,47 @@ fn lowers_labels_and_subexpression_references() {
         if name.symbol.as_str() == "++" && args.len() == 2));
 }
 
+const OPERATOR_ENDS: &str = r"---- MODULE Ops ----
+A == OOp5(COp!@!++, 1, 2)
+I == INSTANCE N WITH A5 <- COp!@!++
+B == F(Inst!Bar5!lab!:!++) /\ G(Cases!\oplus) /\ COp2!lab!:!++!lab /\ COp!(3)!++(4, 5)
+====";
+
+#[test]
+fn reads_an_operator_symbol_ending_a_reference() {
+    // The grammar can't read an operator symbol as the last part of a reference without
+    // arguments, which SANY reads, in an argument, at the end of a line, or through an instance.
+    let module = parse(OPERATOR_ENDS);
+    let ExprKind::Apply { args, .. } = body(&module, "A") else { panic!() };
+    let ExprKind::Subexpression(selectors) = &args[0].kind else { panic!() };
+    let SelectorKind::Name { name, args } = &selectors[2].kind else { panic!() };
+    assert_eq!((name.symbol.as_str(), args.len()), ("++", 0));
+    assert_eq!(&OPERATOR_ENDS[name.span.start as usize..name.span.end as usize], "++");
+
+    let ExprKind::And(parts) = body(&module, "B") else { panic!() };
+    let ExprKind::Apply { args, .. } = &parts[1].kind else { panic!() };
+    let ExprKind::Qualified { path, name, .. } = &args[0].kind else { panic!() };
+    assert_eq!((path[0].name.symbol.as_str(), name.symbol.as_str()), ("Cases", "\\oplus"));
+    let Unit::ModuleDef(instance) = &module.units[1] else { panic!() };
+    let value = &instance.instance.substitutions[0].value;
+    assert!(matches!(&value.kind, ExprKind::Subexpression(selectors) if selectors.len() == 3));
+}
+
+#[test]
+fn repairs_no_other_syntax_error() {
+    for body in [
+        // An operator symbol ending a reference beside an unrelated error.
+        "A == OOp5(COp!@!++, 1, 2)\nB == 1 +",
+        // Operator symbols that don't end a reference.
+        "A == COp!@!++ + 1",
+        "A == x ++",
+        "A == COp!@!++ B",
+    ] {
+        let source = format!("---- MODULE Broken ----\n{body}\n====\n");
+        parse_module(&source).expect_err(body);
+    }
+}
+
 #[test]
 fn rejects_operators_that_conflict_with_enabled_like_sany() {
     // SANY gives ENABLED, UNCHANGED, [], and <> the precedence 4-15, so an operator after their

@@ -65,9 +65,9 @@ None of them targets full TLC conformance with an interpreter, so starting fresh
 
 ## Frontend results
 
-`crates/tla-parser/examples/parse_corpus.rs` parses every `.tla` and `.cfg` file in the 16 conformance corpora (2,052 modules and 1,108 configurations). 2,004 modules and 1,103 configurations parse, up from 1,996 modules before the AST kept labels and subexpression references. Matched against `expected.json` by path, 11 of the failures are the root module or configuration of a recorded model. 9 of those are models TLC also rejects. The other 2, `tlc/.../suite/test206` and `test219`, end a subexpression reference with an operator symbol that takes no arguments, as in `OOp5(COp!@!++, 1, 2, 3, 4, 5)`.
+`crates/tla-parser/examples/parse_corpus.rs` parses every `.tla` and `.cfg` file in the 16 conformance corpora (2,052 modules and 1,108 configurations). 2,008 modules and 1,103 configurations parse, up from 1,996 modules before the AST kept labels and subexpression references and the parser read operator symbols ending them. Matched against `expected.json` by path, 8 of the failures are the root module or configuration of a recorded model, all models TLC also rejects.
 
-tree-sitter-tlaplus 1.5.0 reads an operator symbol between `!`s, as in `COp2!lab!:!++!lab`, and at the end with arguments, as in `COp(1, 2)!(3)!++(4, 5)`, but not at the end without them. There it leaves an `ERROR` node that holds the `infix_op_symbol`, after a `subexpression` of the parts before it, and the parser reports a syntax error. That is the only form `test206`, `test219`, and `test219a` use that the grammar can't read: with each such symbol replaced by an identifier of the same length, all three parse.
+tree-sitter-tlaplus 1.5.0 reads an operator symbol between `!`s, as in `COp2!lab!:!++!lab`, and at the end with arguments, as in `COp(1, 2)!(3)!++(4, 5)`, but not at the end without them, as in `OOp5(COp!@!++, 1, 2, 3, 4, 5)` or `BY DEF Cases!\oplus`. There it leaves the symbol in an `ERROR` node, or reads it as an infix operator of what follows. Neither a later release nor an upstream issue or pull request handles it. So when a parse fails, the parser replaces each operator symbol after a `!` that isn't followed by `(` or `!` with an identifier of the same length, and parses again. It keeps the new tree only if it has no errors and each identifier is the last part of a reference, and lowering reads each one back as its operator. Any other failure keeps the error of the first parse. TLC's `test206`, `test219`, and `test219a` and tlapm's `ModuleSemanticsTheorems` parse this way.
 
 Three SANY behaviors the grammar doesn't share are handled during or before lowering. SANY measures a tab as reaching the next multiple of 8 columns, while tree-sitter counts it as one column, so the parser expands tabs and maps spans back to the original text. SANY skips comments, while the grammar parses PlusCal inside them, so errors inside a block comment are ignored. SANY gives `ENABLED`, `UNCHANGED`, `[]`, and `<>` the precedence 4-15, so an operator after their operand that binds as tightly, as in `ENABLED x'` or `[]x = y`, is a precedence conflict, which SANY rejects. The grammar applies the prefix operator to `x` alone, so the parser reports the conflict itself.
 
@@ -84,17 +84,16 @@ cargo run --release -p tla-resolve --example resolve_corpus -- $C/.corpora --all
 cargo run --release -p tla-resolve --example resolve_corpus -- $C/.corpora $L --expected $C/expected.json
 ```
 
-The parser and resolver agree with SANY on 1,860 of the 1,873 modules SANY was recorded on. Of the 823 models TLC was recorded on, 2 fail to resolve although TLC checks them, `test206` and `test219`, which the grammar can't parse.
+The parser and resolver agree with SANY on 1,864 of the 1,873 modules SANY was recorded on. Every one of the 823 models TLC was recorded on that TLC checks resolves.
 
-The 13 disagreements with SANY:
+The 9 disagreements with SANY:
 
 | Cause | Modules | Plan |
 | --- | ---: | --- |
-| A subexpression reference ending in an operator symbol without arguments (`COp!@!++`) | 3 | The grammar can't read it (see Frontend results). |
 | Proof syntax (`DEF`, `HIDE`, `BY`), which TLC ignores | 4 | Out of scope until proofs matter. |
 | SANY reporting a module nested in the file as defined twice when a `LET` instantiates it | 3 | A SANY quirk; emulate only if a model depends on it. |
 | A decimal literal, which SANY accepts and TLC rejects when it checks the model | 1 | Already an error, at an earlier stage than TLC's. |
-| `Operators_test` and `ModuleSemanticsTheorems`, grammar differences in proof syntax | 2 | Out of scope with proofs. |
+| `Operators_test`, a grammar difference in proof syntax | 1 | Out of scope with proofs. |
 
 TLC also requires the root module to be named after its file. The resolver takes source text, so the caller makes that check, as the smoke tool does.
 
@@ -102,7 +101,7 @@ TLC also requires the root module to be named after its file. The resolver takes
 
 The AST keeps labels and subexpression references such as `Inv!2`, `Op(a)!lab(b)!<<`, `Op!@`, and `I!Op!:`, and resolution follows SANY's `Generator.selectorToNode` as tla-ts `subexpressions.ts` ports it. A reference resolves to a definition of its own, made beside the definition it selects from: at its depth, in the frames of its instance, and in the names of its module's elaboration. Its parameters are those of the definition, of the labels, and of the binders on the way to the selected part, and its body is the part, inside the `LET`s around it. The reference applies it to the arguments it gives, or passes it as an operator when it gives none, as in `OOp2(SOp1a!@, 2, 2)`. Labels are otherwise transparent, except that SANY's level checks don't see an action under a label as an operator application.
 
-With them, the parser and resolver agree with SANY on 1,860 modules, up from 1,852, and the models that fail to resolve although TLC checks them go from 7 to 2. `crates/tla-eval/examples/check_assumptions.rs` agrees with TLC on the assumptions of every model that uses them except `test206` and `test219`: `MCPaxos`, `MCVoting`, `test209`, and `test216` hold, and `EWD998ChanTrace` violates one as TLC reports. Its disagreements with TLC go from 8 to 3, those two and `NormalizationAssume`.
+With them, the parser and resolver agree with SANY on 1,860 modules, up from 1,852, and the models that fail to resolve although TLC checks them go from 7 to 2. `crates/tla-eval/examples/check_assumptions.rs` agrees with TLC on the assumptions of every model that uses them except `test206` and `test219`: `MCPaxos`, `MCVoting`, `test209`, and `test216` hold, and `EWD998ChanTrace` violates one as TLC reports. Its disagreements with TLC go from 8 to 3, those two and `NormalizationAssume`. Once the parser reads an operator symbol ending a reference (see Frontend results), `test206` and `test219` resolve and their assumptions hold, as TLC reports, which leaves 1,864 modules agreeing with SANY, no model TLC checks failing to resolve, and `NormalizationAssume` the one disagreement on assumptions.
 
 What resolution leaves out:
 
