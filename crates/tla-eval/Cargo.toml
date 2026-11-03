@@ -11,3 +11,6 @@ tla-ast.workspace = true
 tla-parser.workspace = true
 tla-resolve.workspace = true
 tla-value.workspace = true
+
+[dev-dependencies]
+serde_json.workspace = true

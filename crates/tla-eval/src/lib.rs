@@ -66,6 +66,8 @@ pub struct Evaluator {
     pub(crate) constants: Vec<ConstBinding>,
     /// The native implementation of each definition TLC overrides, by [`DefId`].
     pub(crate) natives: Vec<Option<Native>>,
+    /// What the configuration replaces each definition with, by [`DefId`].
+    pub(crate) overrides: Vec<Option<ConstBinding>>,
     pub(crate) runtime: Runtime,
 }
 
@@ -86,7 +88,16 @@ impl Evaluator {
                     .flatten()
             })
             .collect();
-        Self { spec, constants, natives, runtime: Runtime::default() }
+        let overrides = vec![None; spec.defs.len()];
+        Self { spec, constants, natives, overrides, runtime: Runtime::default() }
+    }
+
+    /// Replaces definitions with the values or definitions the configuration gives them.
+    pub fn with_overrides(mut self, overrides: Vec<(DefId, ConstBinding)>) -> Self {
+        for (def, binding) in overrides {
+            self.overrides[def.index()] = Some(binding);
+        }
+        self
     }
 
     pub fn spec(&self) -> &Spec {

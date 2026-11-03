@@ -348,6 +348,7 @@ dependencies = [
 name = "tla-eval"
 version = "0.1.0"
 dependencies = [
+ "serde_json",
  "thiserror",
  "tla-ast",
  "tla-parser",
