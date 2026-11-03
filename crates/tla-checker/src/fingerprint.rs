@@ -21,6 +21,21 @@ use crate::Error;
 /// looking one up is a scan.
 type Permutation = Vec<(Symbol, Value)>;
 
+/// The image of each model value the permutation moves.
+fn image(permutation: &Permutation) -> impl Fn(Symbol) -> Option<Value> + '_ {
+    |name| permutation.iter().find(|(from, _)| *from == name).map(|(_, to)| to.clone())
+}
+
+/// The model value the permutation moves to each model value, if any.
+fn preimage(permutation: &Permutation) -> impl Fn(Symbol) -> Option<Symbol> + '_ {
+    |name| {
+        permutation.iter().find_map(|(from, to)| match to {
+            Value::Model(to) if *to == name => Some(*from),
+            _ => None,
+        })
+    }
+}
+
 pub struct Fingerprinter {
     view: Option<DefId>,
     /// Whether to fingerprint as TLC does, which a spec with strings above U+00FF needs: TLC's
@@ -46,37 +61,50 @@ impl Fingerprinter {
 
     /// The fingerprint of `state`.
     pub fn fingerprint(&self, evaluator: &Evaluator, state: &State) -> Result<u128, String> {
+        if self.permutations.is_empty() {
+            return self.fingerprint_one(evaluator, state);
+        }
         let error = |error: tla_value::Error| error.to_string();
-        // The smallest permutation so far, if smaller than the state. Comparing a permutation
-        // with it builds only what the comparison needs.
-        let mut smallest: Option<Vec<Value>> = None;
+        // The permutation that gives the smallest state so far, if smaller than the state, and
+        // those of its values built so far. Comparing a permutation with it builds only what the
+        // comparison needs, of either.
+        let mut smallest: Option<&Permutation> = None;
+        let mut least: Vec<Option<Value>> = vec![None; state.len()];
         for permutation in &self.permutations {
-            let image = |name: Symbol| {
-                permutation.iter().find(|(from, _)| *from == name).map(|(_, to)| to.clone())
-            };
-            let preimage = |name: Symbol| {
-                permutation.iter().find_map(|(from, to)| match to {
-                    Value::Model(to) if *to == name => Some(*from),
-                    _ => None,
-                })
-            };
-            let least = smallest.as_deref().unwrap_or(state);
+            let (to, from) = (image(permutation), preimage(permutation));
             let mut ordering = Ordering::Equal;
-            for (value, least) in state.iter().zip(least) {
-                ordering = value.compare_permuted(&image, &preimage, least).map_err(error)?;
+            let mut position = 0;
+            while position < state.len() {
+                let least = match (smallest, &mut least[position]) {
+                    (None, _) => &state[position],
+                    (Some(_), Some(value)) => &*value,
+                    (Some(smallest), slot) => {
+                        let value = state[position].permute(&image(smallest)).map_err(error)?;
+                        &*slot.insert(value)
+                    }
+                };
+                ordering = state[position].compare_permuted(&to, &from, least).map_err(error)?;
                 if ordering != Ordering::Equal {
                     break;
                 }
+                position += 1;
             }
             if ordering == Ordering::Less {
-                let permuted = state.iter().map(|value| value.permute(&image));
-                smallest = Some(permuted.collect::<Result<_, _>>().map_err(error)?);
+                // The values before the first that differs are those of the smallest.
+                smallest = Some(permutation);
+                least[position..].fill(None);
             }
         }
-        match smallest {
-            Some(smallest) => self.fingerprint_one(evaluator, &Arc::from(smallest)),
-            None => self.fingerprint_one(evaluator, state),
-        }
+        let Some(smallest) = smallest else { return self.fingerprint_one(evaluator, state) };
+        let representative = least
+            .into_iter()
+            .zip(state.iter())
+            .map(|(value, original)| match value {
+                Some(value) => Ok(value),
+                None => original.permute(&image(smallest)).map_err(error),
+            })
+            .collect::<Result<Vec<_>, _>>()?;
+        self.fingerprint_one(evaluator, &Arc::from(representative))
     }
 
     fn fingerprint_one(&self, evaluator: &Evaluator, state: &State) -> Result<u128, String> {
