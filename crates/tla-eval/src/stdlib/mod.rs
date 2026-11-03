@@ -324,3 +324,6 @@ pub(crate) mod testing {
         Arg::Op(Operator::closure(move |_, args| apply(args)))
     }
 }
+
+#[cfg(test)]
+mod tests;
