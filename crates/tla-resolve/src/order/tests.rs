@@ -67,3 +67,15 @@ fn fails_for_a_module_it_cant_find() {
     let error = tlc_string_order(source, &config, &mut |_: &str| None).unwrap_err();
     assert_eq!(error, "Cannot find source file for module Missing imported in module M.");
 }
+
+#[test]
+fn orders_variables_as_the_root_modules_sany_context_enumerates_them() {
+    // The orders tla-ts's getTlcVariableOrder gives.
+    let mut loader = |_: &str| None;
+    let source = "---- MODULE M ----\nEXTENDS Naturals\nVARIABLES active, pending, terminationDetected, x, y\nInit == x = 0\n====\n";
+    let order = super::tlc_variable_order(source, &mut loader).unwrap();
+    assert_eq!(order, ["pending", "active", "x", "y", "terminationDetected"]);
+    let lock = "---- MODULE Lock ----\nVARIABLES pc, lock\nvars == << pc, lock >>\nI == INSTANCE M\n====\n";
+    let mut loader = |name: &str| (name == "M").then(|| source.to_owned());
+    assert_eq!(super::tlc_variable_order(lock, &mut loader).unwrap(), ["lock", "pc"]);
+}
