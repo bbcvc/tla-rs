@@ -84,8 +84,8 @@ impl Evaluator {
                 };
                 // Once every variable has a value, TLC evaluates the conjuncts left as
                 // predicates, so a disjunction among them yields one state rather than one for
-                // each disjunct that holds.
-                if run.is_complete() && run.computation != Computation::Enabled {
+                // each disjunct that holds. Its getNextStates does so only with warnings on.
+                if run.is_shortcut && run.is_complete() {
                     for conjunct in conjuncts {
                         if !self.holds(conjunct, site, run, false)? {
                             return Ok(());

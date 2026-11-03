@@ -26,6 +26,8 @@ pub struct Runtime {
     pub is_stopped: AtomicBool,
     /// Whether IOUtils' `IOExec` and its kin may run commands.
     allows_exec: AtomicBool,
+    /// Whether TLC reports warnings, which its `-nowarning` turns off.
+    warnings: AtomicBool,
     /// The environment variables IOUtils' `IOEnv` reports, as a record.
     environment: OnceLock<Value>,
     checker: RwLock<Checker>,
@@ -131,6 +133,7 @@ impl Default for Runtime {
             registers: Mutex::default(),
             is_stopped: AtomicBool::new(false),
             allows_exec: AtomicBool::new(false),
+            warnings: AtomicBool::new(true),
             environment: OnceLock::new(),
             checker: RwLock::default(),
             random: Mutex::new(Randomness {
@@ -156,6 +159,17 @@ impl Runtime {
 
     pub fn allows_exec(&self) -> bool {
         self.allows_exec.load(Ordering::SeqCst)
+    }
+
+    /// Turns TLC's warnings on or off, as its `-nowarning` does. Besides the warnings, it
+    /// decides whether `getNextStates` stops walking an action once every variable has a value,
+    /// which TLC does only with warnings on, and so how many states a disjunction generates.
+    pub fn set_warnings(&self, warnings: bool) {
+        self.warnings.store(warnings, Ordering::SeqCst);
+    }
+
+    pub fn warnings(&self) -> bool {
+        self.warnings.load(Ordering::Relaxed)
     }
 
     /// Sets the environment variables `IOEnv` reports in place of the process's. It has no

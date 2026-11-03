@@ -42,6 +42,9 @@ pub(crate) struct Run<'r> {
     /// The number of versions made so far.
     versions: u64,
     pub is_stopped: bool,
+    /// Whether, once every variable has a value, the conjuncts left are evaluated rather than
+    /// walked, as TLC's `getInitStates` does, and its `getNextStates` with warnings on.
+    pub is_shortcut: bool,
     /// The definition being enumerated, where an incomplete state is reported.
     def: DefId,
     found: Option<&'r mut dyn FnMut(State) -> Result<bool>>,
@@ -64,6 +67,11 @@ impl<'r> Run<'r> {
             version: Version::first(),
             versions: 0,
             is_stopped: false,
+            is_shortcut: match computation {
+                Computation::Init => true,
+                Computation::Next => evaluator.runtime.warnings(),
+                Computation::Enabled => false,
+            },
             def,
             found,
         }

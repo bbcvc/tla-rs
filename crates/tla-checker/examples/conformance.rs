@@ -147,7 +147,8 @@ fn check(spec_path: &Path, config_path: &Path, library: &HashMap<String, PathBuf
             spec.modules[0].name
         ));
     }
-    let options = Options { seed: TLC_SEED, ..Options::default() };
+    // TLC records the expected results with -nowarning.
+    let options = Options { seed: TLC_SEED, nowarning: true, ..Options::default() };
     tla_checker::check(spec, &config, &options, |evaluator| evaluator.clone())
 }
 

@@ -353,6 +353,19 @@ fn branches_until_every_variable_has_a_value() {
 }
 
 #[test]
+fn walks_an_assigned_action_on_with_warnings_off() {
+    let actions = evaluator(ACTIONS);
+    actions.runtime().set_warnings(false);
+    let current = state(vec![Value::Int(0), Value::Int(0)]);
+    assert_eq!(next_states(&actions, "Settled", &current).unwrap(), ["1, 2", "1, 2"]);
+    // TLC's getInitStates takes the shortcut regardless.
+    let init = "---- MODULE M ----\nVARIABLE x\nInit == x = 0 /\\ (TRUE \\/ TRUE)\n====\n";
+    let init = evaluator(init);
+    init.runtime().set_warnings(false);
+    assert_eq!(init_states(&init, "Init").unwrap(), ["0"]);
+}
+
+#[test]
 fn enumerates_choices_in_tlc_order() {
     assert_eq!(successors("Ordered", 0, 0), ["1, 0", "2, 0", "3, 0"]);
     assert_eq!(successors("Members", 0, 0), ["1, 6", "1, 7", "3, 6", "3, 7"]);
