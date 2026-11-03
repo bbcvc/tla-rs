@@ -261,7 +261,7 @@ fn declared_level(substituted: &Substituted) -> Level {
 fn substitute(analyzer: &mut Analyzer, substituted: &Substituted) -> Substitute {
     let def = match &substituted.value {
         SubstitutedValue::Inline(expr) => {
-            let body = Body::new(None, Vec::new(), &[]);
+            let body = Body::new(None, Vec::new(), &[], &[]);
             return Substitute { data: analyzer.expr(&body, expr), operator: None };
         }
         SubstitutedValue::Def(def) => *def,

@@ -23,7 +23,8 @@ pub enum ExprKind {
         name: Name,
         args: Vec<Expr>,
     },
-    /// `M!Op(a)` or `M(x)!N!Op`: an operator reached through named instances.
+    /// `M!Op(a)` or `M(x)!N!Op`: an operator reached through named instances, or a part of a
+    /// definition named by its labels, such as `Op(1)!lab(2)`.
     Qualified {
         path: Vec<Component>,
         name: Name,
@@ -143,6 +144,45 @@ pub enum ExprKind {
         sub: Box<Expr>,
         action: Box<Expr>,
     },
+    /// `lab :: body` or `lab(x, y) :: body`, which names `body` for subexpression references.
+    Label {
+        name: Name,
+        params: Vec<Name>,
+        body: Box<Expr>,
+    },
+    /// A reference to a part of a definition by position, such as `Op(1)!2!<<` or `Op!@`.
+    Subexpression(Vec<Selector>),
+}
+
+/// One step of a subexpression reference, between `!`s.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Selector {
+    pub kind: SelectorKind,
+    pub span: Span,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub enum SelectorKind {
+    /// A definition, instance, label, or `LET` definition, with its arguments.
+    Name { name: Name, args: Vec<Expr> },
+    /// `!n`, `!<<`, or `!>>`: an operand of the expression.
+    Operand(Operand),
+    /// `!(a, b)`: the body of a binder, with these values for its bound names.
+    Bound(Vec<Expr>),
+    /// `!@`: the body of a binder, as an operator of its bound names.
+    At,
+    /// `!:`: the expression itself.
+    Colon,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Operand {
+    /// `!n`, counting from 1.
+    Index(usize),
+    /// `!<<`, the first operand.
+    First,
+    /// `!>>`, the second operand of an expression with two.
+    Second,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

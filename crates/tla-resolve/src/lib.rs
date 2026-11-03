@@ -14,6 +14,7 @@ mod expr;
 mod ir;
 mod levels;
 mod module;
+mod selection;
 mod stdlib;
 
 use std::collections::{HashMap, HashSet};
@@ -99,6 +100,10 @@ pub fn resolve(source: &str, loader: &mut dyn ModuleLoader) -> Result<Spec> {
         is_instantiating: false,
         instantiated: HashSet::new(),
         sections: 0,
+        elabs: 0,
+        elab_contexts: HashMap::new(),
+        origins: HashMap::new(),
+        replaying: 0,
     };
     let root = resolver.add_file(modules, source.into(), false);
     let context = resolver.plain(&root)?;
@@ -183,6 +188,15 @@ pub(crate) struct Resolver<'l> {
     instantiated: HashSet<ModuleId>,
     /// The number of `RECURSIVE` sections so far.
     sections: usize,
+    /// The number of elaborations started so far.
+    elabs: usize,
+    /// The names each finished elaboration defined, by [`module::Elab::id`].
+    elab_contexts: HashMap<usize, Rc<Context>>,
+    /// Where each module-level definition comes from, for subexpression references to it.
+    origins: HashMap<DefId, selection::Origin>,
+    /// Whether a subexpression reference is resolving part of a definition again, whose names
+    /// may hide later ones without conflict.
+    replaying: usize,
 }
 
 /// Whether TLC bundles a module of this name. A loader shouldn't supply one from a library

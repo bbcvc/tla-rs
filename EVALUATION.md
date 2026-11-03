@@ -65,21 +65,11 @@ None of them targets full TLC conformance with an interpreter, so starting fresh
 
 ## Frontend results
 
-`crates/tla-parser/examples/parse_corpus.rs` parses every `.tla` and `.cfg` file in the 16 conformance corpora (2,052 modules and 1,108 configurations). 1,996 modules and 1,103 configurations parse. Matched against `expected.json` by path, 17 of the failures are the root module or configuration of a recorded model. 10 of those are models TLC also rejects. The other 7 use a feature the frontend doesn't lower yet:
+`crates/tla-parser/examples/parse_corpus.rs` parses every `.tla` and `.cfg` file in the 16 conformance corpora (2,052 modules and 1,108 configurations). 2,004 modules and 1,103 configurations parse, up from 1,996 modules before the AST kept labels and subexpression references. Matched against `expected.json` by path, 11 of the failures are the root module or configuration of a recorded model. 9 of those are models TLC also rejects. The other 2, `tlc/.../suite/test206` and `test219`, end a subexpression reference with an operator symbol that takes no arguments, as in `OOp5(COp!@!++, 1, 2, 3, 4, 5)`.
 
-| Model | TLC result | Cause |
-| --- | --- | --- |
-| `examples/.../Paxos/MCPaxos` | success | positional selector `Inv!2` |
-| `examples/.../Paxos/MCVoting` | success | positional selector `Init!1` |
-| `examples/.../ewd998/EWD998ChanTrace` | assumption-violation | selector `QuorumNonEmpty!:` |
-| `tlc/.../suite/test206` | success | labels in subexpression selectors |
-| `tlc/.../suite/test209` | success | positional selector `F(2)!3!1` |
-| `tlc/.../suite/test216` | success | subexpression selector |
-| `tlc/.../suite/test219` | success | selectors such as `COp(1, 2)!(3)!1!>>` |
+tree-sitter-tlaplus 1.5.0 reads an operator symbol between `!`s, as in `COp2!lab!:!++!lab`, and at the end with arguments, as in `COp(1, 2)!(3)!++(4, 5)`, but not at the end without them. There it leaves an `ERROR` node that holds the `infix_op_symbol`, after a `subexpression` of the parts before it, and the parser reports a syntax error. That is the only form `test206`, `test219`, and `test219a` use that the grammar can't read: with each such symbol replaced by an identifier of the same length, all three parse.
 
-Subexpression selectors navigate the syntax tree of a definition, so they belong with resolution in step 2, where tla-ts implements them in `src/sany/selectors.ts`. The AST will need to keep labels and selector paths instead of dropping them.
-
-Two SANY behaviors the grammar doesn't share are handled before lowering. SANY measures a tab as reaching the next multiple of 8 columns, while tree-sitter counts it as one column, so the parser expands tabs and maps spans back to the original text. SANY skips comments, while the grammar parses PlusCal inside them, so errors inside a block comment are ignored.
+Three SANY behaviors the grammar doesn't share are handled during or before lowering. SANY measures a tab as reaching the next multiple of 8 columns, while tree-sitter counts it as one column, so the parser expands tabs and maps spans back to the original text. SANY skips comments, while the grammar parses PlusCal inside them, so errors inside a block comment are ignored. SANY gives `ENABLED`, `UNCHANGED`, `[]`, and `<>` the precedence 4-15, so an operator after their operand that binds as tightly, as in `ENABLED x'` or `[]x = y`, is a precedence conflict, which SANY rejects. The grammar applies the prefix operator to `x` alone, so the parser reports the conflict itself.
 
 ## Resolution results
 
@@ -94,19 +84,34 @@ cargo run --release -p tla-resolve --example resolve_corpus -- $C/.corpora --all
 cargo run --release -p tla-resolve --example resolve_corpus -- $C/.corpora $L --expected $C/expected.json
 ```
 
-The parser and resolver agree with SANY on 1,852 of the 1,873 modules SANY was recorded on. Of the 823 models TLC was recorded on, 7 fail to resolve although TLC checks them, the same 7 the frontend rejected: all use subexpression selectors.
+The parser and resolver agree with SANY on 1,860 of the 1,873 modules SANY was recorded on. Of the 823 models TLC was recorded on, 2 fail to resolve although TLC checks them, `test206` and `test219`, which the grammar can't parse.
 
-The 21 disagreements with SANY:
+The 13 disagreements with SANY:
 
 | Cause | Modules | Plan |
 | --- | ---: | --- |
-| Subexpression selectors (`Inv!2`, `Op!:`, labels) | 11 | Resolution needs the definitions' syntax trees and labels. |
+| A subexpression reference ending in an operator symbol without arguments (`COp!@!++`) | 3 | The grammar can't read it (see Frontend results). |
 | Proof syntax (`DEF`, `HIDE`, `BY`), which TLC ignores | 4 | Out of scope until proofs matter. |
 | SANY reporting a module nested in the file as defined twice when a `LET` instantiates it | 3 | A SANY quirk; emulate only if a model depends on it. |
 | A decimal literal, which SANY accepts and TLC rejects when it checks the model | 1 | Already an error, at an earlier stage than TLC's. |
 | `Operators_test` and `ModuleSemanticsTheorems`, grammar differences in proof syntax | 2 | Out of scope with proofs. |
 
 TLC also requires the root module to be named after its file. The resolver takes source text, so the caller makes that check, as the smoke tool does.
+
+### Subexpression references
+
+The AST keeps labels and subexpression references such as `Inv!2`, `Op(a)!lab(b)!<<`, `Op!@`, and `I!Op!:`, and resolution follows SANY's `Generator.selectorToNode` as tla-ts `subexpressions.ts` ports it. A reference resolves to a definition of its own, made beside the definition it selects from: at its depth, in the frames of its instance, and in the names of its module's elaboration. Its parameters are those of the definition, of the labels, and of the binders on the way to the selected part, and its body is the part, inside the `LET`s around it. The reference applies it to the arguments it gives, or passes it as an operator when it gives none, as in `OOp2(SOp1a!@, 2, 2)`. Labels are otherwise transparent, except that SANY's level checks don't see an action under a label as an operator application.
+
+With them, the parser and resolver agree with SANY on 1,860 modules, up from 1,852, and the models that fail to resolve although TLC checks them go from 7 to 2. `crates/tla-eval/examples/check_assumptions.rs` agrees with TLC on the assumptions of every model that uses them except `test206` and `test219`: `MCPaxos`, `MCVoting`, `test209`, and `test216` hold, and `EWD998ChanTrace` violates one as TLC reports. Its disagreements with TLC go from 8 to 3, those two and `NormalizationAssume`.
+
+What resolution leaves out:
+
+| SANY behavior | Why |
+| --- | --- |
+| A reference into a `LET` definition by its own name, as in `LET L(y) == m :: y IN L(1)!m` | Resolution keeps the syntax tree of module-level definitions only, and reports `Cannot select a subexpression of L.` A `LET` definition reached through its definition, as in `Op1(2)!(3)!2!Op1a(4)`, works. |
+| Checks of labels themselves: duplicate labels, parameters that must name the bound identifiers around them, labels outside definitions | Not checked yet. |
+| References into `ASSUME ... PROVE` theorems and proof steps (`<1>1!2`) | The parser drops them. |
+| The nesting of an infix chain such as `a /\ b /\ c` | Positions count the operands of the flattened chain, as tla-ts does. |
 
 ### Level checking
 
@@ -122,11 +127,8 @@ What the pass leaves out:
 | --- | --- |
 | Constraints from `THEOREM ASSUME ... PROVE`, and the checks of proofs of temporal theorems (`Non-constant CASE for temporal goal`) | The parser drops `ASSUME ... PROVE` and proofs. |
 | Unnamed theorems | Resolution doesn't resolve them. |
-| Labels, which hide an action from `[]` and `<>`, as in `[](l :: x')` | The parser drops labels. |
 | The levels of an instance's definitions, which SANY maps from the module's own through the substitutions, so that a constant substituted for a variable leaves the level at 1, and an argument of a parameterized instance replacing a variable of a non-constant module may be at most a state function | Levels come from the substituted bodies, which can only allow more than SANY. |
 | The location of the bound variable in SANY's message for a range above action level | The resolved program keeps no span for it. |
-
-The grammar parses `ENABLED x'` and `UNCHANGED x'` as `(ENABLED x)'` and `(UNCHANGED x)'`, where SANY applies the prefix operator to `x'`, as it does for `SUBSET x'`. Both forms of `UNCHANGED x'` are level errors, with different messages, but `ENABLED x'` changes meaning and goes from level 1 to level 2. The parser should bind `'` tighter.
 
 ## Evaluation results
 
