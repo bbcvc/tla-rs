@@ -100,3 +100,21 @@ fn rejects_what_tlc_rejects() {
         assert_eq!(planned(&body, config).unwrap_err(), message, "{config}");
     }
 }
+
+#[test]
+fn follows_parameterized_instances() {
+    let inner = "---- MODULE Inner ----\nEXTENDS Naturals\nVARIABLE v\n\
+        Spec == v = 0 /\\ [][v' = (v + 1) % 3]_v\n====\n";
+    let source =
+        "---- MODULE M ----\nVARIABLE x\nI(v) == INSTANCE Inner\nSpec == I(x)!Spec\n====\n";
+    let mut spec = tla_resolve::resolve(source, &mut |name: &str| {
+        (name == "Inner").then(|| inner.to_string())
+    })
+    .unwrap_or_else(|error| panic!("{error}"));
+    let config = tla_parser::parse_config("SPECIFICATION Spec").unwrap();
+    let plan = plan(&mut spec, &config, &HashMap::new()).unwrap();
+    assert_eq!(plan.init.len(), 1);
+    // The parts are module-level definitions that call into the instance.
+    let parts: Vec<_> = plan.init.iter().chain(&plan.next).collect();
+    assert!(parts.len() == 2 && parts.iter().all(|&&def| spec.def(def).depth == 0));
+}

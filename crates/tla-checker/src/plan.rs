@@ -103,6 +103,18 @@ struct Part {
     owner: DefId,
     expr: Expr,
     name: String,
+    /// How a module-level definition reaches the frame of `owner`, when `owner` is a
+    /// definition of a parameterized instance.
+    via: Option<Via>,
+}
+
+/// A call of a definition of a parameterized instance, as in `I(y)!Spec`, from a module-level
+/// definition.
+#[derive(Clone)]
+struct Via {
+    /// The module-level definition the instance's arguments are written in.
+    caller: DefId,
+    scope: Scope,
 }
 
 /// Processes the configuration against `spec`, adding the definitions the parts need to it.
@@ -278,13 +290,13 @@ impl Planner<'_> {
         }
         let def = self.operator("name", name)?;
         let mut parts = Vec::new();
-        self.expand(
-            def,
-            &Self::body(self.spec, def),
-            name.to_string(),
-            &mut parts,
-            &mut Vec::new(),
-        )?;
+        let part = Part {
+            owner: def,
+            expr: Self::body(self.spec, def),
+            name: name.to_string(),
+            via: None,
+        };
+        self.expand(part, &mut parts, &mut Vec::new())?;
         let mut init = Vec::new();
         let mut next = Vec::new();
         for part in parts {
@@ -299,24 +311,24 @@ impl Planner<'_> {
             }
             if let Some(operand) = always(expr) {
                 if let ExprKind::BoxAction { action, .. } = &operand.kind {
-                    next.push(self.part_def(part.owner, action, &part.name));
+                    next.push(self.part_def(&part, action));
                     continue;
                 }
-                if self.level(operand) < Level::Action {
+                if self.part_level(part.via.as_ref(), operand) < Level::Action {
                     return Err(Error::config(format!(
                         "TLC cannot handle the temporal formula {}",
                         self.describe(part.owner, operand.span)
                     )));
                 }
             }
-            match self.level(expr) {
+            match self.part_level(part.via.as_ref(), expr) {
                 Level::Temporal => self.plan.temporals += 1,
                 Level::Action => {
                     return Err(Error::config(format!(
                         "TLC cannot handle the action-level conjunct of the specification {name}"
                     )));
                 }
-                _ => init.push(self.part_def(part.owner, expr, &part.name)),
+                _ => init.push(self.part_def(&part, expr)),
             }
         }
         if next.len() > 1 {
@@ -344,13 +356,9 @@ impl Planner<'_> {
                 continue;
             }
             let mut parts = Vec::new();
-            self.expand(
-                def,
-                &Self::body(self.spec, def),
-                name.to_string(),
-                &mut parts,
-                &mut Vec::new(),
-            )?;
+            let body = Self::body(self.spec, def);
+            let part = Part { owner: def, expr: body, name: name.to_string(), via: None };
+            self.expand(part, &mut parts, &mut Vec::new())?;
             for part in parts {
                 if self.is_constant_conjunct(&part, false) {
                     continue;
@@ -370,11 +378,11 @@ impl Planner<'_> {
                             ExprKind::Or(vec![(**action).clone(), unchanged]),
                             operand.span,
                         );
-                        let def = self.part_def(part.owner, &step, &part.name);
+                        let def = self.part_def(&part, &step);
                         self.plan.action_properties.push(Check { name: part.name, def });
                         continue;
                     }
-                    if self.level(operand) <= Level::State {
+                    if self.part_level(part.via.as_ref(), operand) <= Level::State {
                         // TLC names the invariant by the operator `[]` applies to, if any.
                         let name = match &operand.kind {
                             ExprKind::Call { def, args, .. } if args.is_empty() => {
@@ -382,14 +390,14 @@ impl Planner<'_> {
                             }
                             _ => part.name.clone(),
                         };
-                        let def = self.part_def(part.owner, operand, &part.name);
+                        let def = self.part_def(&part, operand);
                         self.plan.invariants.push(Check { name, def });
                         continue;
                     }
                 }
-                match self.level(expr) {
+                match self.part_level(part.via.as_ref(), expr) {
                     Level::Constant | Level::State => {
-                        let def = self.part_def(part.owner, expr, &part.name);
+                        let def = self.part_def(&part, expr);
                         self.plan.initial_predicates.push(Check { name: part.name, def });
                     }
                     Level::Action => {
@@ -415,47 +423,67 @@ impl Planner<'_> {
     }
 
     /// Splits a formula into its conjuncts, following the zero-arity definitions it applies
-    /// that aren't constants, as TLC's `Tool.processSpec` does.
+    /// that aren't constants, as TLC's `Tool.processSpec` does, those of parameterized
+    /// instances included.
     fn expand(
         &self,
-        owner: DefId,
-        expr: &Expr,
-        name: String,
+        part: Part,
         parts: &mut Vec<Part>,
         expanding: &mut Vec<DefId>,
     ) -> Result<(), Error> {
-        match &expr.kind {
+        let Part { owner, expr, name, via } = part;
+        // The definition the conjunct applies, and how its frame is reached.
+        let (target, inner) = match &expr.kind {
             ExprKind::And(items) => {
                 for item in items {
-                    self.expand(owner, item, self.describe(owner, item.span), parts, expanding)?;
+                    let name = self.describe(owner, item.span);
+                    let part = Part { owner, expr: item.clone(), name, via: via.clone() };
+                    self.expand(part, parts, expanding)?;
                 }
                 return Ok(());
             }
             ExprKind::Call { def, scope: Scope::Global, args } if args.is_empty() => {
-                let target = *self.overrides.get(def).unwrap_or(def);
-                let callee = self.spec.def(target);
-                let is_expandable = callee.params.is_empty()
-                    && callee.depth == 0
-                    && matches!(callee.body, DefBody::Expr(_))
-                    && self.def_level(target) > Level::Constant;
-                if is_expandable {
-                    if expanding.contains(&target) {
-                        return Err(Error::config(
-                            "Stack overflow while processing the specification.",
-                        ));
-                    }
-                    expanding.push(target);
-                    let body = Self::body(self.spec, target);
-                    let result =
-                        self.expand(target, &body, callee.name.to_string(), parts, expanding);
-                    expanding.pop();
-                    return result;
-                }
+                (*self.overrides.get(def).unwrap_or(def), None)
             }
-            _ => {}
+            // A definition of the parameterized instance `owner` belongs to, in its frame.
+            ExprKind::Call { def, scope: Scope::Up(_), args }
+                if args.is_empty()
+                    && via.is_some()
+                    && self.spec.def(*def).depth == self.spec.def(owner).depth =>
+            {
+                (*def, via.clone())
+            }
+            ExprKind::Call { def, scope: scope @ Scope::Instance { parent, .. }, args }
+                if args.is_empty()
+                    && via.is_none()
+                    && **parent == Scope::Global
+                    && self.spec.def(owner).depth == 0 =>
+            {
+                (*def, Some(Via { caller: owner, scope: scope.clone() }))
+            }
+            _ => {
+                parts.push(Part { owner, expr, name, via });
+                return Ok(());
+            }
+        };
+        let callee = self.spec.def(target);
+        let is_expandable = callee.params.is_empty()
+            && matches!(callee.body, DefBody::Expr(_))
+            && (callee.depth == 0 || inner.is_some())
+            && self.part_level(via.as_ref(), &expr) > Level::Constant;
+        if !is_expandable {
+            parts.push(Part { owner, expr, name, via });
+            return Ok(());
         }
-        parts.push(Part { owner, expr: expr.clone(), name });
-        Ok(())
+        if expanding.contains(&target) {
+            return Err(Error::config("Stack overflow while processing the specification."));
+        }
+        expanding.push(target);
+        let body = Self::body(self.spec, target);
+        let part = Part { owner: target, expr: body, name: callee.name.to_string(), via: inner };
+        let result = self.expand(part, parts, expanding);
+        expanding.pop();
+        result
     }
 
     /// Whether a part is a constant-level definition, which TLC evaluates and drops if it is
@@ -483,27 +511,51 @@ impl Planner<'_> {
         }
     }
 
-    /// A zero-arity definition for `expr` in the frame of `owner`: the definition `expr`
-    /// applies if it is a plain reference to one, and otherwise a new one.
-    fn part_def(&mut self, owner: DefId, expr: &Expr, name: &str) -> DefId {
+    /// The level of `expr` in a frame `via` reaches, with the arguments of the instance.
+    fn part_level(&self, via: Option<&Via>, expr: &Expr) -> Level {
+        let level = self.level(expr);
+        match via {
+            Some(Via { scope: Scope::Instance { args, .. }, .. }) => {
+                args.iter().map(|arg| self.level(arg)).fold(level, Level::max)
+            }
+            _ => level,
+        }
+    }
+
+    /// A zero-arity module-level definition for `expr` in the frame of `part`: the definition
+    /// `expr` applies if it is a plain reference to one, and otherwise a new one.
+    fn part_def(&mut self, part: &Part, expr: &Expr) -> DefId {
         if let ExprKind::Call { def, scope: Scope::Global, args } = &expr.kind
             && args.is_empty()
             && self.spec.def(*def).params.is_empty()
         {
             return *self.overrides.get(def).unwrap_or(def);
         }
+        let level = self.part_level(part.via.as_ref(), expr);
+        let def = self.new_def(part.owner, expr.clone(), &part.name, level);
+        match &part.via {
+            None => def,
+            // A definition in the instance's frame, which a module-level one calls.
+            Some(Via { caller, scope }) => {
+                let call = ExprKind::Call { def, scope: scope.clone(), args: Vec::new() };
+                self.new_def(*caller, Expr::new(call, expr.span), &part.name, level)
+            }
+        }
+    }
+
+    /// A new zero-arity definition with `body`, in the frame of `owner`.
+    fn new_def(&mut self, owner: DefId, body: Expr, name: &str, level: Level) -> DefId {
         let owner = self.spec.def(owner);
         let def = Def {
             name: Symbol::intern(name),
             module: owner.module,
-            span: expr.span,
+            span: body.span,
             params: Vec::new(),
-            body: DefBody::Expr(expr.clone()),
+            body: DefBody::Expr(body),
             frame_size: owner.frame_size,
             depth: owner.depth,
             is_instantiated: owner.is_instantiated,
         };
-        let level = self.level(expr);
         self.spec.defs.push(def);
         self.spec.levels.push(DefLevels {
             level,
