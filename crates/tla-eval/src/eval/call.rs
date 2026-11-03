@@ -12,9 +12,9 @@ use tla_resolve::{ConstId, DefBody, DefId, Expr, ExprKind, Local, OpRef, Scope};
 use tla_value::{Error, Value};
 
 use super::At;
-use crate::env::{Env, Frame, Slot, SpecRef, Thunk};
+use crate::env::{Env, Frame, Slot, SpecRef, StateRef, Thunk};
 use crate::native::OperatorKind;
-use crate::{Arg, ConstBinding, Ctx, EvalError, Evaluator, Native, Operator, Result, State};
+use crate::{Arg, ConstBinding, Ctx, EvalError, Evaluator, Native, Operator, Result};
 
 impl Evaluator {
     /// Calls `def` with `args`, in a new frame whose parent is `parent`, unless the configuration
@@ -24,8 +24,8 @@ impl Evaluator {
         def: DefId,
         parent: Option<Arc<Frame>>,
         args: Vec<Value>,
-        state: Option<&State>,
-        next: Option<&State>,
+        state: Option<StateRef<'_>>,
+        next: Option<StateRef<'_>>,
     ) -> Result<Value> {
         let info = self.spec.def(def);
         if args.len() != info.params.len() {
@@ -71,8 +71,8 @@ impl Evaluator {
         def: DefId,
         parent: Option<Arc<Frame>>,
         slots: Vec<Slot>,
-        state: Option<&State>,
-        next: Option<&State>,
+        state: Option<StateRef<'_>>,
+        next: Option<StateRef<'_>>,
         keep_lazy: bool,
     ) -> Result<Value> {
         let info = self.spec.def(def);
@@ -203,8 +203,8 @@ impl Evaluator {
         &self,
         op: &Operator,
         args: &[Value],
-        state: Option<&State>,
-        next: Option<&State>,
+        state: Option<StateRef<'_>>,
+        next: Option<StateRef<'_>>,
     ) -> tla_value::Result<Value> {
         match &op.0 {
             OperatorKind::Def { def, parent } => self

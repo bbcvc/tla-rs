@@ -57,14 +57,62 @@ pub(crate) struct Thunk {
     pub value: OnceLock<Value>,
 }
 
+/// A state expressions read: a complete one, or one whose variables are being assigned, as by an
+/// initial predicate or by the primes of an action, where an unassigned variable is undefined.
+#[derive(Clone, Copy)]
+pub(crate) enum StateRef<'a> {
+    Complete(&'a State),
+    Partial(&'a [Option<Value>]),
+}
+
+impl<'a> StateRef<'a> {
+    pub fn get(self, index: usize) -> Option<&'a Value> {
+        match self {
+            StateRef::Complete(state) => state.get(index),
+            StateRef::Partial(state) => state.get(index).and_then(Option::as_ref),
+        }
+    }
+
+    /// The state, if every variable has a value in it.
+    pub fn complete(self) -> Option<&'a State> {
+        match self {
+            StateRef::Complete(state) => Some(state),
+            StateRef::Partial(_) => None,
+        }
+    }
+
+    fn to_owned(self) -> OwnedState {
+        match self {
+            StateRef::Complete(state) => OwnedState::Complete(state.clone()),
+            StateRef::Partial(state) => OwnedState::Partial(state.into()),
+        }
+    }
+}
+
+/// A [`StateRef`] that a lazy value keeps.
+#[derive(Clone)]
+pub(crate) enum OwnedState {
+    Complete(State),
+    Partial(Arc<[Option<Value>]>),
+}
+
+impl OwnedState {
+    fn as_ref(&self) -> StateRef<'_> {
+        match self {
+            OwnedState::Complete(state) => StateRef::Complete(state),
+            OwnedState::Partial(state) => StateRef::Partial(state),
+        }
+    }
+}
+
 /// Everything about the place an expression is evaluated in but the evaluator: what a lazy
 /// value or a thunk keeps to evaluate an expression later.
 #[derive(Clone)]
 pub(crate) struct Captured {
     pub frame: Arc<Frame>,
     pub module: ModuleId,
-    pub state: Option<State>,
-    pub next: Option<State>,
+    pub state: Option<OwnedState>,
+    pub next: Option<OwnedState>,
     pub keep_lazy: bool,
 }
 
@@ -73,17 +121,20 @@ impl Captured {
         Env {
             frame: self.frame.clone(),
             module: self.module,
-            state: self.state.as_ref(),
-            next: self.next.as_ref(),
+            state: self.state.as_ref().map(OwnedState::as_ref),
+            next: self.next.as_ref().map(OwnedState::as_ref),
             keep_lazy: self.keep_lazy,
         }
     }
 
-    /// Whether `env` reads the states this was captured in.
+    /// Whether `env` reads the states this was captured in. A state still being assigned
+    /// changes, so it is never the same.
     pub fn is_in_states_of(&self, env: &Env<'_>) -> bool {
-        fn same(captured: Option<&State>, current: Option<&State>) -> bool {
+        fn same(captured: Option<&OwnedState>, current: Option<StateRef<'_>>) -> bool {
             match (captured, current) {
-                (Some(captured), Some(current)) => Arc::ptr_eq(captured, current),
+                (Some(OwnedState::Complete(captured)), Some(StateRef::Complete(current))) => {
+                    Arc::ptr_eq(captured, current)
+                }
                 (None, None) => true,
                 _ => false,
             }
@@ -97,9 +148,9 @@ impl Captured {
 pub(crate) struct Env<'a> {
     pub frame: Arc<Frame>,
     pub module: ModuleId,
-    pub state: Option<&'a State>,
+    pub state: Option<StateRef<'a>>,
     /// The next state, which primed expressions read.
-    pub next: Option<&'a State>,
+    pub next: Option<StateRef<'a>>,
     /// TLC's `EvalControl.KeepLazy`: set while evaluating the function of an application, so
     /// that a function constructor builds a lazy function and evaluates its body only where it
     /// is applied.
@@ -119,8 +170,8 @@ impl Env<'_> {
         Captured {
             frame: self.frame.clone(),
             module: self.module,
-            state: self.state.cloned(),
-            next: self.next.cloned(),
+            state: self.state.map(StateRef::to_owned),
+            next: self.next.map(StateRef::to_owned),
             keep_lazy: self.keep_lazy,
         }
     }
