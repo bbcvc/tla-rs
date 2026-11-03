@@ -91,7 +91,23 @@ impl Value {
             (Value::Bool(_) | Value::Int(_) | Value::Str(_) | Value::Interval(..), _) => {
                 self.compare(other)
             }
-            (Value::Tuple(items), Value::Tuple(others)) if items.len() == others.len() => {
+            // A permutation keeps the size of a tuple, a set, or a function, which they compare
+            // by first.
+            (Value::Tuple(items), Value::Tuple(others)) if items.len() != others.len() => {
+                Ok(items.len().cmp(&others.len()))
+            }
+            (Value::Set(elements), Value::Set(others)) if elements.len() != others.len() => {
+                Ok(elements.len().cmp(&others.len()))
+            }
+            (Value::Func(func), Value::Func(others))
+                if func.keys.len() != others.keys.len()
+                    && is_record(&func.keys) == is_record(&others.keys) =>
+            {
+                func.normalize();
+                others.normalize();
+                Ok(func.keys.len().cmp(&others.keys.len()))
+            }
+            (Value::Tuple(items), Value::Tuple(others)) => {
                 for (item, other) in items.iter().zip(others.iter()) {
                     let ordering = item.compare_permuted(image, preimage, other)?;
                     if ordering != Ordering::Equal {
@@ -121,6 +137,33 @@ impl Value {
             (Value::Set(elements), _) if !elements.iter().any(|element| element.moves(image)) => {
                 self.compare(other)
             }
+            // Sets of one size, whose permuted elements compare in their order.
+            (Value::Set(elements), Value::Set(others)) => match &elements[..] {
+                [element] => element.compare_permuted(image, preimage, &others[0]),
+                _ => {
+                    let mut permuted = elements
+                        .iter()
+                        .map(|element| element.permute(image))
+                        .collect::<Result<Vec<_>>>()?;
+                    let mut failure = None;
+                    permuted.sort_by(|left, right| {
+                        left.compare(right).unwrap_or_else(|error| {
+                            failure.get_or_insert(error);
+                            Ordering::Equal
+                        })
+                    });
+                    if let Some(error) = failure {
+                        return Err(error);
+                    }
+                    for (element, other) in permuted.iter().zip(others.iter()) {
+                        let ordering = element.compare(other)?;
+                        if ordering != Ordering::Equal {
+                            return Ok(ordering);
+                        }
+                    }
+                    Ok(Ordering::Equal)
+                }
+            },
             _ => self.permute(image)?.compare(other),
         }
     }
@@ -182,6 +225,11 @@ fn permuted_sources(
         sources.push(source);
     }
     Ok(Some(sources))
+}
+
+/// Whether the keys are those of a record, which TLC compares only with a record.
+fn is_record(keys: &[Value]) -> bool {
+    keys.iter().all(|key| matches!(key, Value::Str(_)))
 }
 
 /// Whether two values are the same model value.
