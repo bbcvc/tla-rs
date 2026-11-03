@@ -75,8 +75,9 @@ impl Evaluator {
         if let Some(value) = cell.get() {
             return Ok(value.clone());
         }
-        let value =
-            self.runtime.at_startup(|| self.enter(def, None, Vec::new(), None, None, false))?;
+        let value = self
+            .runtime
+            .at_startup(|| self.enter(def, None, Vec::new(), None, None, Default::default()))?;
         let value = self.startup_value(def, value);
         Ok(cell.get_or_init(|| value).clone())
     }

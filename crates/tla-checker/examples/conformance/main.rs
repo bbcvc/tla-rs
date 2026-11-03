@@ -82,7 +82,8 @@ fn check(spec_path: &Path, config_path: &Path, library: &HashMap<String, PathBuf
             Some((module.name.as_str().to_owned(), class))
         })
         .collect();
-    let options = Options { seed: TLC_SEED, classes, ..Options::default() };
+    // TLC records the expected results with -nowarning.
+    let options = Options { seed: TLC_SEED, classes, nowarning: true, ..Options::default() };
     tla_checker::check(spec, &config, &options, |evaluator| evaluator.clone())
 }
 

@@ -8,7 +8,7 @@ use tla_value::{LazySet, Value};
 
 use super::run::{Computation, Run, env};
 use super::{Action, Rest, Site};
-use crate::env::Slot;
+use crate::env::{Enabled, Slot};
 use crate::eval::At;
 use crate::eval::builtin::is_overridden;
 use crate::{Evaluator, Result};
@@ -44,11 +44,10 @@ impl Evaluator {
             ExprKind::Builtin { op: Builtin::Prime, args } if is_primed => {
                 self.target_at(&args[0], site, run, false, depth + 1)
             }
-            ExprKind::Var(var) if !is_primed => Ok(Some(var.index())),
+            ExprKind::Var(var) if !is_primed => Ok(Some(self.slot(var.index(), target, site))),
             ExprKind::Local(local) => match &site.frame.up(local.hops).slots[local.slot] {
                 Slot::Thunk(thunk) if Arc::ptr_eq(thunk.expr.spec(), &self.spec) => {
-                    let origin =
-                        Site { frame: thunk.captured.frame.clone(), module: thunk.captured.module };
+                    let origin = Site::of(&thunk.captured);
                     self.target_at(thunk.expr.get(), &origin, run, is_primed, depth + 1)
                 }
                 _ => Ok(None),
@@ -61,6 +60,17 @@ impl Evaluator {
             }
             _ => Ok(None),
         }
+    }
+
+    /// The slot of the state being assigned that the variable `var`, written `expr`, assigns:
+    /// its own, or in the operand of an ENABLED of an instantiated module, the one TLC binds the
+    /// module's variable to.
+    fn slot(&self, var: usize, expr: &Expr, site: &Site) -> usize {
+        if site.enabled == Enabled::Outside {
+            return var;
+        }
+        let address = expr as *const Expr as usize;
+        self.instance_enabled.variables.get(&address).copied().unwrap_or(var)
     }
 
     /// `x' = e`, `x' \in S`, or `x' \subseteq S` for the variable `var`: assigns `var` if the
@@ -154,8 +164,9 @@ impl Evaluator {
                 return self.keep(first, site, run, action, &rest, depth + 1);
             }
             ExprKind::Var(var) => {
-                let var = var.index();
-                let current = run.current.expect("an action has a current state")[var].clone();
+                let current =
+                    run.current.expect("an action has a current state")[var.index()].clone();
+                let var = self.slot(var.index(), sub, site);
                 return match &run.assigned[var] {
                     None => run.with_assigned(var, current, |run| self.resume(run, action, rest)),
                     Some(assigned) => {
@@ -169,8 +180,7 @@ impl Evaluator {
                     && Arc::ptr_eq(thunk.expr.spec(), &self.spec)
                 {
                     let thunk = thunk.clone();
-                    let origin =
-                        Site { frame: thunk.captured.frame.clone(), module: thunk.captured.module };
+                    let origin = Site::of(&thunk.captured);
                     return self.keep(thunk.expr.get(), &origin, run, action, rest, depth + 1);
                 }
             }

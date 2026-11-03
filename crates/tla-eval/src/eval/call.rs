@@ -8,11 +8,11 @@
 
 use std::sync::{Arc, OnceLock};
 
-use tla_resolve::{ConstId, DefBody, DefId, Expr, ExprKind, Local, OpRef, Scope};
+use tla_resolve::{Builtin, ConstId, DefBody, DefId, Expr, ExprKind, Local, OpRef, Scope};
 use tla_value::{Error, Value};
 
-use super::At;
-use crate::env::{Env, Frame, Slot, SpecRef, StateRef, Thunk};
+use super::{At, STACK_OVERFLOW, is_stack_low};
+use crate::env::{Enabled, Env, Frame, Slot, SpecRef, StateRef, Thunk};
 use crate::native::OperatorKind;
 use crate::{Arg, ConstBinding, Ctx, EvalError, Evaluator, Native, Operator, Result};
 
@@ -53,7 +53,7 @@ impl Evaluator {
                     Arg::Value(value) => Slot::Value(value.clone()),
                     Arg::Op(op) => Slot::Op(op.clone()),
                 });
-                self.enter(def, parent.clone(), slots.collect(), state, next, false)
+                self.enter(def, parent.clone(), slots.collect(), state, next, Default::default())
             };
             let mut ctx = Ctx::new(self, state);
             ctx.next = next;
@@ -65,7 +65,7 @@ impl Evaluator {
             return self.constant_value(def);
         }
         let slots = args.into_iter().map(Slot::Value).collect();
-        self.enter(def, parent, slots, state, next, false)
+        self.enter(def, parent, slots, state, next, Default::default())
     }
 
     /// Evaluates the body of `def` in a new frame holding `slots`.
@@ -76,11 +76,14 @@ impl Evaluator {
         slots: Vec<Slot>,
         state: Option<StateRef<'_>>,
         next: Option<StateRef<'_>>,
-        keep_lazy: bool,
+        (keep_lazy, enabled): (bool, Enabled),
     ) -> Result<Value> {
         let info = self.spec.def(def);
+        if is_stack_low() {
+            return Err(EvalError::at(&self.spec, info.module, info.span, STACK_OVERFLOW));
+        }
         let frame = Arc::new(Frame::new(slots, info.frame_size, parent));
-        let mut env = Env { frame, module: info.module, state, next, keep_lazy };
+        let mut env = Env { frame, module: info.module, state, next, keep_lazy, enabled };
         match &info.body {
             DefBody::Expr(body) => self.eval(body, &mut env),
             DefBody::Function { bounds, body } => {
@@ -127,7 +130,7 @@ impl Evaluator {
         }
         let parent = self.scope_frame(scope, env)?;
         let slots = args.iter().map(|arg| self.arg_slot(arg, env)).collect::<Result<Vec<_>>>()?;
-        self.enter(def, parent, slots, env.state, env.next, env.keep_lazy)
+        self.enter(def, parent, slots, env.state, env.next, (env.keep_lazy, env.enabled))
     }
 
     /// `TLCCache(expr, closure)`: the value `expr` had when last computed with a `closure` equal
@@ -226,7 +229,7 @@ impl Evaluator {
             let parent = self.scope_frame(scope, env)?;
             let slots = arg_exprs.iter().map(|arg| self.arg_slot(arg, env));
             let slots = slots.collect::<Result<_>>()?;
-            self.enter(def, parent, slots, env.state, env.next, env.keep_lazy)
+            self.enter(def, parent, slots, env.state, env.next, (env.keep_lazy, env.enabled))
         };
         let mut ctx = Ctx::new(self, env.state);
         ctx.next = env.next;
@@ -256,7 +259,23 @@ impl Evaluator {
             }
             let slots =
                 args.iter().map(|arg| self.arg_slot(arg, env)).collect::<Result<Vec<_>>>()?;
-            return self.enter(*def, parent.clone(), slots, env.state, env.next, env.keep_lazy);
+            return self.enter(
+                *def,
+                parent.clone(),
+                slots,
+                env.state,
+                env.next,
+                (env.keep_lazy, env.enabled),
+            );
+        }
+        // An operator of actions passed as an argument, as `'` or `UNCHANGED` in `Op(UNCHANGED)`,
+        // applies to the expressions it is given, which it reads in another state.
+        if let OperatorKind::Builtin(
+            builtin @ (Builtin::Prime | Builtin::Unchanged | Builtin::Enabled),
+        ) = op.0
+            && args.len() == 1
+        {
+            return self.builtin(builtin, args, expr, env);
         }
         let values = self.eval_all(args, env)?;
         self.apply_operator(&op, &values, env.state, env.next).at(self, env, expr)
@@ -386,6 +405,9 @@ impl Evaluator {
         if !Arc::ptr_eq(thunk.expr.spec(), &self.spec) {
             return Err(self.error(env, expr, "An argument of another specification was read"));
         }
+        if is_stack_low() {
+            return Err(self.error(env, expr, STACK_OVERFLOW));
+        }
         let is_cached = thunk.captured.is_in_states_of(env);
         if is_cached && let Some(value) = thunk.value.get() {
             return Ok(value.clone());
@@ -396,6 +418,8 @@ impl Evaluator {
             state: env.state,
             next: env.next,
             keep_lazy: env.keep_lazy,
+            // As tla-ts rewrites an argument where it is written.
+            enabled: thunk.captured.enabled,
         };
         let value = self.eval(thunk.expr.get(), &mut inner)?;
         if is_cached {

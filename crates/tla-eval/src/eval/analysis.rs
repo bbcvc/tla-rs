@@ -1,8 +1,8 @@
 //! Analyses of a resolved specification that the evaluator makes once, before it evaluates.
 
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 
-use tla_ast::Quantifier;
+use tla_ast::{Quantifier, Symbol};
 use tla_resolve::{
     Bound, Builtin, DefBody, DefId, ExceptKey, Expr, ExprKind, Level, OpRef, Scope, Spec,
 };
@@ -74,6 +74,99 @@ pub(crate) fn recursive_functions(spec: &Spec) -> Vec<bool> {
             }
         })
         .collect()
+}
+
+/// The function constructors in the body of a function definition that apply the function, by
+/// address, which TLC builds lazily, as tla-ts's `markRecursiveConstructions` finds them: in
+/// `f[i \in S] == [j \in T |-> ... f[i][j - 1] ...]`, building the function at once would apply
+/// `f[i]` while it computes `f[i]`.
+pub(crate) fn recursive_constructions(spec: &Spec) -> HashSet<usize> {
+    let mut found = HashSet::new();
+    for (index, info) in spec.defs.iter().enumerate() {
+        let DefBody::Function { body, .. } = &info.body else { continue };
+        let def = DefId(index as u32);
+        let mut visited = HashSet::new();
+        let mut pending = vec![body];
+        while let Some(expr) = pending.pop() {
+            match &expr.kind {
+                ExprKind::Function { body: inner, .. } if refers_to(spec, def, inner) => {
+                    found.insert(expr as *const Expr as usize);
+                }
+                // The definitions of the LETs in the body are part of it.
+                ExprKind::Call { def: called, .. }
+                    if spec.def(*called).depth > info.depth && visited.insert(*called) =>
+                {
+                    match &spec.def(*called).body {
+                        DefBody::Expr(body) => pending.push(body),
+                        DefBody::Function { bounds, body } => {
+                            pending.push(body);
+                            pending.extend(bounds.iter().map(|bound| &bound.set));
+                        }
+                    }
+                }
+                _ => {}
+            }
+            for_each_child(expr, &mut |child| pending.push(child));
+        }
+    }
+    found
+}
+
+/// What TLC's ENABLED does with the variables of an instantiated module, as tla-ts rewrites it.
+/// In the operand of an ENABLED in a module an `INSTANCE` substitutes into, and in what that
+/// operand calls there, a primed variable of the module is a variable of its own, which TLC
+/// binds by name, rather than the expression substituted for it.
+#[derive(Default)]
+pub(crate) struct InstanceEnabled {
+    /// The ENABLEDs in instantiated definitions, by address.
+    pub enabled: HashSet<usize>,
+    /// The slot of the state being assigned that each variable of an instantiated module stands
+    /// for in such an operand, by the address of the expression substituted for it: the slot of
+    /// the root module's variable of that name, or one past them.
+    pub variables: HashMap<usize, usize>,
+    /// The number of slots, the root module's variables and those past them.
+    pub slots: usize,
+}
+
+/// Finds what [`InstanceEnabled`] describes. Resolution puts a variable substituted for a
+/// variable of an instantiated module where the module refers to it, so a variable whose text
+/// there is another name stands for the module's variable of that name.
+pub(crate) fn instance_enabled(spec: &Spec) -> InstanceEnabled {
+    let mut found = InstanceEnabled { slots: spec.variables.len(), ..InstanceEnabled::default() };
+    let mut slots: HashMap<Symbol, usize> =
+        spec.variables.iter().enumerate().map(|(index, var)| (var.name, index)).collect();
+    for info in spec.defs.iter().filter(|info| info.is_instantiated) {
+        let source = &spec.modules[info.module.index()].source;
+        let mut pending: Vec<&Expr> = match &info.body {
+            DefBody::Expr(body) => vec![body],
+            DefBody::Function { bounds, body } => {
+                bounds.iter().map(|bound| &bound.set).chain([body]).collect()
+            }
+        };
+        while let Some(expr) = pending.pop() {
+            match &expr.kind {
+                ExprKind::Builtin { op: Builtin::Enabled, .. } => {
+                    found.enabled.insert(expr as *const Expr as usize);
+                }
+                ExprKind::Var(var) => {
+                    let text = source.get(expr.span.start as usize..expr.span.end as usize);
+                    let is_name = |text: &&str| {
+                        text.chars().all(|char| char.is_alphanumeric() || char == '_')
+                            && *text != spec.variables[var.index()].name.as_str()
+                    };
+                    if let Some(name) = text.filter(is_name) {
+                        let next = found.slots;
+                        let slot = *slots.entry(Symbol::intern(name)).or_insert(next);
+                        found.slots = found.slots.max(slot + 1);
+                        found.variables.insert(expr as *const Expr as usize, slot);
+                    }
+                }
+                _ => {}
+            }
+            for_each_child(expr, &mut |child| pending.push(child));
+        }
+    }
+    found
 }
 
 fn refers_to(spec: &Spec, target: DefId, body: &Expr) -> bool {

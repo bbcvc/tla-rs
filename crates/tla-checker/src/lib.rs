@@ -132,6 +132,9 @@ pub struct Options {
     /// The Java class files beside the spec, by the name of the module whose operators TLC
     /// overrides with their public static methods.
     pub classes: HashMap<String, Vec<u8>>,
+    /// TLC's `-nowarning`, which also changes how many states a disjunction in an action
+    /// generates once every variable has a value. TLC records its expected results with it.
+    pub nowarning: bool,
 }
 
 /// Checks `spec` under `config`, with `successors` computing the states of the evaluator it is
@@ -186,6 +189,7 @@ pub fn check<S: Successors>(
     }
     let runtime = evaluator.runtime();
     runtime.allow_exec(options.allow_exec);
+    runtime.set_warnings(!options.nowarning);
     runtime.set_seed(options.seed);
     // TLC creates its model checker, whose options TLCGet("config") reads, and computes the
     // constant definitions before it checks the assumptions.
