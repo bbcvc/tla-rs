@@ -253,13 +253,14 @@ cargo run --release -p tla-checker --example conformance -- $C/.corpora \
 | First full run | 636 | 44 | 60 | | 82 | 1 |
 | Safety only | 653 | 18 | 70 | 51 | 30 | 1 |
 | With liveness | 708 | 31 | 0 | 51 | 32 | 1 |
+| Now | 741 | 9 | 0 | 51 | 22 | 0 |
 
-All 823 models run in 12 minutes on 8 jobs. 708 of the 772 models with a TLC verdict match. On them the median ratio of the checker's wall time to TLC's is 0.021, and the checker is faster on 686 (TLC's times include starting the JVM).
+All 823 models run in 11 minutes on 8 jobs. 741 of the 772 models with a TLC verdict match. On them the median ratio of the checker's wall time to TLC's is 0.019, and the checker is faster on 731 (TLC's times include starting the JVM).
 
 - **No verdict (51)** are models where TLC stopped with an error after more than 20 s. That is TLC running out of memory or disk on a state space too large for it, and tla-ts's runner leaves these out too.
-- **Timeouts (32):** 25 are models TLC took more than 20 s on. `ObjWAL` and `TestLinQueue` are slow in the evaluator; `cf1s_folklore` and both `SpanTreeRandom` models spend most of their time evaluating fairness on every step of the behavior graph (TLC: 271 s and 22 s).
+- **Timeouts (22)** are all models TLC took more than 20 s on. `cf1s_folklore` (TLC 271 s) spends its time evaluating its fairness action, a part of its next-state relation, on every step of the behavior graph.
 
-Of the 70 models liveness checking decides, 59 match. TLC's liveness counterexamples depend on TLC's order of the variables, the reverse of the root module's SANY `Context` enumeration (`tla_resolve::tlc_variable_order`, which agrees with tla-ts on all 912 models both read): it decides TLC's fingerprint of a state, which orders a state's successors in the behavior graph.
+Of the 70 models liveness checking decides, 66 match. TLC's liveness counterexamples depend on TLC's order of the variables, the reverse of the root module's SANY `Context` enumeration (`tla_resolve::tlc_variable_order`, which agrees with tla-ts on all 912 models both read): it decides TLC's fingerprint of a state, which orders a state's successors in the behavior graph.
 
 The first run found these; they are fixed:
 
@@ -275,12 +276,4 @@ What is left, by cause:
 
 | Cause | Models |
 | --- | --- |
-| `ENABLED` in the evaluator: with variables an `INSTANCE` substitutes, TLC treats each instance variable on its own, and it is evaluated in a state that is still being assigned | `test55`, `test57`, `EWD840/MC02`, `test216` |
-| `TLCGet("level")'` reads a next state that is still being assigned, which the evaluator answers with 0 | `TLCGetLevel` |
-| Successor generation finds fewer duplicates than TLC: TLC generates `x' = 0 /\ (1 = 1 \/ 2 = 2 \/ 3 = 3)` three times | `MinimalSetOfNextStates` (its postcondition counts them), `detector_chan96/EnvironmentController` |
-| TLC's 64-bit fingerprints, which fingerprint a string by the low bytes of its characters so that the test's strings collide. `tla_eval`'s `tlc_fingerprint` is crate-private | `UnicodeFunctionFingerprint`, `UnicodeRecordFingerprint`, `UnicodeStringFingerprint` |
-| A Java class in the model's directory overrides a definition | `UserModuleOverride` |
-| Other evaluator gaps: `UNCHANGED` as an operator argument, `TLCCache`, `AssertError`'s message for a function applied outside its domain, an error comparing the integer 1 with the string "type" in `ExternalHistoryInvars` where TLC succeeds, and a stack overflow on a function whose body applies the function itself eagerly | `test52`, `ConstantContextTLCCache`, `Github696`, `MCMultiNode`, `MCMultiNodeReadsAlt`, `test45` (crash) |
-| `ENABLED` of a fairness condition of an instance whose variables are substituted by definitions, as a refinement property `TD!Spec` has: the evaluator fails on a primed substitute in the state being assigned | `EWD840` (both), `EWD998ChanID` (both), `EWD998`, `MCParReach`, `glowingRaccoon/product` |
-| A recursive operator in a temporal formula: TLC expands it with the values of its arguments, which the templates don't have | `Github1389`, `Github1389Counting`, `Github1389Violated`, `ViolatedB`, `ViolatedC` |
-| Liveness under `SYMMETRY`: TLC's fingerprint of a state's representative orders its successors in the behavior graph | `symmetry/NQ/MC`, `symmetry/NQ/MCa`, `symmetry/OneBitMutex/OneBitMutexMC` |
+| `ENABLED` of a fairness condition of an instance whose variables are substituted by definitions, as a refinement property `TD!Spec` has: the evaluator fails on a primed substitute in the state being assigned, or answers otherwise than TLC's context quirk | `EWD840` (both), `EWD998ChanID` (both), `EWD998`, `MCParReach`, `glowingRaccoon/product`, `Github725f`, `Github725g` |
