@@ -154,16 +154,14 @@ cargo run --release -p tla-eval --example check_assumptions -- $C/.corpora \
   --expected $C/expected.json --timeout 20
 ```
 
-It checks 920 models in 22 seconds on 11 cores. Outcomes: 851 satisfied, 23 violated, 45 failing before evaluation, and 1 timing out.
+It checks 920 models in 22 seconds on 11 cores. Outcomes: 854 satisfied, 22 violated, 43 failing before evaluation, and 1 timing out. Each model is checked in its configuration's directory, where tla-ts's recorder ran TLC, so relative paths such as `./example.ndjson` resolve as they did for TLC.
 
-On the first run, 51 models disagreed with TLC; 3 still do:
+On the first run, 51 models disagreed with TLC; none do now. The last three to agree:
 
-| Cause | Models | Plan |
-| --- | ---: | --- |
-| `test206` and `test219` end a subexpression reference with an operator symbol that takes no arguments, which the grammar can't read (see Frontend results) | 2 | Reparse with the symbol masked, or patch the grammar. |
-| `NormalizationAssume`: TLC prints records and `@@` functions in the order the spec writes their fields; printing an unsortable set in an error message fails; and TLC skips `TLCEval`'s Java override when `TLCEval` is passed for a constant | 1 | Written field order needs tracking in `tla-value`; the rest are small. |
+- `test206` and `test219` end a subexpression reference with an operator symbol that takes no arguments. The parser now reparses them with the symbol masked (see Frontend results).
+- `NormalizationAssume`: records and `@@` functions keep the order the spec writes their fields in, until TLC would normalize them; printing an unsortable set in an error message fails as in TLC; and `TLCEval` normalizes its argument only where TLC computes it once (see R3).
 
-Six models agree with TLC only by accident. Their assumptions fail where they reach the community module `IOUtils` (`IOEnv`, `IOExec`, `IODeserialize`), whose operators TLC implements in Java and the evaluator doesn't yet: `EWD998ChanTrace`, `SmokeEWD998_SC`, `MCccfraft`, `Traceccfraft`, `Traceetcdraft`, and `StringDeserialize`.
+The recorder ran TLC with `tla2tools.jar` alone on its class path (`scripts/record-tlc.ts` in tla-ts), so the CommunityModules' Java overrides were off, and TLC evaluated IOUtils' TLA+ placeholders. Six models get their outcomes from those placeholders, in TLC and here: `EWD998ChanTrace`, `SmokeEWD998_SC`, `MCccfraft`, `Traceccfraft`, `Traceetcdraft`, and `StringDeserialize`. With `--community-modules`, the run evaluates as TLC does with `CommunityModules-deps.jar`. Then `Traceetcdraft` satisfies its assumptions where the recording reports a violation, because the `./example.ndjson` it reads exists beside it, `Traceccfraft`, `EWD998ChanTrace` and `StringDeserialize` violate theirs on files that are missing, as recorded; `MCccfraft`'s hold, and TLC's recorded error comes after them; and `SmokeEWD998_SC` stops where IOUtils would run a command. `--allow-exec` lets IOUtils run commands, which no verification run does: `SmokeEWD998_SC` forks 180 TLC processes.
 
 The timeout is `CarTalkPuzzle` Model_3. Its `Break` filters about 2.6e10 functions, which TLC can't finish either, so TLC has no recorded result for it.
 
@@ -177,16 +175,16 @@ What TLC does that the run turned up:
 - `TLCGet("config")` answers from the configuration and the checker's options before any state is explored.
 - `AssertError`, `TLCDefer` and `TLCGet` see their arguments unevaluated.
 - A set of functions with an empty domain is `{<<>>}`, whatever its range.
+- TLC prints a record, or a function `@@` builds with string keys, in the order its fields are written until it compares or fingerprints it, and sorted from then on.
 
 Still missing from evaluation:
 
 | Gap | Effect |
 | --- | --- |
 | `ENABLED` | Needs successor generation, which comes with the model checker. |
-| Natives for the community modules TLC overrides in Java, starting with `IOUtils` | Specs that read the environment or run commands, such as trace validation, fail where they call them. |
+| Natives for the other community modules TLC overrides in Java, such as CSV, and `TLCGet("config").install` | Only matter with `--community-modules`; CSV's writers stay `TRUE`, and `SmokeEWD998_SC`'s command has no jar to run. |
 | Caching constant definitions and lazy sets' enumerations | Values are the same, but chains of lazy sets re-enumerate, and impure natives such as `RandomElement` can differ from TLC. Add it with the checker. |
 | TLC's string order | Strings are ordered by when this process interns them, not as TLC interns them, so `CHOOSE` and printing over strings can differ from TLC. |
-| Written field order of records | See `NormalizationAssume` above. |
 | A graceful error on deep recursion | Each recursion level uses about 2.6 KB of stack in release builds. The checker should evaluate on threads with large stacks. |
 | `PickSuccessor`, `TLCCache`'s caching, and `AssertError`'s check that its message is a string literal | Small; they matter only for the specs that use them. |
 | The intern number of a model value in TLC's FP64 fingerprint | Random choices seeded per state differ from TLC for states containing model values. |
