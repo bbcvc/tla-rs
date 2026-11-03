@@ -212,19 +212,11 @@ fn checked_power(base: i64, exponent: i64, set: &Value) -> Result<i32> {
 
 impl Value {
     /// The set of `elements`. A set whose elements TLC can't sort, such as `{1, "a"}`, is kept
-    /// unsorted, as TLC keeps it, and fails only when something has to sort it.
+    /// as written, as TLC keeps it, and fails only when something has to sort it.
     pub fn set(elements: Vec<Value>) -> Result<Value> {
         match sort_unique(elements.clone()) {
             Ok(sorted) => Ok(Value::Set(sorted.into())),
-            Err(_) => {
-                let mut unique: Vec<Value> = Vec::with_capacity(elements.len());
-                for element in elements {
-                    if !unique.iter().any(|known| known.equals(&element).unwrap_or(false)) {
-                        unique.push(element);
-                    }
-                }
-                Ok(Value::MixedSet(unique.into()))
-            }
+            Err(_) => Ok(Value::MixedSet(elements.into())),
         }
     }
 
@@ -772,13 +764,45 @@ impl Value {
         Ok(operation.lazy(self, other))
     }
 
-    /// `UNION self`, enumerated when every set in it is.
+    /// `UNION self`, enumerated when `self` and every set in it are set enumerations, and lazy
+    /// otherwise, as TLC builds it.
     pub fn union(&self) -> Result<Value> {
-        let set = Value::lazy(LazySet::Union(self.clone()));
-        if set.is_enumerable() {
-            return Ok(Value::Set(set.elements()?));
+        let lazy = || Value::lazy(LazySet::Union(self.clone()));
+        let (Value::Set(sets) | Value::MixedSet(sets)) = self else { return Ok(lazy()) };
+        if !sets.iter().all(|set| matches!(set, Value::Set(_) | Value::MixedSet(_))) {
+            return Ok(lazy());
         }
-        Ok(set)
+        let is_mixed = matches!(self, Value::MixedSet(_))
+            || sets.iter().any(|set| matches!(set, Value::MixedSet(_)));
+        if !is_mixed {
+            let elements = sets.iter().flat_map(|set| set.elements_unchecked()).collect();
+            return Ok(Value::Set(sort_unique(elements)?.into()));
+        }
+        // TLC tests each element for membership in the union so far, element by element.
+        let mut members: Vec<Value> = Vec::new();
+        for set in sets.iter() {
+            for element in set.elements_unchecked() {
+                let mut is_member = false;
+                for member in &members {
+                    if member.equals(&element)? {
+                        is_member = true;
+                        break;
+                    }
+                }
+                if !is_member {
+                    members.push(element);
+                }
+            }
+        }
+        Value::set(members)
+    }
+
+    /// The elements of a set enumeration as it holds them.
+    fn elements_unchecked(&self) -> Vec<Value> {
+        match self {
+            Value::Set(elements) | Value::MixedSet(elements) => elements.to_vec(),
+            _ => Vec::new(),
+        }
     }
 }
 
@@ -994,5 +1018,25 @@ mod tests {
             Value::lazy(LazySet::Subset(ints(&[1]))).minus(&ints(&[1])).unwrap(),
             Value::Lazy(_)
         ));
+    }
+
+    /// TLC enumerates `UNION S` at once only when every element of `S` is a set enumeration, so
+    /// a set of functions over a large union is sized without enumerating it.
+    #[test]
+    fn keeps_unions_of_other_sets_lazy() {
+        let union = Value::set(vec![
+            Value::Interval(1, 2_000_000),
+            Value::set(vec![Value::str("a")]).unwrap(),
+        ])
+        .unwrap()
+        .union()
+        .unwrap();
+        assert!(matches!(union, Value::Lazy(_)));
+        assert_eq!(
+            function_set(union, Value::set(vec![Value::str("d1")]).unwrap()).cardinality().unwrap(),
+            1
+        );
+        let enumerated = Value::set(vec![ints(&[3, 1]), ints(&[2])]).unwrap().union().unwrap();
+        assert_eq!(format(&enumerated), "{1, 2, 3}");
     }
 }
