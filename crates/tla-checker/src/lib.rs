@@ -21,9 +21,9 @@ use std::collections::HashMap;
 use std::fmt;
 use std::sync::Arc;
 
-use tla_eval::{CheckerOptions, ConstBinding, Evaluator, bind_model};
+use tla_eval::{CheckerOptions, ConstBinding, Evaluator, JavaOverrideError, bind_model};
 use tla_parser::ModelConfig;
-use tla_resolve::Spec;
+use tla_resolve::{ModuleId, Spec};
 
 pub use crate::plan::{Check, Plan};
 pub use crate::search::{Ending, Successors};
@@ -129,6 +129,9 @@ pub struct Options {
     pub community_modules: bool,
     /// Let IOUtils run commands.
     pub allow_exec: bool,
+    /// The Java class files beside the spec, by the name of the module whose operators TLC
+    /// overrides with their public static methods.
+    pub classes: HashMap<String, Vec<u8>>,
 }
 
 /// Checks `spec` under `config`, with `successors` computing the states of the evaluator it is
@@ -140,10 +143,19 @@ pub fn check<S: Successors>(
     options: &Options,
     successors: impl FnOnce(&Evaluator) -> S,
 ) -> Outcome {
-    let model = match bind_model(&spec, config) {
+    let mut model = match bind_model(&spec, config) {
         Ok(model) => model,
         Err(error) => return Outcome::error(error.message),
     };
+    // The configuration overrides a definition a Java class overrides.
+    for (index, module) in spec.modules.iter().enumerate() {
+        let Some(class) = options.classes.get(module.name.as_str()) else { continue };
+        match tla_eval::java_overrides(&spec, ModuleId(index as u32), class) {
+            Ok(overrides) => drop(model.overrides.splice(0..0, overrides)),
+            Err(JavaOverrideError::Unsupported(message)) => return Outcome::unsupported(message),
+            Err(JavaOverrideError::Invalid(message)) => return Outcome::error(message),
+        }
+    }
     let overrides: HashMap<_, _> = model
         .overrides
         .iter()

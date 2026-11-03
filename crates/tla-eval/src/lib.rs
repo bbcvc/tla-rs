@@ -8,6 +8,7 @@
 mod config;
 mod env;
 mod eval;
+mod java;
 mod native;
 mod runtime;
 mod stdlib;
@@ -17,6 +18,7 @@ use std::sync::{Arc, Mutex, OnceLock};
 
 pub use config::{Model, OperatorTable, bind_model, config_value};
 pub use eval::NextAction;
+pub use java::{JavaOverrideError, java_overrides};
 pub use native::{Arg, Ctx, Native, Operator};
 pub use runtime::{CheckerOptions, Registers, Runtime, Statistics};
 pub use stdlib::tlc::tlc_fingerprint;
