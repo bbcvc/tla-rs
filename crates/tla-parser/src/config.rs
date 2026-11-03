@@ -211,6 +211,9 @@ fn tokenize(source: &str) -> (Vec<Token<'_>>, Option<ConfigError>) {
             continue;
         } else if let Some(symbol) = SYMBOLS.iter().find(|symbol| rest.starts_with(**symbol)) {
             (TokenKind::Symbol, symbol.len())
+        } else if char == '\\' && rest[1..].starts_with(|next: char| next.is_ascii_alphabetic()) {
+            // A backslash operator such as `\o` or `\cup`.
+            (TokenKind::Word, 1 + rest[1..].bytes().take_while(u8::is_ascii_alphabetic).count())
         } else {
             let length = rest
                 .chars()
@@ -497,6 +500,7 @@ mod tests {
                 Procs = {p1, p2}
                 Name = "a\"b"
                 Def <- MCDef
+                \o <- +
                 F(1, TRUE) = [M] 2
             (* block
                comment *)
@@ -524,14 +528,12 @@ mod tests {
         assert_eq!(config.constants[2].value, ConfigValue::Str(symbol("a\\\"b")));
         assert_eq!(config.constants[3].args, vec![ConfigValue::Int(1), ConfigValue::Bool(true)]);
         assert_eq!(config.constants[3].module, Some(symbol("M")));
-        assert_eq!(
-            config.substitutions,
-            vec![ConstantSubstitution {
-                name: symbol("Def"),
-                target: symbol("MCDef"),
-                module: None
-            }]
-        );
+        let substitutions: Vec<_> = config
+            .substitutions
+            .iter()
+            .map(|substitution| (substitution.name.as_str(), substitution.target.as_str()))
+            .collect();
+        assert_eq!(substitutions, [("Def", "MCDef"), ("\\o", "+")]);
     }
 
     #[test]
