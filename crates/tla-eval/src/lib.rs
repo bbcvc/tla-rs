@@ -91,11 +91,8 @@ impl Evaluator {
             .defs
             .iter()
             .map(|def| {
-                let module = &spec.modules[def.module.index()];
-                let is_overridable = tla_resolve::is_standard_module(module.name.as_str());
-                is_overridable
-                    .then(|| stdlib::lookup(module.name.as_str(), def.name.as_str(), uses_integers))
-                    .flatten()
+                let module = spec.modules[def.module.index()].name.as_str();
+                stdlib::lookup(module, def.name.as_str(), uses_integers)
             })
             .collect();
         let takes_expressions = spec
@@ -103,8 +100,7 @@ impl Evaluator {
             .iter()
             .map(|def| {
                 let module = spec.modules[def.module.index()].name.as_str();
-                tla_resolve::is_standard_module(module)
-                    && stdlib::takes_expressions(module, def.name.as_str())
+                stdlib::takes_expressions(module, def.name.as_str())
             })
             .collect();
         let overrides = vec![None; spec.defs.len()].into();
@@ -118,6 +114,23 @@ impl Evaluator {
             runtime: Arc::default(),
             is_recursive,
         }
+    }
+
+    /// Replaces the definitions of the community modules tla-rs implements, IOUtils for now, with
+    /// natives, as TLC does when CommunityModules' `CommunityModules-deps.jar` is on its class
+    /// path. Without it, TLC evaluates their TLA+ definitions, most of which are placeholders.
+    pub fn with_community_modules(mut self) -> Self {
+        let mut natives = self.natives.to_vec();
+        for (index, def) in self.spec.defs.iter().enumerate() {
+            let module = self.spec.modules[def.module.index()].name.as_str();
+            if def.depth == 0
+                && let Some(native) = stdlib::lookup_community(module, def.name.as_str())
+            {
+                natives[index] = Some(native);
+            }
+        }
+        self.natives = natives.into();
+        self
     }
 
     /// Replaces definitions with the values or definitions the configuration gives them.

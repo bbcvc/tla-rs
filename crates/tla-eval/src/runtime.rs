@@ -7,8 +7,8 @@
 //! each thread computes successors of, and hooks for the level and the behavior of a state.
 
 use std::collections::{BTreeMap, HashMap};
-use std::sync::atomic::AtomicBool;
-use std::sync::{Arc, Mutex, RwLock};
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, Mutex, OnceLock, RwLock};
 use std::thread::{self, ThreadId};
 use std::time::{Duration, SystemTime};
 
@@ -24,6 +24,10 @@ pub struct Runtime {
     pub registers: Mutex<Registers>,
     /// Whether `TLCSet("exit", TRUE)` asked the model checker to stop.
     pub is_stopped: AtomicBool,
+    /// Whether IOUtils' `IOExec` and its kin may run commands.
+    allows_exec: AtomicBool,
+    /// The environment variables IOUtils' `IOEnv` reports, as a record.
+    environment: OnceLock<Value>,
     checker: RwLock<Checker>,
     random: Mutex<Randomness>,
     started_at: SystemTime,
@@ -126,6 +130,8 @@ impl Default for Runtime {
             output: Mutex::default(),
             registers: Mutex::default(),
             is_stopped: AtomicBool::new(false),
+            allows_exec: AtomicBool::new(false),
+            environment: OnceLock::new(),
             checker: RwLock::default(),
             random: Mutex::new(Randomness {
                 seed: 0,
@@ -140,6 +146,31 @@ impl Default for Runtime {
 impl Runtime {
     pub fn print(&self, line: String) {
         self.output.lock().unwrap().push(line);
+    }
+
+    /// Lets IOUtils' `IOExec`, `IOEnvExec`, `IOExecTemplate`, and `IOEnvExecTemplate` run the
+    /// commands a spec gives them, which they refuse to do by default.
+    pub fn allow_exec(&self, allows_exec: bool) {
+        self.allows_exec.store(allows_exec, Ordering::SeqCst);
+    }
+
+    pub fn allows_exec(&self) -> bool {
+        self.allows_exec.load(Ordering::SeqCst)
+    }
+
+    /// Sets the environment variables `IOEnv` reports in place of the process's. It has no
+    /// effect once `IOEnv` has read them, since TLC reads them once.
+    pub fn set_environment(&self, variables: impl IntoIterator<Item = (String, String)>) {
+        let _ = self.environment.set(environment_record(variables));
+    }
+
+    /// The environment variables, as IOUtils' `IOEnv` reports them: a record from each name to
+    /// its value, read once.
+    pub(crate) fn environment(&self) -> Value {
+        let variables = std::env::vars_os().map(|(name, value)| {
+            (name.to_string_lossy().into_owned(), value.to_string_lossy().into_owned())
+        });
+        self.environment.get_or_init(|| environment_record(variables)).clone()
     }
 
     /// How long ago the runtime was created, which `TLCGet("duration")` reports.
@@ -293,6 +324,12 @@ impl Runtime {
         random.workers.entry(thread).or_default().seeded = Some((state, generator));
         Ok(result)
     }
+}
+
+fn environment_record(variables: impl IntoIterator<Item = (String, String)>) -> Value {
+    let fields =
+        variables.into_iter().map(|(name, value)| (Symbol::intern(&name), Value::str(&value)));
+    Value::record(fields.collect())
 }
 
 #[cfg(test)]
