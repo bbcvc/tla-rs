@@ -9,6 +9,7 @@ use crate::ir::{
     Scope,
 };
 use crate::module::{Binding, Elab, Entry, InstanceInfo, SymbolKind, is_bindable};
+use crate::selection::Reference;
 use crate::{Resolver, Result};
 
 /// The names one frame binds so far and how many slots it uses.
@@ -75,7 +76,7 @@ impl Resolver<'_> {
     }
 
     /// The scope a call of `def` from the current depth captures.
-    fn scope_of(&self, def: DefId) -> Scope {
+    pub(crate) fn scope_of(&self, def: DefId) -> Scope {
         match self.spec.def(def).depth {
             0 => Scope::Global,
             depth => Scope::Up(self.depth() - depth),
@@ -100,7 +101,7 @@ impl Resolver<'_> {
 
     /// Finds the innermost binding of `symbol` the current code can see, with the index of the
     /// frame that binds it, if a frame does.
-    fn lookup(&self, elab: &Elab, symbol: Symbol) -> Option<(Entry, Option<usize>)> {
+    pub(crate) fn lookup(&self, elab: &Elab, symbol: Symbol) -> Option<(Entry, Option<usize>)> {
         for index in (self.visible_from..self.frames.len()).rev() {
             let found = self.frames[index].names.iter().rev().find(|(name, _)| *name == symbol);
             if let Some((_, entry)) = found {
@@ -118,6 +119,8 @@ impl Resolver<'_> {
         is_bound_variable: bool,
     ) -> Result<()> {
         let current = self.lookup(elab, name.symbol).map(|(entry, _)| entry);
+        // A part of a definition resolved again may hide names defined after it.
+        let current = current.filter(|_| self.replaying == 0);
         match is_bindable(name.symbol, current.as_ref(), &entry, is_bound_variable) {
             Ok(true) => {
                 self.frames.last_mut().unwrap().names.push((name.symbol, entry));
@@ -170,7 +173,8 @@ impl Resolver<'_> {
             self.spec.defs[def.index()].params = params;
             return Ok(def);
         }
-        if let Some((entry, _)) = self.lookup(elab, name.symbol) {
+        let visible = self.lookup(elab, name.symbol).filter(|_| self.replaying == 0);
+        if let Some((entry, _)) = visible {
             let is_pending =
                 matches!(entry.binding, Binding::Def(def) if self.pending.contains(&def));
             let message = match entry.kind {
@@ -243,14 +247,16 @@ impl Resolver<'_> {
             A::Int(value) => ExprKind::Int(*value),
             A::Str(value) => ExprKind::Str(*value),
             A::Apply { name, args } => return self.apply_name(elab, *name, args, span),
-            A::Qualified { path, name, args } => self.qualified(elab, path, *name, args)?,
-            A::Subexpression(_) => {
-                return Err(self.error(
-                    elab.module,
-                    span,
-                    "A subexpression reference is not supported.",
-                ));
+            A::Qualified { path, name, args } => {
+                match self.qualified_reference(elab, path, *name, args, span, None)? {
+                    Some(Reference::Expr(kind)) => kind,
+                    _ => self.qualified(elab, path, *name, args)?,
+                }
             }
+            A::Subexpression(selectors) => match self.reference(elab, selectors, span, None)? {
+                Reference::Expr(kind) => kind,
+                Reference::Operator(op) => ExprKind::OpArg(op),
+            },
             // A label only names its body for subexpression references.
             A::Label { body, .. } => return self.expr(elab, body),
             A::Lambda { .. } => {
@@ -459,7 +465,7 @@ impl Resolver<'_> {
         resolved
     }
 
-    fn let_defs(&mut self, elab: &Elab, defs: &[Unit]) -> Result<()> {
+    pub(crate) fn let_defs(&mut self, elab: &Elab, defs: &[Unit]) -> Result<()> {
         for unit in defs {
             match unit {
                 Unit::Recursive(decls) => {
@@ -504,7 +510,12 @@ impl Resolver<'_> {
 
     /// Resolves the arguments of an operator with parameters of the given arities. A parameter
     /// with arity takes an operator.
-    fn args(&mut self, elab: &Elab, arities: &[usize], args: &[ast::Expr]) -> Result<Vec<Expr>> {
+    pub(crate) fn args(
+        &mut self,
+        elab: &Elab,
+        arities: &[usize],
+        args: &[ast::Expr],
+    ) -> Result<Vec<Expr>> {
         arities
             .iter()
             .zip(args)
@@ -649,7 +660,21 @@ impl Resolver<'_> {
                     _ => Err(mismatch(self)),
                 }
             }
+            ast::ExprKind::Subexpression(selectors) => {
+                match self.reference(elab, selectors, arg.span, Some(arity))? {
+                    Reference::Operator(op) => Ok(op),
+                    Reference::Expr(_) => Err(mismatch(self)),
+                }
+            }
             ast::ExprKind::Qualified { path, name, args } if args.is_empty() => {
+                let reference =
+                    self.qualified_reference(elab, path, *name, args, arg.span, Some(arity))?;
+                if let Some(reference) = reference {
+                    return match reference {
+                        Reference::Operator(op) => Ok(op),
+                        Reference::Expr(_) => Err(mismatch(self)),
+                    };
+                }
                 let (info, scope, defs_depth) = self.instance_path(elab, path)?;
                 match self.member(elab, &info, *name)?.binding {
                     Binding::Def(def) if self.spec.def(def).params.len() == arity => {
@@ -713,7 +738,7 @@ impl Resolver<'_> {
     /// The scope of something defined at `depth` inside an instance whose definitions are at
     /// `defs_depth` and capture `scope`. Definitions an instance shares with plain modules, such
     /// as the standard modules, are global.
-    fn at_depth(&self, depth: usize, defs_depth: usize, scope: &Scope) -> Scope {
+    pub(crate) fn at_depth(&self, depth: usize, defs_depth: usize, scope: &Scope) -> Scope {
         if depth == 0 {
             return Scope::Global;
         }

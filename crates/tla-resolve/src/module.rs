@@ -14,6 +14,7 @@ use crate::ir::{
 };
 use crate::levels::join;
 use crate::levels::layout::{DefLayout, FrameLayout, Instantiation, Substituted, SubstitutedValue};
+use crate::selection::Origin;
 use crate::{ResolveError, Resolver, Result, stdlib};
 
 /// What a name at module level stands for.
@@ -139,11 +140,15 @@ pub(crate) struct ParsedModule {
 
 /// The state of elaborating one module: its names so far and how deep its definitions are.
 pub(crate) struct Elab {
+    /// Tells elaborations apart, so a subexpression reference can see the names of the one that
+    /// made the definition it selects from.
+    pub id: usize,
     pub module: ModuleId,
     pub name: Symbol,
     pub context: Context,
     pub depth: usize,
     pub substitution: Option<Rc<Substitution>>,
+    pub parsed: Rc<ParsedModule>,
 }
 
 impl Elab {
@@ -363,11 +368,15 @@ impl Resolver<'_> {
         if self.is_instantiating {
             self.instantiated.insert(module.id);
         }
-        let result = self.elaborate_units(module, substitution, depth);
+        let id = self.elabs;
+        self.elabs += 1;
+        let result = self.elaborate_units(module, substitution, depth, id);
         self.is_instantiating = is_instantiating;
         self.visible_from = visible_from;
         self.in_progress.pop();
-        result.map(Rc::new)
+        let context = Rc::new(result?);
+        self.elab_contexts.insert(id, context.clone());
+        Ok(context)
     }
 
     fn elaborate_units(
@@ -375,11 +384,14 @@ impl Resolver<'_> {
         module: &Rc<ParsedModule>,
         substitution: Option<Rc<Substitution>>,
         depth: usize,
+        elab_id: usize,
     ) -> Result<Context> {
         let id = module.id;
         let source = self.source(id);
         self.register_inner(&module.ast, id)?;
         let mut elab = Elab {
+            id: elab_id,
+            parsed: module.clone(),
             module: id,
             name: module.ast.name.symbol,
             // A nested module sees what its enclosing module defines before it, without
@@ -405,8 +417,8 @@ impl Resolver<'_> {
                 }
             }
         }
-        for unit in &module.ast.units {
-            self.unit(&mut elab, unit, &source)?;
+        for (index, unit) in module.ast.units.iter().enumerate() {
+            self.unit(&mut elab, index, unit, &source)?;
         }
         Ok(elab.context)
     }
@@ -428,7 +440,8 @@ impl Resolver<'_> {
         Ok(context)
     }
 
-    fn unit(&mut self, elab: &mut Elab, unit: &Unit, source: &str) -> Result<()> {
+    fn unit(&mut self, elab: &mut Elab, index: usize, unit: &Unit, source: &str) -> Result<()> {
+        let origin = Origin { parsed: elab.parsed.clone(), unit: index, elab: elab.id };
         match unit {
             Unit::Variables(names) => {
                 for name in names {
@@ -490,6 +503,7 @@ impl Resolver<'_> {
             }
             Unit::Operator(definition) => {
                 let def = self.operator(elab, definition)?;
+                self.origins.insert(def, origin);
                 let entry = self.operator_entry(
                     elab.module,
                     definition.name,
@@ -534,6 +548,7 @@ impl Resolver<'_> {
             }
             Unit::Assume(assume) => {
                 let def = self.statement(elab, assume.name, &assume.expr)?;
+                self.origins.insert(def, origin);
                 // TLC checks the assumptions of the root module and the modules it extends, as
                 // the plain elaboration of each, which `resolve` narrows to those modules.
                 if !assume.is_axiom && elab.substitution.is_none() && elab.depth == 0 {
@@ -546,6 +561,7 @@ impl Resolver<'_> {
             Unit::Theorem(theorem) => {
                 if let (Some(name), Some(statement)) = (theorem.name, &theorem.statement) {
                     let def = self.statement(elab, Some(name), statement)?;
+                    self.origins.insert(def, origin);
                     elab.add(name, self.operator_entry(elab.module, name, 0, def, false), source)?;
                 }
             }
