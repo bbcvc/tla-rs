@@ -153,4 +153,10 @@ fn writes_and_reads_files() {
     let read = call("Json", "JsonDeserialize", std::slice::from_ref(&path_value)).unwrap();
     assert!(read.equals(&nested).unwrap());
     std::fs::remove_file(path).unwrap();
+    // TLC creates the directories a file is written in.
+    let nested = directory.join(format!("tla-rs-json-dir-{}", std::process::id()));
+    let nested_file = string(nested.join("a/b.ndjson").to_str().unwrap());
+    call("Json", "ndJsonSerialize", &[nested_file, rows]).unwrap();
+    assert!(nested.join("a/b.ndjson").exists());
+    std::fs::remove_dir_all(nested).unwrap();
 }

@@ -48,8 +48,16 @@ impl Evaluator {
         }
         if let Some(native) = self.natives[def.index()] {
             let args: Vec<Arg> = args.into_iter().map(Arg::Value).collect();
+            let definition = || {
+                let slots = args.iter().map(|arg| match arg {
+                    Arg::Value(value) => Slot::Value(value.clone()),
+                    Arg::Op(op) => Slot::Op(op.clone()),
+                });
+                self.enter(def, parent.clone(), slots.collect(), state, next, false)
+            };
             let mut ctx = Ctx::new(self, state);
             ctx.next = next;
+            ctx.definition = Some(&definition);
             return native(&mut ctx, &args)
                 .map_err(|error| EvalError::at(&self.spec, info.module, info.span, error.0));
         }
@@ -101,7 +109,7 @@ impl Evaluator {
             return self.eval(arg, env);
         }
         if let Some(native) = self.natives[def.index()] {
-            return self.call_native(native, def, args, expr, env);
+            return self.call_native(native, def, scope, args, expr, env);
         }
         if args.len() != info.params.len() {
             return Err(self.arity_error(def, args.len(), env, expr));
@@ -128,11 +136,13 @@ impl Evaluator {
         &self,
         native: Native,
         def: DefId,
+        scope: &Scope,
         args: &[Expr],
         expr: &Expr,
         env: &mut Env<'_>,
     ) -> Result<Value> {
         let takes_expressions = self.takes_expressions[def.index()];
+        let arg_exprs = args;
         let args = self
             .spec
             .def(def)
@@ -146,9 +156,18 @@ impl Evaluator {
                 _ => Err(self.error(env, arg, "Expected an operator as this argument")),
             })
             .collect::<Result<Vec<_>>>()?;
+        let outer: &Env<'_> = env;
+        let definition = || {
+            let parent = self.scope_frame(scope, outer)?;
+            let slots = arg_exprs.iter().map(|arg| self.arg_slot(arg, outer));
+            let slots = slots.collect::<Result<_>>()?;
+            self.enter(def, parent, slots, outer.state, outer.next, outer.keep_lazy)
+        };
         let mut ctx = Ctx::new(self, env.state);
         ctx.next = env.next;
-        native(&mut ctx, &args).at(self, env, expr)
+        ctx.definition = Some(&definition);
+        let result = native(&mut ctx, &args);
+        result.at(self, env, expr)
     }
 
     /// `F(args)` for an operator parameter `F`.
@@ -376,16 +395,44 @@ mod tests {
         ctx.call(&pair, &[args[0].value()?.clone()])
     }
 
+    /// `Declined(x)`: falls back to its definition, as a Java override that returns `null` does.
+    fn declined(ctx: &mut Ctx<'_>, _: &[Arg]) -> Result<Value> {
+        ctx.evaluate_definition()
+    }
+
     fn evaluator_with_natives(source: &str) -> Evaluator {
         let spec = tla_resolve::resolve(source, &mut |_name: &str| None).unwrap();
         let mut evaluator = Evaluator::new(Arc::new(spec), Vec::new());
         let mut natives = evaluator.natives.to_vec();
-        for (name, native) in [("Map", map as crate::Native), ("Wrapped", wrapped)] {
-            let Some(RootName::Def(def)) = evaluator.spec.lookup(name) else { panic!("{name}") };
-            natives[def.index()] = Some(native);
+        let replaced =
+            [("Map", map as crate::Native), ("Wrapped", wrapped), ("Declined", declined)];
+        for (name, native) in replaced {
+            if let Some(RootName::Def(def)) = evaluator.spec.lookup(name) {
+                natives[def.index()] = Some(native);
+            }
         }
         evaluator.natives = natives.into();
         evaluator
+    }
+
+    #[test]
+    fn falls_back_to_the_definition_a_native_replaces() {
+        let evaluator = evaluator_with_natives(
+            r#"
+---- MODULE Natives ----
+Map(F(_), S) == {}
+Wrapped(x) == x
+Declined(x) == <<x, x>>
+Call(p) == <<Declined(<<p>>), Map(Declined, {3})>>
+Expr == Call(1)
+====
+"#,
+        );
+        let Some(RootName::Def(def)) = evaluator.spec.lookup("Expr") else { panic!() };
+        assert_eq!(
+            evaluator.eval_def(def, None).unwrap().to_string(),
+            "<<<<<<1>>, <<1>>>>, {<<3, 3>>}>>"
+        );
     }
 
     #[test]

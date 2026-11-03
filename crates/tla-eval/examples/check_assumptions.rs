@@ -5,12 +5,19 @@
 //! ```text
 //! cargo run --release -p tla-eval --example check_assumptions -- DIR [--library DIR]...
 //!     [--expected expected.json] [--timeout SECONDS] [--jobs N] [--outcomes FILE]
+//!     [--community-modules] [--allow-exec]
 //! ```
 //!
 //! A model TLC records as an `assumption-violation` should violate an assumption here, and a
 //! model TLC checks without an error should satisfy all of them. As in TLC, an assumption that
 //! fails to evaluate is violated. Each model is checked in a
 //! child process, so a model that runs too long or overflows the stack only fails itself.
+//!
+//! Each model is checked in its configuration's directory, where tla-ts's recorder ran TLC, so
+//! that relative paths resolve as they did for TLC. The recorder ran TLC with `tla2tools.jar`
+//! alone on its class path, so the CommunityModules' Java overrides were off; the
+//! `--community-modules` flag turns them on. IOUtils runs no command unless `--allow-exec` is
+//! given.
 
 use std::collections::{BTreeMap, HashMap};
 use std::fmt;
@@ -23,7 +30,25 @@ use std::time::{Duration, Instant};
 use tla_eval::{CheckerOptions, Evaluator, bind_model};
 
 const USAGE: &str = "usage: check_assumptions DIR [--library DIR]... [--expected FILE] \
-                     [--timeout SECONDS] [--jobs N] [--outcomes FILE]";
+                     [--timeout SECONDS] [--jobs N] [--outcomes FILE] [--community-modules] \
+                     [--allow-exec]";
+
+/// How a model is evaluated.
+#[derive(Clone, Copy, Default)]
+struct Options {
+    /// Use the CommunityModules' Java overrides, as TLC does with `CommunityModules-deps.jar`.
+    community_modules: bool,
+    /// Let IOUtils run commands.
+    allow_exec: bool,
+}
+
+impl Options {
+    fn args(self) -> Vec<String> {
+        let flags =
+            [(self.community_modules, "--community-modules"), (self.allow_exec, "--allow-exec")];
+        flags.into_iter().filter(|(is_set, _)| *is_set).map(|(_, flag)| flag.to_owned()).collect()
+    }
+}
 
 enum Outcome {
     Satisfied,
@@ -74,7 +99,7 @@ impl Outcome {
     }
 }
 
-fn check(spec_path: &Path, library: &HashMap<String, PathBuf>) -> Outcome {
+fn check(spec_path: &Path, library: &HashMap<String, PathBuf>, options: Options) -> Outcome {
     let config = std::fs::read_to_string(spec_path.with_extension("cfg")).unwrap_or_default();
     // TLC interns the configuration's values first, which orders its strings and model values.
     let config = match tla_parser::parse_config(&config) {
@@ -98,7 +123,12 @@ fn check(spec_path: &Path, library: &HashMap<String, PathBuf>) -> Outcome {
     };
     let has_postconditions = !config.postconditions.is_empty() || !config.possible.is_empty();
     let assumptions = spec.assumptions.clone();
-    let evaluator = Evaluator::new(Arc::new(spec), model.constants).with_overrides(model.overrides);
+    let mut evaluator =
+        Evaluator::new(Arc::new(spec), model.constants).with_overrides(model.overrides);
+    if options.community_modules {
+        evaluator = evaluator.with_community_modules();
+    }
+    evaluator.runtime().allow_exec(options.allow_exec);
     // TLC creates its model checker, whose options TLCGet("config") reads, before it checks the
     // assumptions. The options TLC takes from its command line keep their defaults.
     evaluator.runtime().start(CheckerOptions::for_config(&config));
@@ -122,11 +152,11 @@ fn check(spec_path: &Path, library: &HashMap<String, PathBuf>) -> Outcome {
 }
 
 /// Checks one model in this process, on a thread with a large stack, and prints the outcome.
-fn check_one(spec_path: PathBuf, library: HashMap<String, PathBuf>) {
+fn check_one(spec_path: PathBuf, library: HashMap<String, PathBuf>, options: Options) {
     std::panic::set_hook(Box::new(|_| {}));
     let outcome = std::thread::Builder::new()
         .stack_size(1 << 30)
-        .spawn(move || check(&spec_path, &library))
+        .spawn(move || check(&spec_path, &library, options))
         .unwrap()
         .join()
         .unwrap_or_else(|panic| {
@@ -140,12 +170,20 @@ fn check_one(spec_path: PathBuf, library: HashMap<String, PathBuf>) {
     println!("{}", outcome.encode());
 }
 
-/// Checks one model in a child process, killing it after `timeout`.
-fn check_in_child(spec_path: &Path, library_args: &[String], timeout: Duration) -> Outcome {
+/// Checks one model in a child process in the model's directory, killing it after `timeout`.
+fn check_in_child(
+    spec_path: &Path,
+    library_args: &[String],
+    options: Options,
+    timeout: Duration,
+) -> Outcome {
+    let spec_path = std::fs::canonicalize(spec_path).unwrap_or_else(|_| spec_path.to_path_buf());
     let mut child = Command::new(std::env::current_exe().unwrap())
         .arg("--one")
-        .arg(spec_path)
+        .arg(&spec_path)
         .args(library_args)
+        .args(options.args())
+        .current_dir(spec_path.parent().unwrap())
         .stdout(Stdio::piped())
         .stderr(Stdio::null())
         .spawn()
@@ -184,7 +222,19 @@ fn main() {
     let mut outcomes_path = None;
     let mut timeout = Duration::from_secs(10);
     let mut jobs = std::thread::available_parallelism().map_or(4, |count| count.get());
+    let mut options = Options::default();
     while let Some(flag) = args.next() {
+        match flag.as_str() {
+            "--community-modules" => {
+                options.community_modules = true;
+                continue;
+            }
+            "--allow-exec" => {
+                options.allow_exec = true;
+                continue;
+            }
+            _ => {}
+        }
         let value = args.next().expect(USAGE);
         match flag.as_str() {
             "--expected" => expected = Some(PathBuf::from(value)),
@@ -192,6 +242,9 @@ fn main() {
             "--timeout" => timeout = Duration::from_secs_f64(value.parse().expect(USAGE)),
             "--jobs" => jobs = value.parse().expect(USAGE),
             "--library" => {
+                // Absolute, since each child runs in its model's directory.
+                let value = std::fs::canonicalize(&value)
+                    .map_or(value, |path| path.to_string_lossy().into_owned());
                 let mut files = Vec::new();
                 collect(Path::new(&value), "tla", &mut files);
                 for path in files {
@@ -206,7 +259,7 @@ fn main() {
         }
     }
     if is_one {
-        return check_one(root, library);
+        return check_one(root, library, options);
     }
 
     let mut configs = Vec::new();
@@ -230,7 +283,7 @@ fn main() {
             scope.spawn(|| {
                 loop {
                     let Some((id, spec_path)) = queue.lock().unwrap().next() else { break };
-                    let outcome = check_in_child(&spec_path, &library_args, timeout);
+                    let outcome = check_in_child(&spec_path, &library_args, options, timeout);
                     outcomes.lock().unwrap().insert(id, outcome);
                 }
             });

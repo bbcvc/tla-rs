@@ -96,6 +96,7 @@ macro_rules! unsupported {
 
 mod bags;
 mod finite_sets;
+mod io_utils;
 mod json;
 mod naturals;
 mod randomization;
@@ -103,8 +104,9 @@ mod sequences;
 pub(crate) mod tlc;
 mod tlc_ext;
 
-/// The native implementation of `name` in standard module `module`. TLC overrides the arithmetic
-/// of Naturals with that of Integers when the spec loads Integers anywhere.
+/// The native implementation of `name` in module `module`: a standard module, or a module whose
+/// definitions TLC's own Java code overrides. TLC overrides the arithmetic of Naturals with that
+/// of Integers when the spec loads Integers anywhere.
 pub(crate) fn lookup(module: &str, name: &str, uses_integers: bool) -> Option<Native> {
     match module {
         "Naturals" => naturals::lookup(name, uses_integers),
@@ -117,6 +119,17 @@ pub(crate) fn lookup(module: &str, name: &str, uses_integers: bool) -> Option<Na
         "Bags" => bags::lookup(name, uses_integers),
         "Json" => json::lookup(name),
         "Randomization" => randomization::lookup(name),
+        // TLC's own Json class overrides `Serialize` of the community module IOUtils.
+        "IOUtils" => io_utils::lookup_builtin(name),
+        _ => None,
+    }
+}
+
+/// The native implementation of `name` in the community module `module`, as CommunityModules'
+/// Java code overrides it when `CommunityModules-deps.jar` is on TLC's class path.
+pub(crate) fn lookup_community(module: &str, name: &str) -> Option<Native> {
+    match module {
+        "IOUtils" => io_utils::lookup(name),
         _ => None,
     }
 }
@@ -124,7 +137,12 @@ pub(crate) fn lookup(module: &str, name: &str, uses_integers: bool) -> Option<Na
 /// Whether the native of `name` in `module` takes its arguments unevaluated, as the Java methods
 /// TLC hands expressions do: each comes as an operator without parameters that evaluates it.
 pub(crate) fn takes_expressions(module: &str, name: &str) -> bool {
-    matches!((module, name), ("TLC", "TLCGet") | ("TLCExt", "AssertError" | "TLCDefer"))
+    matches!(
+        (module, name),
+        ("TLC", "TLCGet")
+            | ("TLCExt", "AssertError" | "TLCDefer")
+            | ("IOUtils", "Serialize" | "Deserialize")
+    )
 }
 
 /// The value of argument `index` of a native that takes its arguments unevaluated, or its value
@@ -263,6 +281,15 @@ fn sorted_set(elements: Vec<Value>) -> Outcome {
         return Ok(Value::Set(set.elements()?));
     }
     Ok(set)
+}
+
+/// The text Java gives an operating system error: the error without Rust's error number.
+fn os_message(error: &std::io::Error) -> String {
+    let text = error.to_string();
+    match text.rfind(" (os error ") {
+        Some(end) => text[..end].to_owned(),
+        None => text,
+    }
 }
 
 /// The kind of a value as some of TLC's errors name it, which calls every function a function.

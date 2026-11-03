@@ -10,7 +10,7 @@ use tla_value::{Symbol, Value};
 
 use super::{
     Failure, Outcome, arg, argument_error, function_pairs, is_overridden_set, java_class,
-    java_error, sequence_elements,
+    java_error, os_message, sequence_elements,
 };
 use crate::{Arg, Ctx, Native};
 
@@ -70,13 +70,17 @@ fn java_failure(method: &str, message: &str) -> Failure {
     Failure::Eval(java_error(method, message))
 }
 
-fn unsupported(method: &str, value: &Value) -> Failure {
-    let message = format!(
-        "Cannot convert value: unsupported value type tlc2.value.impl.{}",
-        java_class(value)
-    );
-    java_failure(method, &message)
+/// The message of the `IOException` TLC's Json class raises for a value JSON can't represent.
+pub(super) fn unsupported_message(value: &Value) -> String {
+    format!("Cannot convert value: unsupported value type tlc2.value.impl.{}", java_class(value))
 }
+
+fn unsupported(method: &str, value: &Value) -> Failure {
+    java_failure(method, &unsupported_message(value))
+}
+
+/// How the conversion of a value JSON can't represent fails.
+pub(super) type Unsupported<'a> = &'a dyn Fn(&Value) -> Failure;
 
 /// A string as `JSON.stringify` writes it, with the line and paragraph separators escaped.
 fn json_string(text: &str) -> String {
@@ -102,29 +106,42 @@ fn json_string(text: &str) -> String {
 }
 
 fn to_json(value: &Value, method: &str) -> Outcome<String> {
+    value_json(value, &|value| unsupported(method, value))
+}
+
+fn set_json(set: &Value, method: &str) -> Outcome<String> {
+    set_value_json(set, &|value| unsupported(method, value))
+}
+
+fn function_json(function: &Value, method: &str) -> Outcome<String> {
+    function_value_json(function, &|value| unsupported(method, value))
+}
+
+/// A value as JSON, as TLC's Json class writes it.
+pub(super) fn value_json(value: &Value, unsupported: Unsupported<'_>) -> Outcome<String> {
     Ok(match value {
         Value::Str(text) => json_string(text.as_str()),
         Value::Bool(value) => value.to_string(),
         Value::Int(value) => value.to_string(),
         Value::Model(name) => json_string(name.as_str()),
-        _ if value.is_set() => set_json(value, method)?,
-        _ => function_json(value, method)?,
+        _ if value.is_set() => set_value_json(value, unsupported)?,
+        _ => function_value_json(value, unsupported)?,
     })
 }
 
-fn set_json(set: &Value, method: &str) -> Outcome<String> {
+fn set_value_json(set: &Value, unsupported: Unsupported<'_>) -> Outcome<String> {
     if is_overridden_set(set) {
-        return Err(unsupported(method, set));
+        return Err(unsupported(set));
     }
     let elements = set.elements()?;
-    let items = elements.iter().map(|element| to_json(element, method));
+    let items = elements.iter().map(|element| value_json(element, unsupported));
     Ok(format!("[{}]", items.collect::<Outcome<Vec<_>>>()?.join(",")))
 }
 
-fn function_json(function: &Value, method: &str) -> Outcome<String> {
+fn function_value_json(function: &Value, unsupported: Unsupported<'_>) -> Outcome<String> {
     let function = function.materialize()?;
     if let Value::Tuple(items) = &function {
-        let items = items.iter().map(|item| to_json(item, method));
+        let items = items.iter().map(|item| value_json(item, unsupported));
         return Ok(format!("[{}]", items.collect::<Outcome<Vec<_>>>()?.join(",")));
     }
     let mut fields = Vec::new();
@@ -133,7 +150,7 @@ fn function_json(function: &Value, method: &str) -> Outcome<String> {
             Value::Str(text) => json_string(text.as_str()),
             key => json_string(&key.to_string()),
         };
-        fields.push(format!("{key}:{}", to_json(&value, method)?));
+        fields.push(format!("{key}:{}", value_json(&value, unsupported)?));
     }
     Ok(format!("{{{}}}", fields.join(",")))
 }
@@ -183,9 +200,13 @@ fn path<'a>(value: &'a Value, method: &str) -> Outcome<&'a str> {
     }
 }
 
+/// Writes a file as TLC's `FileWriter` does, after creating its parent directories.
 fn write_file(path: &str, content: &str, method: &str) -> Outcome<()> {
+    if let Some(parent) = std::path::Path::new(path).parent() {
+        let _ = std::fs::create_dir_all(parent);
+    }
     std::fs::write(path, content)
-        .map_err(|error| java_failure(method, &format!("{path} ({error})")))
+        .map_err(|error| java_failure(method, &format!("{path} ({})", os_message(&error))))
 }
 
 fn read_file(path: &str, method: &str) -> Outcome<String> {
