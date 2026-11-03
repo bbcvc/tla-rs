@@ -94,17 +94,36 @@ cargo run --release -p tla-resolve --example resolve_corpus -- $C/.corpora --all
 cargo run --release -p tla-resolve --example resolve_corpus -- $C/.corpora $L --expected $C/expected.json
 ```
 
-The parser and resolver agree with SANY on 1,849 of the 1,873 modules SANY was recorded on. Of the 823 models TLC was recorded on, 7 fail to resolve although TLC checks them, the same 7 the frontend rejected: all use subexpression selectors.
+The parser and resolver agree with SANY on 1,852 of the 1,873 modules SANY was recorded on. Of the 823 models TLC was recorded on, 7 fail to resolve although TLC checks them, the same 7 the frontend rejected: all use subexpression selectors.
 
-The 24 disagreements with SANY:
+The 21 disagreements with SANY:
 
 | Cause | Modules | Plan |
 | --- | ---: | --- |
 | Subexpression selectors (`Inv!2`, `Op!:`, labels) | 11 | Resolution needs the definitions' syntax trees and labels. |
-| Level checking (`Level error ...`, an action where a state predicate belongs) | 3 | A level pass after resolution, ported from tla-ts `levels.ts`. |
 | Proof syntax (`DEF`, `HIDE`, `BY`), which TLC ignores | 4 | Out of scope until proofs matter. |
 | SANY reporting a module nested in the file as defined twice when a `LET` instantiates it | 3 | A SANY quirk; emulate only if a model depends on it. |
 | A decimal literal, which SANY accepts and TLC rejects when it checks the model | 1 | Already an error, at an earlier stage than TLC's. |
 | `Operators_test` and `ModuleSemanticsTheorems`, grammar differences in proof syntax | 2 | Out of scope with proofs. |
 
 TLC also requires the root module to be named after its file. The resolver takes source text, so the caller makes that check, as the smoke tool does.
+
+### Level checking
+
+A level pass after resolution (`crates/tla-resolve/src/levels/`) computes SANY's level of every definition, with the highest level each parameter allows, its weights, and whether it is Leibniz in each parameter, and stores them in `Spec::levels`. It reports the first level error SANY reports. It follows tla-ts `levels.ts` for the levels, `sany/levels.ts` for SANY's checks, and `substitution-levels.ts` for `INSTANCE` substitutions.
+
+Before the pass, the parser and resolver agreed with SANY on 1,849 modules. With it they agree on 1,852: `test213`, `test215`, and `test217` now fail with the first message SANY reports for each. No module SANY accepts gets a level error, and the 7 models that fail although TLC checks them are the same 7.
+
+SANY checks each module once by itself, and checks each `INSTANCE` against what that module allows its constants and variables. Resolution instead copies an instantiated module's definitions with the substitutions in place. So the pass reports errors only in modules elaborated by themselves, and elaborates by itself, for the pass only, any module resolution only instantiated. The levels of an instance's definitions come from their substituted bodies.
+
+What the pass leaves out:
+
+| SANY check | Why |
+| --- | --- |
+| Constraints from `THEOREM ASSUME ... PROVE`, and the checks of proofs of temporal theorems (`Non-constant CASE for temporal goal`) | The parser drops `ASSUME ... PROVE` and proofs. |
+| Unnamed theorems | Resolution doesn't resolve them. |
+| Labels, which hide an action from `[]` and `<>`, as in `[](l :: x')` | The parser drops labels. |
+| The levels of an instance's definitions, which SANY maps from the module's own through the substitutions, so that a constant substituted for a variable leaves the level at 1, and an argument of a parameterized instance replacing a variable of a non-constant module may be at most a state function | Levels come from the substituted bodies, which can only allow more than SANY. |
+| The location of the bound variable in SANY's message for a range above action level | The resolved program keeps no span for it. |
+
+The grammar parses `ENABLED x'` and `UNCHANGED x'` as `(ENABLED x)'` and `(UNCHANGED x)'`, where SANY applies the prefix operator to `x'`, as it does for `SUBSET x'`. Both forms of `UNCHANGED x'` are level errors, with different messages, but `ENABLED x'` changes meaning and goes from level 1 to level 2. The parser should bind `'` tighter.
