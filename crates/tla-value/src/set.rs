@@ -512,7 +512,8 @@ impl Value {
             LazySet::Subset(base) => {
                 if !value.is_set() || is_overridden(value) {
                     bail!(
-                        "Attempted to check if the non-enumerable value\n{value}\nis element of\n{self}"
+                        "Attempted to check if the non-enumerable value\n{value}\nis element of\n{}",
+                        self.printed()?
                     );
                 }
                 for element in value.elements()?.iter() {
@@ -528,7 +529,8 @@ impl Value {
                         return Ok(false);
                     }
                     bail!(
-                        "Attempted to check if \n{value}\nwhich is not a TLC function value, is in the set of functions:\n{self}"
+                        "Attempted to check if \n{value}\nwhich is not a TLC function value, is in the set of functions:\n{}",
+                        self.printed()?
                     );
                 }
                 let function = value.materialize()?;
@@ -560,7 +562,8 @@ impl Value {
                         return Ok(false);
                     }
                     bail!(
-                        "Attempted to check if non-record\n{value}\nis in the set of records:\n{self}"
+                        "Attempted to check if non-record\n{value}\nis in the set of records:\n{}",
+                        self.printed()?
                     );
                 };
                 if keys.len() != fields.len() {
@@ -586,7 +589,8 @@ impl Value {
                         return Ok(false);
                     }
                     bail!(
-                        "Attempted to check if non-tuple\n{value}\nis in the set of tuples:\n{self}"
+                        "Attempted to check if non-tuple\n{value}\nis in the set of tuples:\n{}",
+                        self.printed()?
                     );
                 };
                 if items.len() != factors.len() {
@@ -647,6 +651,48 @@ impl Value {
                 Ok(false)
             }
         }
+    }
+
+    /// The set as TLC prints it in an error: a small lazy set enumerated, which fails where
+    /// enumerating it fails, as TLC's `toString` does.
+    fn printed(&self) -> Result<Value> {
+        /// TLC prints a set of functions, records, or tuples element by element up to this size.
+        const MAXIMUM_EXPANDED_PRODUCT: f64 = 1999.0;
+        let product = |sets: &mut dyn Iterator<Item = &Value>| -> Result<f64> {
+            let mut size = 1.0;
+            for set in sets {
+                if size == 0.0 {
+                    break;
+                }
+                size *= f64::from(set.cardinality()?);
+            }
+            Ok(size)
+        };
+        let Value::Lazy(set) = self else { return Ok(self.clone()) };
+        let is_expanded = match &**set {
+            LazySet::Subset(base) => base.cardinality()? <= 6,
+            LazySet::FuncSet { domain, range } => {
+                if domain.is_enumerable() && domain.cardinality()? == 0 {
+                    return Value::set(vec![Value::empty_tuple()]);
+                }
+                let size = f64::from(range.cardinality()?).powi(domain.cardinality()?);
+                size <= MAXIMUM_EXPANDED_PRODUCT
+            }
+            LazySet::RecordSet(fields) => {
+                product(&mut fields.iter().map(|(_, set)| set))? <= MAXIMUM_EXPANDED_PRODUCT
+            }
+            LazySet::Product(factors) => product(&mut factors.iter())? <= MAXIMUM_EXPANDED_PRODUCT,
+            LazySet::Seq(_) | LazySet::Nat | LazySet::Int | LazySet::String | LazySet::Any => false,
+            LazySet::Cup(..)
+            | LazySet::Cap(..)
+            | LazySet::Minus(..)
+            | LazySet::Filtered { .. }
+            | LazySet::Union(_) => true,
+        };
+        if !is_expanded {
+            return Ok(self.clone());
+        }
+        Ok(Value::Set(self.elements()?))
     }
 
     /// `self \subseteq other`.
@@ -1065,6 +1111,23 @@ mod tests {
         assert_eq!(
             message(ints(&[1]).contains(&Value::str("a"))),
             "Attempted to check equality of integer 1 with non-integer:\n\"a\""
+        );
+    }
+
+    /// tla-ts's NormalizationCases: TLC prints a small lazy set in a membership error by
+    /// enumerating it, which fails as normalizing a set enumeration it can't sort does.
+    #[test]
+    fn prints_sets_in_membership_errors_as_tlc_does() {
+        let mixed = Value::set(vec![Value::Int(1), Value::str("a")]).unwrap();
+        let product = Value::lazy(LazySet::Product(vec![mixed.clone(), Value::empty_set()].into()));
+        assert_eq!(
+            message(product.contains(&Value::Int(1))),
+            "Attempted to compare string \"a\" with non-string:\n1"
+        );
+        let subsets = Value::lazy(LazySet::Subset(ints(&[1, 2])));
+        assert_eq!(
+            message(subsets.contains(&Value::Int(1))),
+            "Attempted to check if the non-enumerable value\n1\nis element of\n{{}, {1}, {2}, {1, 2}}"
         );
     }
 }
