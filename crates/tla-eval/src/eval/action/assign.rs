@@ -53,10 +53,10 @@ impl Evaluator {
                 }
                 _ => Ok(None),
             },
-            ExprKind::Call { def, scope, args } if args.is_empty() && self.is_walked(*def) => {
-                let DefBody::Expr(body) = &self.spec.def(*def).body else { return Ok(None) };
-                let parent = self.scope_frame(scope, &env(site, run))?;
-                let callee = self.callee(*def, parent, args, site, run)?;
+            ExprKind::Call { def, scope, args } if args.is_empty() => {
+                let Some(target) = self.walked(*def, 0) else { return Ok(None) };
+                let DefBody::Expr(body) = &self.spec.def(target).body else { return Ok(None) };
+                let callee = self.entered(*def, target, scope, args, site, run)?;
                 self.target_at(body, &callee, run, is_primed, depth + 1)
             }
             _ => Ok(None),
@@ -174,10 +174,12 @@ impl Evaluator {
                     return self.keep(thunk.expr.get(), &origin, run, action, rest, depth + 1);
                 }
             }
-            ExprKind::Call { def, scope, args } if args.is_empty() && self.is_walked(*def) => {
-                let DefBody::Expr(body) = &self.spec.def(*def).body else { unreachable!() };
-                let parent = self.scope_frame(scope, &env(site, run))?;
-                let callee = self.callee(*def, parent, args, site, run)?;
+            ExprKind::Call { def, scope, args }
+                if args.is_empty()
+                    && let Some(target) = self.walked(*def, 0) =>
+            {
+                let DefBody::Expr(body) = &self.spec.def(target).body else { unreachable!() };
+                let callee = self.entered(*def, target, scope, args, site, run)?;
                 return self.keep(body, &callee, run, action, rest, depth + 1);
             }
             _ => {}

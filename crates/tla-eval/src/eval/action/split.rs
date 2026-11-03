@@ -88,12 +88,9 @@ impl Evaluator {
         if let Some(error) = self.zero_arity_problem(next) {
             return Err(error);
         }
-        let info = self.spec.def(next);
-        let site = Site {
-            frame: Arc::new(Frame::new(Vec::new(), info.frame_size, None)),
-            module: info.module,
-        };
-        let (DefBody::Expr(body), true) = (&info.body, self.is_walked(next)) else {
+        // TLC splits the definition the configuration replaces `next` with.
+        let Some(target) = self.walked(next, 0) else {
+            let info = self.spec.def(next);
             let action = NextAction {
                 name: info.name,
                 parameters: Vec::new(),
@@ -104,6 +101,12 @@ impl Evaluator {
             };
             return Ok(vec![action]);
         };
+        let info = self.spec.def(target);
+        let site = Site {
+            frame: Arc::new(Frame::new(Vec::new(), info.frame_size, None)),
+            module: info.module,
+        };
+        let DefBody::Expr(body) = &info.body else { unreachable!("a walked definition") };
         let mut actions = Vec::new();
         let closure = Closure { name: info.name, params: 0 };
         self.split(body, &site, &closure, next, &mut actions);
@@ -159,11 +162,12 @@ impl Evaluator {
         next: DefId,
         actions: &mut Vec<NextAction>,
     ) {
-        let info = self.spec.def(def);
-        if !self.is_walked(def) || args.len() != info.params.len() {
+        // TLC splits the definition the configuration replaces `def` with.
+        let Some(target) = self.walked(def, args.len()) else {
             actions.push(self.split_action(expr, site, closure, next));
             return;
-        }
+        };
+        let info = self.spec.def(target);
         let call = |parameters: Vec<Value>| NextAction {
             name: info.name,
             parameters,
@@ -180,7 +184,7 @@ impl Evaluator {
             actions.push(call(values.unwrap_or_default()));
             return;
         }
-        if !are_constant || self.is_constant_value(def) {
+        if !are_constant || self.is_constant_value(target) {
             actions.push(call(Vec::new()));
             return;
         }
@@ -188,7 +192,9 @@ impl Evaluator {
             actions.push(call(Vec::new()));
             return;
         };
-        let Ok(parent) = self.scope_frame(scope, &constant_env(site)) else {
+        let parent =
+            if target == def { self.scope_frame(scope, &constant_env(site)) } else { Ok(None) };
+        let Ok(parent) = parent else {
             actions.push(call(Vec::new()));
             return;
         };

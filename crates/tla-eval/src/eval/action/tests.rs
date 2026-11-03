@@ -710,3 +710,77 @@ fn keeps_an_action_of_an_instance_whole() {
     }
     assert_eq!(successors, ["6", "4", "0", "6", "3"]);
 }
+
+/// An evaluator for `source`, with the modules `modules`, under the overrides of `config`.
+fn configured(source: &str, modules: &[(&str, &str)], config: &str) -> Evaluator {
+    let spec = tla_resolve::resolve(source, &mut |name: &str| {
+        modules.iter().find(|(module, _)| *module == name).map(|(_, text)| (*text).to_owned())
+    })
+    .unwrap_or_else(|error| panic!("{error}"));
+    let model = crate::bind_model(&spec, &tla_parser::parse_config(config).unwrap()).unwrap();
+    Evaluator::new(Arc::new(spec), model.constants).with_overrides(model.overrides)
+}
+
+const OVERRIDDEN: &str = r#"---- MODULE M ----
+EXTENDS Naturals
+VARIABLES x, y
+vars == <<x, y>>
+Init == x = 0 /\ y = 0
+MCInit == x \in {1, 2} /\ y = 0
+Step == x' = x + 1
+MCStep == x' = x + 10
+vars2 == <<y>>
+MCvars2 == <<>>
+Next == Step /\ UNCHANGED y
+MCNext == \/ Step /\ y' = y + 1
+          \/ x' = 0 /\ UNCHANGED vars2
+====
+"#;
+
+#[test]
+fn walks_the_definitions_the_configuration_substitutes() {
+    let current = state(vec![Value::Int(1), Value::Int(5)]);
+    let evaluator = configured(OVERRIDDEN, &[], "CONSTANTS Init <- MCInit Step <- MCStep");
+    assert_eq!(init_states(&evaluator, "Init").unwrap(), ["1, 0", "2, 0"]);
+    assert_eq!(next_states(&evaluator, "Next", &current).unwrap(), ["11, 5"]);
+    let evaluator = configured(OVERRIDDEN, &[], "CONSTANTS Next <- MCNext");
+    assert_eq!(next_states(&evaluator, "Next", &current).unwrap(), ["2, 6", "0, 5"]);
+    let labels: Vec<String> = evaluator
+        .next_actions(def(&evaluator, "Next"))
+        .unwrap()
+        .iter()
+        .map(|action| evaluator.action_label(action))
+        .collect();
+    assert_eq!(
+        labels,
+        [
+            "MCNext line 12, col 14 to line 12, col 31 of module M",
+            "MCNext line 13, col 14 to line 13, col 38 of module M",
+        ]
+    );
+    // UNCHANGED reads the substituted tuple, which leaves y unassigned.
+    let evaluator = configured(OVERRIDDEN, &[], "CONSTANTS Next <- MCNext vars2 <- MCvars2");
+    let error = next_states(&evaluator, "Next", &current).unwrap_err();
+    assert_eq!(
+        error.message,
+        "Successor state is not completely specified by action MCNext of the next-state relation. The following variable is not defined: y."
+    );
+}
+
+#[test]
+fn walks_a_definition_substituted_in_an_instantiated_module() {
+    let inner = "---- MODULE Inner ----\nEXTENDS Naturals\nVARIABLE v\nStep == v' = v + 1\nNext == Step\n====\n";
+    let source = "---- MODULE M ----\nEXTENDS Naturals\nVARIABLE x\nI == INSTANCE Inner WITH v <- x\nFast == x' = x + 100\nInit == x = 0\nNext == I!Next\n====\n";
+    let current = state(vec![Value::Int(1)]);
+    let plain = configured(source, &[("Inner", inner)], "");
+    assert_eq!(next_states(&plain, "Next", &current).unwrap(), ["2"]);
+    let scoped = configured(source, &[("Inner", inner)], "CONSTANTS Step <- [Inner] Fast");
+    assert_eq!(next_states(&scoped, "Next", &current).unwrap(), ["101"]);
+    // The entry replaces the definition in every instance of the module.
+    let source = "---- MODULE M ----\nEXTENDS Naturals\nVARIABLES x, y\nI == INSTANCE Inner WITH v <- x\nJ == INSTANCE Inner WITH v <- y\nFast == x' = x + 100 /\\ y' = y + 100\nInit == x = 0 /\\ y = 0\nNext == (I!Next /\\ y' = y) \\/ (J!Next /\\ x' = x) \\/ (I!Step /\\ y' \\in {y, y + 100})\n====\n";
+    let current = state(vec![Value::Int(1), Value::Int(1)]);
+    let plain = configured(source, &[("Inner", inner)], "");
+    assert_eq!(next_states(&plain, "Next", &current).unwrap(), ["2, 1", "1, 2", "2, 1", "2, 101"]);
+    let scoped = configured(source, &[("Inner", inner)], "CONSTANTS Step <- [Inner] Fast");
+    assert_eq!(next_states(&scoped, "Next", &current).unwrap(), ["101, 101"]);
+}

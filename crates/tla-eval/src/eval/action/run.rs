@@ -163,29 +163,30 @@ impl Evaluator {
         if let Some(error) = self.zero_arity_problem(def) {
             return Err(error);
         }
+        // The walk enters the definition the configuration replaces `def` with, as TLC does.
+        if let Some(target) = self.walked(def, 0) {
+            let info = self.spec.def(target);
+            let site = Site {
+                frame: Arc::new(Frame::new(Vec::new(), info.frame_size, None)),
+                module: info.module,
+            };
+            let DefBody::Expr(body) = &info.body else { unreachable!("a walked definition") };
+            return self.act(body, &site, run, action.called(info.name), rest);
+        }
         let info = self.spec.def(def);
-        let site = Site {
-            frame: Arc::new(Frame::new(Vec::new(), info.frame_size, None)),
-            module: info.module,
-        };
         let action = action.called(info.name);
-        match &info.body {
-            DefBody::Expr(body) if self.is_walked(def) => self.act(body, &site, run, action, rest),
-            _ => {
-                let (state, next) = run.views();
-                let value = self.call_def(def, None, Vec::new(), state, next)?;
-                if value.as_bool().ok_or_else(|| {
-                    let message = format!(
-                        "In computing {}, TLC expected a boolean expression,\nbut instead found {value}.",
-                        run.computation.name()
-                    );
-                    EvalError::at(&self.spec, info.module, info.span, message)
-                })? {
-                    self.resume(run, action, rest)
-                } else {
-                    Ok(())
-                }
-            }
+        let (state, next) = run.views();
+        let value = self.call_def(def, None, Vec::new(), state, next)?;
+        if value.as_bool().ok_or_else(|| {
+            let message = format!(
+                "In computing {}, TLC expected a boolean expression,\nbut instead found {value}.",
+                run.computation.name()
+            );
+            EvalError::at(&self.spec, info.module, info.span, message)
+        })? {
+            self.resume(run, action, rest)
+        } else {
+            Ok(())
         }
     }
 
