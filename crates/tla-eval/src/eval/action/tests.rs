@@ -473,3 +473,42 @@ fn words_errors_as_tlc_does() {
         "UNCHANGED appears in an initial predicate at line 13, column 18"
     );
 }
+
+const FUNCTION_ACTIONS: &str = r#"
+---- MODULE FunctionActions ----
+VARIABLES x, y
+Actions == [p \in {1, 2} |-> x' = p /\ y' = y]
+Steps[n \in {1, 2}] == x' = n /\ y' = n
+One == Actions[1]
+Each == \E p \in {2, 1} : Actions[p]
+Defined == Steps[2]
+Guard == <<TRUE, FALSE>>[1] /\ x' = x /\ y' = y
+Outside == Actions[3]
+NotBoolean == <<1>>[1] /\ x' = x /\ y' = y
+NotFunction == {1}[1] /\ x' = x /\ y' = y
+====
+"#;
+
+/// tla-ts's compileFunctionAction: TLC walks the body of a lazy function an action applies, at
+/// the argument, so each disjunct or witness inside it generates a state.
+#[test]
+fn walks_the_bodies_of_functions_of_actions() {
+    let evaluator = evaluator(FUNCTION_ACTIONS);
+    let current = state(vec![Value::Int(0), Value::Int(0)]);
+    let successors = |name| next_states(&evaluator, name, &current);
+    assert_eq!(successors("One").unwrap(), ["1, 0"]);
+    assert_eq!(successors("Each").unwrap(), ["1, 0", "2, 0"]);
+    assert_eq!(successors("Defined").unwrap(), ["2, 2"]);
+    assert_eq!(successors("Guard").unwrap(), ["0, 0"]);
+    assert!(successors("Outside").unwrap_err().message.starts_with(
+        "In applying the function\n"
+    ));
+    assert_eq!(
+        successors("NotBoolean").unwrap_err().message,
+        "In computing next states, TLC expected a boolean expression,\nbut didn't find one.\nline 11, col 15 to line 11, col 22 of module FunctionActions"
+    );
+    assert_eq!(
+        successors("NotFunction").unwrap_err().message,
+        "In computing next states, a non-function (a set of the form {e1, ... ,eN}) was applied as a function.\nline 12, col 16 to line 12, col 21 of module FunctionActions"
+    );
+}

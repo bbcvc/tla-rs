@@ -97,6 +97,10 @@ pub struct Func {
 pub struct LazyFunc {
     pub domain: Value,
     pub apply: Mapping,
+    /// What the function was built from, for an evaluator that reads it back, as TLC walks the
+    /// body of a function of actions that an action applies. `None` for a function the value
+    /// system builds itself.
+    pub source: Option<Arc<dyn std::any::Any + Send + Sync>>,
 }
 
 /// A set TLC represents symbolically.

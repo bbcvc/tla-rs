@@ -8,6 +8,7 @@
 //! branch assigns variables in place and undoes them when it returns, instead of copying the
 //! state for each branch.
 
+mod apply;
 mod assign;
 mod run;
 
@@ -282,6 +283,9 @@ impl Evaluator {
                     }
                     _ => self.guard(expr, site, run, action, rest),
                 }
+            }
+            ExprKind::FuncApp { func, args } => {
+                self.act_application(func, args, expr, site, run, action, rest)
             }
             ExprKind::Local(local) => {
                 // An argument that is an action, as `A` in `Op(A) == A /\ ...`, is walked where

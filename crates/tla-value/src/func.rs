@@ -320,6 +320,7 @@ impl Value {
                     apply: Arc::new(move |arg| {
                         if key.equals(arg)? { Ok(updated.clone()) } else { previous(arg) }
                     }),
+                    source: None,
                 })))
             }
             _ => fail!([self], "Attempted to apply EXCEPT construct to the value {self}."),
@@ -364,6 +365,7 @@ mod tests {
         let function = Value::LazyFunc(std::sync::Arc::new(crate::LazyFunc {
             domain: Value::lazy(crate::LazySet::Nat),
             apply: std::sync::Arc::new(|_| Ok(Value::Int(0))),
+            source: None,
         }));
         assert_eq!(
             function.materialize().unwrap_err().0,
