@@ -137,6 +137,8 @@ struct Explorer<'a, S: Successors + ?Sized> {
     generated: u64,
     initial: u64,
     depth: u32,
+    /// The index of the state being expanded, once the initial states are done.
+    expanding: Option<usize>,
 }
 
 /// What a visit to a state found.
@@ -186,6 +188,7 @@ pub fn search<S: Successors + ?Sized>(
         generated: 0,
         initial: 0,
         depth: 0,
+        expanding: None,
     };
     let (ending, trace) = explorer.run();
     let distinct = explorer.graph.lock().unwrap().states.len() as u64;
@@ -236,7 +239,8 @@ impl<S: Successors + ?Sized> Explorer<'_, S> {
                 }
             };
             self.cursor.lock().unwrap().expanding = Some((state.clone(), depth as i32));
-            self.update_statistics(index);
+            self.expanding = Some(index);
+            self.update_statistics(None);
             // TLC seeds a worker's random choices with the fingerprint of the state it expands.
             self.evaluator.runtime().set_expanding(Some(state.clone()));
             let mut count = 0u64;
@@ -270,20 +274,30 @@ impl<S: Successors + ?Sized> Explorer<'_, S> {
             index += 1;
         }
         // The postconditions read the counts of the whole search.
-        let distinct = self.graph.lock().unwrap().states.len();
-        self.update_statistics(distinct);
+        self.expanding = Some(self.graph.lock().unwrap().states.len());
+        self.update_statistics(None);
         (Ending::Success, Vec::new())
     }
 
-    fn update_statistics(&self, expanding: usize) {
-        let distinct = self.graph.lock().unwrap().states.len() as i64;
-        let (generated, initial, depth) = (self.generated as i64, self.initial as i64, self.depth);
+    /// Publishes the counts `TLCGet` reads, as TLC keeps them while it explores: a state is
+    /// generated as soon as it is found, and distinct once it is found new, before its
+    /// invariants are checked. `pending` is the depth of a new state not stored yet.
+    fn update_statistics(&self, pending: Option<u32>) {
+        let stored = self.graph.lock().unwrap().states.len() as i64;
+        let distinct = stored + i64::from(pending.is_some());
+        let queue = match self.expanding {
+            Some(expanding) => (stored - expanding as i64 - 1).max(0),
+            // TLC queues a new initial state before it checks it.
+            None => distinct,
+        };
+        let diameter = i64::from(self.depth.max(pending.unwrap_or(0)));
+        let (generated, initial) = (self.generated as i64, self.initial as i64);
         self.evaluator.runtime().update_statistics(|statistics: &mut Statistics| {
             statistics.generated = generated;
             statistics.distinct = distinct;
             statistics.initial = initial;
-            statistics.queue = (distinct - expanding as i64 - 1).max(0);
-            statistics.diameter = i64::from(depth);
+            statistics.queue = queue;
+            statistics.diameter = diameter;
         });
     }
 
@@ -372,6 +386,7 @@ impl<S: Successors + ?Sized> Explorer<'_, S> {
     fn visit_initial(&mut self, state: State) -> Result<Visit> {
         self.generated += 1;
         self.initial += 1;
+        self.update_statistics(None);
         self.cursor.lock().unwrap().candidate = Some((state.clone(), 1));
         let fingerprint = self.fingerprint(&state)?;
         let is_in_model = self.all_hold(&self.plan.constraints, &state, None)?;
@@ -380,6 +395,9 @@ impl<S: Successors + ?Sized> Explorer<'_, S> {
         }
         if is_in_model && self.seen.contains(&fingerprint) {
             return Ok(Visit::Continue);
+        }
+        if is_in_model {
+            self.update_statistics(Some(1));
         }
         if let Some(check) = self.first_failing(&self.plan.invariants, &state, None)? {
             let ending = Ending::InvariantViolation(check.name.clone());
@@ -392,7 +410,6 @@ impl<S: Successors + ?Sized> Explorer<'_, S> {
         if is_in_model {
             self.store(fingerprint, state, None, 1);
         }
-        self.update_statistics(0);
         Ok(Visit::Continue)
     }
 
@@ -405,6 +422,7 @@ impl<S: Successors + ?Sized> Explorer<'_, S> {
         successor: State,
     ) -> Result<Visit> {
         self.generated += 1;
+        self.update_statistics(None);
         self.cursor.lock().unwrap().candidate = Some((successor.clone(), depth as i32 + 1));
         let fingerprint = self.fingerprint(&successor)?;
         let is_found = self.seen.contains(&fingerprint);
@@ -418,6 +436,9 @@ impl<S: Successors + ?Sized> Explorer<'_, S> {
             self.track_possible(&self.plan.action_possible, state, Some(&successor))?;
         }
         let is_new = is_in_model && !is_found;
+        if is_new {
+            self.update_statistics(Some(depth + 1));
+        }
         let trace = || {
             let mut trace = self.graph.lock().unwrap().path(parent);
             trace.push(successor.clone());

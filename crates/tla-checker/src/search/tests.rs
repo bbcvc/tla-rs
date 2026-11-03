@@ -89,7 +89,14 @@ fn answers_tlcget_like_tlc() {
     let config = "SPECIFICATION Spec\nINVARIANT Shallow\nCHECK_DEADLOCK FALSE";
     let outcome = run(&body, config, System { init: vec![0], next: counter });
     assert_eq!((outcome.violation.as_deref(), outcome.trace_length), (Some("Shallow"), Some(3)));
+    // A new state counts as distinct before TLC checks its invariants, so the third state
+    // sees three.
     let config = "SPECIFICATION Spec\nINVARIANT Few\nCHECK_DEADLOCK FALSE";
     let outcome = run(&body, config, System { init: vec![0], next: counter });
-    assert_eq!((outcome.violation.as_deref(), outcome.trace_length), (Some("Few"), Some(4)));
+    assert_eq!((outcome.violation.as_deref(), outcome.trace_length), (Some("Few"), Some(3)));
+    // TLC stops between expansions once `TLCSet("exit", TRUE)` is evaluated.
+    let body = format!("{SPEC}\nStop == TLCSet(\"exit\", TLCGet(\"distinct\") > 1)");
+    let config = "SPECIFICATION Spec\nINVARIANT Stop\nCHECK_DEADLOCK FALSE";
+    let outcome = run(&body, config, System { init: vec![0], next: counter });
+    assert_eq!(counts(&outcome), (Status::Success, Some(2), Some(2), Some(2)));
 }
