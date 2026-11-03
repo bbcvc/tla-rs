@@ -282,3 +282,32 @@ Parameterized == <<B({1, 2, 3})!Table[{3}], B({4})!Table>>
         "<<<<<<>>>>, ({} :> <<>> @@ {4} :> <<<<>>>>)>>"
     );
 }
+
+/// TLC enumerates a function over a set enumeration or an interval at once, and builds one over
+/// any other domain lazily, so that its body fails only at the arguments it is applied to.
+#[test]
+fn defers_errors_of_functions_over_other_domains() {
+    let product = "[x \\in {1, 2}, y \\in {3} |-> IF x = 1 THEN 0 ELSE CHOOSE z \\in {} : TRUE]";
+    let subsets = "[s \\in SUBSET {1} |-> IF s = {} THEN 0 ELSE CHOOSE z \\in {} : TRUE]";
+    let printed = show(
+        &format!(
+            "Product == \\E f \\in {{{product}}} : f[1, 3] = 0\nSubsets == \\E f \\in {{{subsets}}} : f[{{}}] = 0"
+        ),
+        &["Product", "Subsets"],
+    );
+    assert_eq!(printed, ["TRUE", "TRUE"]);
+    assert_eq!(
+        error(
+            "\\E f \\in {[x \\in {1, 2} |-> IF x = 1 THEN 0 ELSE CHOOSE z \\in {} : TRUE]} : TRUE"
+        )
+        .message,
+        "Attempted to compute the value of an expression of form\nCHOOSE x \\in S: P, but no element of S satisfied P."
+    );
+}
+
+#[test]
+fn shares_evaluators_across_threads() {
+    fn assert_send_sync<T: Send + Sync>() {}
+    assert_send_sync::<Evaluator>();
+    assert_send_sync::<tla_eval::Value>();
+}
