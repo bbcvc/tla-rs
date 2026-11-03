@@ -3,6 +3,7 @@
 use std::cmp::Ordering;
 use std::sync::Arc;
 
+use crate::combinations::{Combinations, Make};
 use crate::{Error, LazySet, Result, Value, bail, fail};
 
 /// Sorts values by [`Value::compare`] and drops duplicates, or fails if two can't be compared.
@@ -89,27 +90,6 @@ pub(crate) fn sort_like_tlc(elements: &[Value]) -> Result<Vec<Value>> {
     Ok(sorted)
 }
 
-/// The subsets of a sorted base in TLC's order: by size, then in the order of the base.
-fn subsets(base: &[Value]) -> Vec<Value> {
-    let mut subsets = Vec::with_capacity(1 << base.len());
-    for size in 0..=base.len() {
-        let mut indexes: Vec<usize> = (0..size).collect();
-        loop {
-            subsets.push(Value::Set(indexes.iter().map(|&index| base[index].clone()).collect()));
-            let Some(position) =
-                (0..size).rev().find(|&position| indexes[position] < base.len() - size + position)
-            else {
-                break;
-            };
-            indexes[position] += 1;
-            for next in position + 1..size {
-                indexes[next] = indexes[next - 1] + 1;
-            }
-        }
-    }
-    subsets
-}
-
 /// How a set lists the elements of a set it combines: in TLC's order, or as TLC streams them.
 pub(crate) type ElementsOf = fn(&Value) -> Result<Arc<[Value]>>;
 
@@ -134,12 +114,12 @@ fn component_elements(
     Ok(lists)
 }
 
-/// The elements of `set` that satisfy `test`.
+/// The elements of `set` that satisfy `test`, without building those of a large set that don't.
 fn keep(set: &Value, mut test: impl FnMut(&Value) -> Result<bool>) -> Result<Arc<[Value]>> {
     let mut kept = Vec::new();
-    for element in set.elements()?.iter() {
-        if test(element)? {
-            kept.push(element.clone());
+    for element in set.enumeration()?.iter() {
+        if test(&element)? {
+            kept.push(element);
         }
     }
     Ok(kept.into())
@@ -175,32 +155,6 @@ fn interval_low(keys: &[Value]) -> Option<i32> {
         .enumerate()
         .all(|(index, key)| matches!(key, Value::Int(key) if i64::from(*key) == i64::from(first) + index as i64));
     is_interval.then_some(first)
-}
-
-/// Every choice of one element from each list, the first list varying slowest, which is the
-/// order TLC sorts tuples, records, and functions over a shared domain in.
-fn choices(lists: &[Arc<[Value]>]) -> Vec<Vec<Value>> {
-    let total = lists.iter().map(|list| list.len()).product::<usize>();
-    let mut result = Vec::with_capacity(total);
-    if total == 0 {
-        return result;
-    }
-    let mut indexes = vec![0; lists.len()];
-    loop {
-        result.push(indexes.iter().zip(lists).map(|(&index, list)| list[index].clone()).collect());
-        let mut position = lists.len();
-        loop {
-            if position == 0 {
-                return result;
-            }
-            position -= 1;
-            indexes[position] += 1;
-            if indexes[position] < lists[position].len() {
-                break;
-            }
-            indexes[position] = 0;
-        }
-    }
 }
 
 fn checked_power(base: i64, exponent: i64, set: &Value) -> Result<i32> {
@@ -323,21 +277,11 @@ impl Value {
     fn lazy_elements(&self, set: &LazySet) -> Result<Arc<[Value]>> {
         match set {
             LazySet::Subset(base) => {
-                // TLC sizes the base first, and enumerates only the empty set of a base of size 0.
-                if base.cardinality()? == 0 {
-                    return Ok(Arc::from([Value::empty_set()]));
-                }
-                if !base.is_set() {
-                    fail!(
-                        [base],
-                        "Attempted to compute the value of an expression of form\nSUBSET S, but S is a non-enumerable value:\n{base}"
-                    );
-                }
-                let base = base.elements()?;
-                if base.len() > 30 {
+                let subsets = base.subsets()?;
+                if subsets.len() > 1 << 30 {
                     fail!([self], "Overflow when computing the number of elements in:\n{self}");
                 }
-                Ok(subsets(&base).into())
+                Ok(subsets.iter().collect())
             }
             LazySet::FuncSet { .. } | LazySet::RecordSet(_) | LazySet::Product(_) => {
                 self.combined_elements(set, Value::elements)
@@ -403,10 +347,23 @@ impl Value {
         set: &LazySet,
         elements_of: ElementsOf,
     ) -> Result<Arc<[Value]>> {
-        match set {
+        match self.combinations(set, elements_of)? {
+            Some(combinations) => Ok(combinations.iter().collect()),
+            None => self.elements(),
+        }
+    }
+
+    /// The elements of a set of functions, records, or tuples, as `combined_elements` lists them,
+    /// to be built as they're read. `None` for any other set.
+    pub(crate) fn combinations(
+        &self,
+        set: &LazySet,
+        elements_of: ElementsOf,
+    ) -> Result<Option<Combinations>> {
+        let combinations = match set {
             LazySet::FuncSet { domain, range } => {
                 if self.is_empty()? {
-                    return Ok(Arc::from([]));
+                    return Ok(Some(Combinations::empty()));
                 }
                 if is_overridden(domain) {
                     fail!(
@@ -422,15 +379,11 @@ impl Value {
                     );
                 }
                 let range = if keys.is_empty() { Arc::from([]) } else { elements_of(range)? };
-                let lists = vec![range; keys.len()];
-                choices(&lists)
-                    .into_iter()
-                    .map(|values| Value::function(keys.iter().cloned().zip(values).collect()))
-                    .collect()
+                Combinations::choices(vec![range; keys.len()], Make::Function(keys))
             }
             LazySet::RecordSet(fields) => {
                 if self.is_empty()? {
-                    return Ok(Arc::from([]));
+                    return Ok(Some(Combinations::empty()));
                 }
                 let sets: Vec<&Value> = fields.iter().map(|(_, set)| set).collect();
                 let lists = component_elements(&sets, elements_of, |set, index| {
@@ -439,14 +392,12 @@ impl Value {
                         fields[index].0
                     )
                 })?;
-                let records = choices(&lists).into_iter().map(|values| {
-                    Value::record(fields.iter().map(|(name, _)| *name).zip(values).collect())
-                });
-                Ok(records.collect())
+                let names = fields.iter().map(|(name, _)| *name).collect();
+                Combinations::choices(lists, Make::Record(names))
             }
             LazySet::Product(factors) => {
                 if self.is_empty()? {
-                    return Ok(Arc::from([]));
+                    return Ok(Some(Combinations::empty()));
                 }
                 let sets: Vec<&Value> = factors.iter().collect();
                 let lists = component_elements(&sets, elements_of, |factor, index| {
@@ -454,10 +405,27 @@ impl Value {
                         "Attempted to enumerate a set of the form s1 \\X s2 ... \\X sn,\nbut can't enumerate s{index}:\n{factor}"
                     )
                 })?;
-                Ok(choices(&lists).into_iter().map(Value::tuple).collect())
+                Combinations::choices(lists, Make::Tuple)
             }
-            _ => self.elements(),
+            _ => return Ok(None),
+        };
+        Ok(Some(combinations))
+    }
+
+    /// The elements of `SUBSET self`: the subsets of this set by size, and then in its order, as
+    /// TLC enumerates them.
+    pub(crate) fn subsets(&self) -> Result<Combinations> {
+        // TLC sizes the base first, and enumerates only the empty set of a base of size 0.
+        if self.cardinality()? == 0 {
+            return Ok(Combinations::subsets(Arc::from([])));
         }
+        if !self.is_set() {
+            fail!(
+                [self],
+                "Attempted to compute the value of an expression of form\nSUBSET S, but S is a non-enumerable value:\n{self}"
+            );
+        }
+        Ok(Combinations::subsets(self.elements()?))
     }
 
     /// Whether the set is empty, which TLC decides for a set of functions, records, or tuples

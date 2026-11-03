@@ -2,7 +2,7 @@
 
 use std::sync::Arc;
 
-use tla_resolve::{Bound, DefId, ExceptKey, ExceptUpdate, Expr};
+use tla_resolve::{Bound, DefBody, DefId, ExceptKey, ExceptUpdate, Expr, ExprKind, Scope};
 use tla_value::{Error, Key, LazyFunc, LazySet, Symbol, Value};
 
 use super::bound::{Binder, Variable, bind_frame, binders, tuple_items};
@@ -122,6 +122,12 @@ impl Evaluator {
         expr: &Expr,
         env: &mut Env<'_>,
     ) -> Result<Value> {
+        if let ExprKind::Call { def, scope, args: call_args } = &func.kind
+            && call_args.is_empty()
+            && self.is_applied_in_place(*def)
+        {
+            return self.apply_definition(*def, scope, args, expr, env);
+        }
         let keep_lazy = std::mem::replace(&mut env.keep_lazy, true);
         let function = self.eval(func, env);
         env.keep_lazy = keep_lazy;
@@ -139,6 +145,59 @@ impl Evaluator {
             _ => Value::tuple(self.eval_all(args, env)?),
         };
         function.apply(&argument).at(self, env, expr)
+    }
+
+    /// Whether applying `def` evaluates its body at the argument in place: `def` is a function
+    /// definition the evaluator builds lazily, a recursive one or one in a `LET`, which nothing
+    /// replaces.
+    fn is_applied_in_place(&self, def: DefId) -> bool {
+        matches!(self.spec.def(def).body, DefBody::Function { .. })
+            && (self.is_recursive[def.index()] || self.spec.def(def).depth > 0)
+            && self.overrides[def.index()].is_none()
+            && self.natives[def.index()].is_none()
+            && !self.is_computed_once(def)
+    }
+
+    /// `f[args]` for a function definition `f[x \in S] == body` that the evaluator builds lazily.
+    /// It evaluates the body at the argument as the lazy function would, without building the
+    /// function, which a recursive definition would otherwise do at each step of its recursion.
+    fn apply_definition(
+        &self,
+        def: DefId,
+        scope: &Scope,
+        args: &[Expr],
+        expr: &Expr,
+        env: &mut Env<'_>,
+    ) -> Result<Value> {
+        let info = self.spec.def(def);
+        let DefBody::Function { bounds, body } = &info.body else {
+            unreachable!("only a function definition is applied in place")
+        };
+        let parent = self.scope_frame(scope, env)?;
+        let frame = Arc::new(Frame::new(Vec::new(), info.frame_size, parent));
+        // As in the lazy function, which keeps the state and the laziness of its application.
+        let mut inner =
+            Env { frame, module: info.module, state: env.state, next: env.next, keep_lazy: true };
+        let mut factors = Vec::new();
+        for bound in bounds {
+            let set = self.eval(&bound.set, &mut inner)?;
+            factors.extend(binders(&bound.pattern).map(|_| set.clone()));
+        }
+        let domain = match <[Value; 1]>::try_from(factors) {
+            Ok([set]) => set,
+            Err(factors) => Value::lazy(LazySet::Product(factors.into())),
+        };
+        let argument = match args {
+            [arg] => self.eval(arg, env)?,
+            _ => Value::tuple(self.eval_all(args, env)?),
+        };
+        if !domain.contains(&argument).at(self, env, expr)? {
+            let message =
+                format!("Attempted to apply a function to {argument}, which is not in its domain");
+            return Err(self.error(env, expr, message));
+        }
+        bind_argument(bounds, &argument, &mut inner.frame).at(self, env, expr)?;
+        self.eval(body, &mut inner).map_err(|error| self.error(env, expr, error.message))
     }
 
     /// `r.field`.
@@ -228,6 +287,12 @@ pub(super) fn bind_argument(
     argument: &Value,
     frame: &mut Arc<Frame>,
 ) -> tla_value::Result<()> {
+    if let [bound] = bounds
+        && let mut single = binders(&bound.pattern)
+        && let (Some(binder), None) = (single.next(), single.next())
+    {
+        return bind_frame(binder, argument.clone(), frame);
+    }
     let binders: Vec<Binder<'_>> =
         bounds.iter().flat_map(|bound| binders(&bound.pattern)).collect();
     if let [binder] = binders[..] {

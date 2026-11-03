@@ -415,7 +415,7 @@ impl Evaluator {
         site: &Site,
         mut visit: impl FnMut(&Site) -> Result<bool>,
     ) -> Result<()> {
-        if variables.iter().any(|variable| variable.elements.len() == 0) {
+        if variables.iter().any(|variable| variable.elements.is_empty()) {
             return Ok(());
         }
         let mut bound = site.clone();
