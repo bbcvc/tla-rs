@@ -148,32 +148,55 @@ impl Evaluator {
         env: &mut Env<'_>,
     ) -> Result<Value> {
         let takes_expressions = self.takes_expressions[def.index()];
-        let arg_exprs = args;
-        let args = self
-            .spec
-            .def(def)
-            .params
-            .iter()
-            .zip(args)
-            .map(|(&arity, arg)| match (arity, &arg.kind) {
-                (0, _) if takes_expressions => Ok(Arg::Op(self.deferred(arg, env))),
-                (0, _) => Ok(Arg::Value(self.eval(arg, env)?)),
-                (_, ExprKind::OpArg(op)) => Ok(Arg::Op(self.operator(op, arg, env)?)),
-                _ => Err(self.error(env, arg, "Expected an operator as this argument")),
-            })
-            .collect::<Result<Vec<_>>>()?;
-        let outer: &Env<'_> = env;
+        let arg = |arity: usize, arg: &Expr, env: &mut Env<'_>| match (arity, &arg.kind) {
+            (0, _) if takes_expressions => Ok(Arg::Op(self.deferred(arg, env))),
+            (0, _) => Ok(Arg::Value(self.eval(arg, env)?)),
+            (_, ExprKind::OpArg(op)) => Ok(Arg::Op(self.operator(op, arg, env)?)),
+            _ => Err(self.error(env, arg, "Expected an operator as this argument")),
+        };
+        // Natives take few arguments, which go on the stack.
+        let result = match (self.spec.def(def).params.as_slice(), args) {
+            ([a], [x]) => {
+                let values = [arg(*a, x, env)?];
+                self.run_native(native, def, scope, args, &values, env)
+            }
+            ([a, b], [x, y]) => {
+                let values = [arg(*a, x, env)?, arg(*b, y, env)?];
+                self.run_native(native, def, scope, args, &values, env)
+            }
+            (params, _) => {
+                let values = params
+                    .iter()
+                    .zip(args)
+                    .map(|(&arity, expr)| arg(arity, expr, env))
+                    .collect::<Result<Vec<_>>>()?;
+                self.run_native(native, def, scope, args, &values, env)
+            }
+        };
+        result.at(self, env, expr)
+    }
+
+    /// Runs a native with its arguments `values`, able to fall back to `def` applied to
+    /// `arg_exprs`.
+    fn run_native(
+        &self,
+        native: Native,
+        def: DefId,
+        scope: &Scope,
+        arg_exprs: &[Expr],
+        values: &[Arg],
+        env: &Env<'_>,
+    ) -> tla_value::Result<Value> {
         let definition = || {
-            let parent = self.scope_frame(scope, outer)?;
-            let slots = arg_exprs.iter().map(|arg| self.arg_slot(arg, outer));
+            let parent = self.scope_frame(scope, env)?;
+            let slots = arg_exprs.iter().map(|arg| self.arg_slot(arg, env));
             let slots = slots.collect::<Result<_>>()?;
-            self.enter(def, parent, slots, outer.state, outer.next, outer.keep_lazy)
+            self.enter(def, parent, slots, env.state, env.next, env.keep_lazy)
         };
         let mut ctx = Ctx::new(self, env.state);
         ctx.next = env.next;
         ctx.definition = Some(&definition);
-        let result = native(&mut ctx, &args);
-        result.at(self, env, expr)
+        native(&mut ctx, values)
     }
 
     /// `F(args)` for an operator parameter `F`.
