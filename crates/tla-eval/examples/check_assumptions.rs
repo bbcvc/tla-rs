@@ -113,6 +113,11 @@ fn check(spec_path: &Path, library: &HashMap<String, PathBuf>, options: Options)
             .ok()
             .or_else(|| library.get(name).and_then(|path| std::fs::read_to_string(path).ok()))
     };
+    // TLC orders strings by when it interns them, which every sorted set and record built from
+    // here on depends on. A module SANY can't read fails resolution below.
+    if let Ok(order) = tla_resolve::tlc_string_order(&source, &config, &mut loader) {
+        tla_eval::value::set_order(order.iter().map(String::as_str));
+    }
     let spec = match tla_resolve::resolve(&source, &mut loader) {
         Ok(spec) => spec,
         Err(error) => return Outcome::Error(error.to_string()),
@@ -132,6 +137,8 @@ fn check(spec_path: &Path, library: &HashMap<String, PathBuf>, options: Options)
     // TLC creates its model checker, whose options TLCGet("config") reads, before it checks the
     // assumptions. The options TLC takes from its command line keep their defaults.
     evaluator.runtime().start(CheckerOptions::for_config(&config));
+    // TLC computes the constant definitions as it starts, before it checks the assumptions.
+    evaluator.evaluate_constant_definitions();
     for def in assumptions {
         match evaluator.eval_def(def, None) {
             Ok(value) if value.as_bool() == Some(true) => {}

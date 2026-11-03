@@ -17,10 +17,10 @@ mod order;
 mod set;
 
 use std::fmt;
-use std::sync::Arc;
+use std::sync::{Arc, OnceLock};
 
 pub use func::Key;
-pub use tla_intern::Symbol;
+pub use tla_intern::{Symbol, set_order};
 
 /// An evaluation error, worded like TLC's where TLC reports the same problem.
 #[derive(Clone, Debug, PartialEq, Eq, thiserror::Error)]
@@ -74,7 +74,7 @@ pub enum Value {
     Func(Arc<Func>),
     /// `low..high`, empty when `low > high`.
     Interval(i32, i32),
-    Lazy(Arc<LazySet>),
+    Lazy(LazySetRef),
     /// A function TLC applies on demand rather than enumerate, such as `[n \in Nat |-> n + 1]`.
     LazyFunc(Arc<LazyFunc>),
 }
@@ -97,6 +97,32 @@ pub struct Func {
 pub struct LazyFunc {
     pub domain: Value,
     pub apply: Mapping,
+}
+
+/// A shared lazy set, with its elements once enumerated, which TLC keeps, as tla-ts's
+/// `toFiniteSet` does, so that a set enumerated again, such as one a constant definition holds,
+/// isn't recomputed.
+#[derive(Clone)]
+pub struct LazySetRef(Arc<LazySetCell>);
+
+struct LazySetCell {
+    set: LazySet,
+    elements: OnceLock<Arc<[Value]>>,
+}
+
+impl LazySetRef {
+    /// The elements, once enumerated.
+    pub(crate) fn elements(&self) -> &OnceLock<Arc<[Value]>> {
+        &self.0.elements
+    }
+}
+
+impl std::ops::Deref for LazySetRef {
+    type Target = LazySet;
+
+    fn deref(&self) -> &LazySet {
+        &self.0.set
+    }
 }
 
 /// A set TLC represents symbolically.
@@ -153,7 +179,7 @@ impl Value {
     }
 
     pub fn lazy(set: LazySet) -> Self {
-        Self::Lazy(Arc::new(set))
+        Self::Lazy(LazySetRef(Arc::new(LazySetCell { set, elements: OnceLock::new() })))
     }
 
     /// The model value `name`, typed if its name is `T_rest`.

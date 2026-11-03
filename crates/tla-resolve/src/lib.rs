@@ -14,6 +14,7 @@ mod expr;
 mod ir;
 mod levels;
 mod module;
+mod order;
 mod selection;
 mod stdlib;
 
@@ -21,6 +22,7 @@ use std::collections::{HashMap, HashSet};
 use std::rc::Rc;
 
 pub use ir::*;
+pub use order::tlc_string_order;
 use tla_ast::{Span, Symbol};
 
 use crate::expr::FrameScope;

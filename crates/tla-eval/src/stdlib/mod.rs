@@ -145,6 +145,45 @@ pub(crate) fn takes_expressions(module: &str, name: &str) -> bool {
     )
 }
 
+/// Whether TLC counts the operator `name` of `module` as state-level, as it does the operators its
+/// Java code overrides with a minimum level, so that a definition using it isn't a constant TLC
+/// computes once. tla-ts's list, and IOUtils' commands, which TLC overrides with level 1.
+pub(crate) fn is_state_level(module: &str, name: &str) -> bool {
+    match module {
+        "TLC" => matches!(name, "TLCGet" | "TLCSet"),
+        "TLCExt" => matches!(
+            name,
+            "AssertError"
+                | "TLCGetOrDefault"
+                | "TLCGetAndSet"
+                | "Trace"
+                | "CounterExample"
+                | "TLCDefer"
+                | "PickSuccessor"
+                | "TLCCache"
+                | "TLCEvalDefinition"
+        ),
+        "_Possible" => matches!(name, "_Track" | "_Counts" | "_CheckName" | "_PrintCounts"),
+        "Json" => matches!(
+            name,
+            "ToJson"
+                | "ToJsonArray"
+                | "ToJsonObject"
+                | "JsonSerialize"
+                | "JsonDeserialize"
+                | "ndJsonSerialize"
+                | "ndJsonDeserialize"
+        ),
+        "Randomization" => {
+            matches!(name, "RandomSubset" | "RandomSetOfSubsets" | "TestRandomSetOfSubsets")
+        }
+        "IOUtils" => {
+            matches!(name, "IOExec" | "IOEnvExec" | "IOExecTemplate" | "IOEnvExecTemplate")
+        }
+        _ => false,
+    }
+}
+
 /// The value of argument `index` of a native that takes its arguments unevaluated, or its value
 /// when the native is applied to values, as an operator argument is.
 fn forced(ctx: &mut crate::Ctx<'_>, args: &[Arg], index: usize) -> Outcome {
