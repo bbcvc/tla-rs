@@ -424,13 +424,11 @@ pub fn solutions(formula: &Live) -> Result<Vec<Solution>, String> {
 mod tests {
     use std::rc::Rc;
 
-    use tla_resolve::DefId;
-
     use super::*;
     use crate::liveness::live::{Atom, Eval};
 
     fn atom(id: usize, is_action: bool) -> Live {
-        let eval = Eval { def: DefId(0), bound: Rc::from([]) };
+        let eval = Eval { frames: crate::liveness::tests::frames(), expr: 0 };
         let kind = if is_action {
             AtomKind::Action { action: eval, unchanged: None, enabled: None }
         } else {

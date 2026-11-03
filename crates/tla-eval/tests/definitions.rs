@@ -322,29 +322,27 @@ fn shares_evaluators_across_threads() {
 }
 
 #[test]
-fn evaluates_a_definition_with_bound_slots() {
-    use tla_resolve::{DefBody, DefLevels, ExprKind, Pattern};
+fn evaluates_expressions_in_the_frames_of_calls() {
+    use tla_resolve::{DefBody, ExprKind, Pattern};
 
-    let mut spec = spec("EXTENDS Naturals\nPositive == \\A p \\in {1, 2} : p + 1 > 2", &[]);
-    let positive = spec.def(lookup(&spec, "Positive")).clone();
-    let DefBody::Expr(body) = &positive.body else { panic!("Positive is an expression") };
+    let spec =
+        spec("EXTENDS Naturals\nAbove(n) == \\A p \\in {1, 2} : p + n > 2\nUse == Above(1)", &[]);
+    let evaluator = Evaluator::new(Arc::new(spec), Vec::new());
+    let spec = evaluator.spec();
+    let (above, using) = (lookup(spec, "Above"), lookup(spec, "Use"));
+    let DefBody::Expr(body) = &spec.def(above).body else { panic!("Above is an expression") };
     let ExprKind::Quant { bounds, body, .. } = &body.kind else { panic!("a quantifier") };
     let Pattern::Names(slots) = &bounds[0].pattern else { panic!("a name") };
-    // The body of the quantifier, as a definition in the frame of Positive.
-    let mut part = positive.clone();
-    part.body = DefBody::Expr((**body).clone());
-    spec.defs.push(part);
-    spec.levels.push(DefLevels {
-        level: tla_resolve::Level::Constant,
-        max_levels: Vec::new(),
-        weights: Vec::new(),
-        min_max_levels: Vec::new(),
-        leibniz: Vec::new(),
-    });
-    let part = tla_resolve::DefId(spec.defs.len() as u32 - 1);
-    let evaluator = Evaluator::new(Arc::new(spec), Vec::new());
-    let at =
-        |p: i32| evaluator.eval_bound(part, &[(slots[0], tla_eval::Value::Int(p))], None, None);
-    assert_eq!(at(1).unwrap().as_bool(), Some(false));
-    assert_eq!(at(2).unwrap().as_bool(), Some(true));
+    let DefBody::Expr(call) = &spec.def(using).body else { panic!("Use is an expression") };
+    let ExprKind::Call { def, scope, args } = &call.kind else { panic!("a call") };
+    // SAFETY: the expressions are the spec's.
+    let frames =
+        unsafe { evaluator.call_frames(&evaluator.module_frames(using), *def, scope, args) }
+            .unwrap();
+    let at = |p: i32| {
+        let bound = evaluator.bind(&frames, slots[0], tla_eval::Value::Int(p));
+        // SAFETY: the body of the quantifier is the spec's, written in the frames of Above.
+        unsafe { evaluator.eval_in(&bound, body, None, None) }.unwrap().as_bool()
+    };
+    assert_eq!((at(1), at(2)), (Some(false), Some(true)));
 }

@@ -16,7 +16,6 @@ use tla_value::Symbol;
 
 use crate::Error;
 use crate::level::{Levels, STATE_LEVEL_OPERATORS};
-use crate::liveness::template::Template;
 pub use parts::describe_range;
 use parts::{Part, always, is_temporal_quantifier};
 
@@ -44,11 +43,15 @@ pub struct Plan {
     pub initial_predicates: Vec<Check>,
     /// `[A]_v` of the property `[][A]_v`, which holds of every step.
     pub action_properties: Vec<Check>,
-    /// The temporal parts of the properties, by name, which liveness checking checks.
-    pub properties: Vec<(String, Template)>,
+    /// The temporal parts of the properties, by name, which liveness checking checks, each a
+    /// module-level definition.
+    pub properties: Vec<(String, DefId)>,
     /// The temporal parts of the specification, such as fairness, which liveness checking
     /// assumes of every behavior.
-    pub fairness: Vec<Template>,
+    pub fairness: Vec<DefId>,
+    /// The definition `ENABLED <<A>>_v` of each fairness condition, by the definition it is in
+    /// and where it is written.
+    pub enabled: temporal::EnabledDefs,
     pub constraints: Vec<Check>,
     pub action_constraints: Vec<Check>,
     /// The `VIEW`, whose value tells states apart instead of their variables.
@@ -152,17 +155,18 @@ pub fn plan(
         planner.plan.view = Some(planner.operator("view function", view)?);
     }
     planner.postconditions(&config.postconditions);
-    // TLC builds the liveness checker, and so translates the temporal formulas, only when
+    // TLC builds the liveness checker, which translates the temporal formulas, only when
     // there are temporal properties to check.
     if !planner.temporal_properties.is_empty() {
         for (name, part) in std::mem::take(&mut planner.temporal_properties) {
-            let template = planner.temporal(&part)?;
-            planner.plan.properties.push((name, template));
+            let def = planner.temporal(&part);
+            planner.plan.properties.push((name, def));
         }
         for part in std::mem::take(&mut planner.temporal_spec) {
-            let template = planner.temporal(&part)?;
-            planner.plan.fairness.push(template);
+            let def = planner.temporal(&part);
+            planner.plan.fairness.push(def);
         }
+        planner.plan.enabled = planner.enabled_defs();
     }
     Ok(planner.plan)
 }

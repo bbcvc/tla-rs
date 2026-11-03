@@ -4,13 +4,15 @@
 
 use std::collections::HashMap;
 
+use tla_ast::Span;
 use tla_eval::{Evaluator, State};
+use tla_resolve::{DefId, Expr};
 
+use super::convert::Translation;
 use super::graph::{Graph, remove_repeats};
 use super::lasso::{self, Lasso};
 use super::live::{AtomKind, Eval, Live};
 use super::tableau::{self, Solution};
-use super::template::{Instantiator, Template};
 
 /// A successor of a state in the model, with its index in the search if it was stored.
 #[derive(Clone)]
@@ -45,6 +47,8 @@ struct Cache {
 
 pub struct Checker<'e> {
     evaluator: &'e Evaluator,
+    /// The expressions the atoms evaluate.
+    exprs: Vec<&'e Expr>,
     graphs: Vec<Graph>,
     /// The number of distinct action checks across the solutions.
     action_ids: usize,
@@ -57,24 +61,26 @@ fn key(state: &State) -> *const tla_eval::Value {
 }
 
 impl<'e> Checker<'e> {
-    /// The checker of the temporal `properties` of a spec with `fairness`, or `None` without
-    /// properties.
+    /// The checker of the temporal `properties` of a spec with `fairness`, each a module-level
+    /// definition spec processing made, or `None` without properties. `overrides` are the
+    /// definitions the configuration replaces, and `enabled` the definitions `ENABLED <<A>>_v`
+    /// of the fairness conditions.
     pub fn new(
         evaluator: &'e Evaluator,
-        properties: &[(String, Template)],
-        fairness: &[Template],
+        properties: &[(String, DefId)],
+        fairness: &[DefId],
+        overrides: &'e HashMap<DefId, DefId>,
+        enabled: &'e HashMap<(DefId, Span), DefId>,
     ) -> Result<Option<Self>, String> {
         if properties.is_empty() {
             return Ok(None);
         }
-        let mut instantiator = Instantiator::new(evaluator);
-        let fairness: Vec<Live> = fairness
-            .iter()
-            .map(|template| instantiator.formula(template))
-            .collect::<Result<_, _>>()?;
+        let mut translation = Translation::new(evaluator, overrides, enabled);
+        let fairness: Vec<Live> =
+            fairness.iter().map(|&def| translation.formula(def)).collect::<Result<_, _>>()?;
         let mut negations: Vec<Live> = properties
             .iter()
-            .map(|(_, template)| Ok(Live::not(instantiator.formula(template)?)))
+            .map(|(_, def)| Ok(Live::not(translation.formula(*def)?)))
             .collect::<Result<_, String>>()?;
         let violation =
             if negations.len() == 1 { negations.pop().unwrap() } else { Live::or(negations) };
@@ -106,6 +112,7 @@ impl<'e> Checker<'e> {
             .collect();
         Ok(Some(Self {
             evaluator,
+            exprs: translation.exprs,
             graphs,
             action_ids: ids.len(),
             capacity: 1,
@@ -129,7 +136,8 @@ impl<'e> Checker<'e> {
             let consistent: Vec<usize> = (0..tableau.initial)
                 .filter_map(|node| {
                     let predicates = &tableau.nodes[node].state_predicates;
-                    match all_hold(self.evaluator, &mut self.cache, predicates, state) {
+                    match all_hold(self.evaluator, &self.exprs, &mut self.cache, predicates, state)
+                    {
                         Ok(true) => Some(Ok(node)),
                         Ok(false) => None,
                         Err(error) => Some(Err(error)),
@@ -228,7 +236,7 @@ impl<'e> Checker<'e> {
         let checks = &self.graphs[position].solution.state_checks;
         checks
             .iter()
-            .map(|check| eval(self.evaluator, &mut self.cache, check, state, None))
+            .map(|check| eval(self.evaluator, &self.exprs, &mut self.cache, check, state, None))
             .collect()
     }
 
@@ -246,8 +254,14 @@ impl<'e> Checker<'e> {
             let result = match known {
                 Some(result) => result,
                 None => {
-                    let result =
-                        eval(self.evaluator, &mut self.cache, check, state, Some(successor))?;
+                    let result = eval(
+                        self.evaluator,
+                        &self.exprs,
+                        &mut self.cache,
+                        check,
+                        state,
+                        Some(successor),
+                    )?;
                     self.cache.alive.extend([state.clone(), successor.clone()]);
                     let known = self
                         .cache
@@ -266,7 +280,7 @@ impl<'e> Checker<'e> {
     fn is_consistent(&mut self, position: usize, node: u32, state: &State) -> Result<bool, String> {
         let Some(tableau) = &self.graphs[position].solution.tableau else { return Ok(true) };
         let predicates = &tableau.nodes[node as usize].state_predicates;
-        all_hold(self.evaluator, &mut self.cache, predicates, state)
+        all_hold(self.evaluator, &self.exprs, &mut self.cache, predicates, state)
     }
 
     fn tableau_successors(&self, position: usize, node: u32) -> Vec<u32> {
@@ -480,28 +494,41 @@ fn same(left: &State, right: &State) -> bool {
 
 fn all_hold(
     evaluator: &Evaluator,
+    exprs: &[&Expr],
     cache: &mut Cache,
     predicates: &[Live],
     state: &State,
 ) -> Result<bool, String> {
     for predicate in predicates {
-        if !eval(evaluator, cache, predicate, state, None)? {
+        if !eval(evaluator, exprs, cache, predicate, state, None)? {
             return Ok(false);
         }
     }
     Ok(true)
 }
 
+fn value(
+    evaluator: &Evaluator,
+    exprs: &[&Expr],
+    eval: &Eval,
+    state: &State,
+    next: Option<&State>,
+) -> Result<tla_eval::Value, String> {
+    // SAFETY: the translation kept expressions of the evaluator's spec, each with the frames of
+    // the definition it is in.
+    unsafe { evaluator.eval_in(&eval.frames, exprs[eval.expr], Some(state), next) }
+        .map_err(|error| error.to_string())
+}
+
 fn boolean(
     evaluator: &Evaluator,
+    exprs: &[&Expr],
     eval: &Eval,
     state: &State,
     next: Option<&State>,
     what: &str,
 ) -> Result<bool, String> {
-    let value = evaluator
-        .eval_bound(eval.def, &eval.bound, Some(state), next)
-        .map_err(|error| error.to_string())?;
+    let value = value(evaluator, exprs, eval, state, next)?;
     value.as_bool().ok_or_else(|| {
         format!(
             "TLC expected a boolean value, but did not find one. The value of {what} was {value}"
@@ -512,6 +539,7 @@ fn boolean(
 /// The value of a liveness formula below temporal level in `state`, or on the step to `next`.
 fn eval(
     evaluator: &Evaluator,
+    exprs: &[&Expr],
     cache: &mut Cache,
     live: &Live,
     state: &State,
@@ -524,8 +552,8 @@ fn eval(
                 if let Some(&known) = cache.states.get(&(key(state), atom.id)) {
                     return Ok(known);
                 }
-                let result =
-                    boolean(evaluator, predicate, state, None, "a temporal property predicate")?;
+                let what = "a temporal property predicate";
+                let result = boolean(evaluator, exprs, predicate, state, None, what)?;
                 cache.states.insert((key(state), atom.id), result);
                 cache.alive.push(state.clone());
                 result
@@ -539,18 +567,21 @@ fn eval(
                 {
                     return Ok(false);
                 }
-                if let Some(unchanged) = unchanged
-                    && boolean(evaluator, unchanged, state, Some(next), "a subscript")?
-                {
-                    return Ok(false);
+                // The step of `<<A>>_v` changes `v`.
+                if let Some(subscript) = unchanged {
+                    let before = value(evaluator, exprs, subscript, state, None)?;
+                    let after = value(evaluator, exprs, subscript, next, None)?;
+                    if before.equals(&after).map_err(|error| error.to_string())? {
+                        return Ok(false);
+                    }
                 }
-                boolean(evaluator, action, state, Some(next), "an action predicate")?
+                boolean(evaluator, exprs, action, state, Some(next), "an action predicate")?
             }
         },
-        Live::Not(body) => !eval(evaluator, cache, body, state, next)?,
+        Live::Not(body) => !eval(evaluator, exprs, cache, body, state, next)?,
         Live::And(operands) => {
             for operand in operands.iter() {
-                if !eval(evaluator, cache, operand, state, next)? {
+                if !eval(evaluator, exprs, cache, operand, state, next)? {
                     return Ok(false);
                 }
             }
@@ -558,7 +589,7 @@ fn eval(
         }
         Live::Or(operands) => {
             for operand in operands.iter() {
-                if eval(evaluator, cache, operand, state, next)? {
+                if eval(evaluator, exprs, cache, operand, state, next)? {
                     return Ok(true);
                 }
             }
@@ -566,7 +597,7 @@ fn eval(
         }
         Live::Next(body) => {
             let mut fresh = Cache::default();
-            eval(evaluator, &mut fresh, body, next.unwrap_or(state), None)?
+            eval(evaluator, exprs, &mut fresh, body, next.unwrap_or(state), None)?
         }
         Live::Always(_) | Live::Eventually(_) => {
             return Err("TLC cannot evaluate a temporal formula in a single step".into());

@@ -3,15 +3,22 @@
 
 use std::rc::Rc;
 
-use tla_eval::Value;
-use tla_resolve::{DefId, Level};
+use tla_eval::Frames;
+use tla_resolve::Level;
 
-/// What evaluates a part of a liveness formula: a module-level definition, with the slots of its
-/// frame that a quantifier unrolled bound to values.
-#[derive(Clone, Debug)]
+/// What evaluates a part of a liveness formula: an expression of the spec, by its index among
+/// those the translation kept, in the frames of the calls the translation expanded, with the
+/// variables of the quantifiers it unrolled bound.
+#[derive(Clone)]
 pub struct Eval {
-    pub def: DefId,
-    pub bound: Rc<[(usize, Value)]>,
+    pub frames: Frames,
+    pub expr: usize,
+}
+
+impl std::fmt::Debug for Eval {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(formatter, "Eval({})", self.expr)
+    }
 }
 
 /// A part of a formula below temporal level, which the model checker evaluates.
@@ -28,8 +35,8 @@ pub enum AtomKind {
     State(Eval),
     /// `ENABLED <<A>>_v` of a fairness condition.
     Enabled(Eval),
-    /// An action. One a fairness condition takes is `<<A>>_v`: `A` without stuttering on `v`,
-    /// which can't hold where the condition's `ENABLED` doesn't.
+    /// An action. One a fairness condition takes is `<<A>>_v`: `A` on a step that changes the
+    /// subscript `v`, which can't hold where the condition's `ENABLED` doesn't.
     Action { action: Eval, unchanged: Option<Eval>, enabled: Option<Rc<Atom>> },
 }
 
@@ -403,7 +410,7 @@ mod tests {
     use super::*;
 
     fn atom(id: usize, is_action: bool) -> Live {
-        let eval = Eval { def: DefId(0), bound: Rc::from([]) };
+        let eval = Eval { frames: crate::liveness::tests::frames(), expr: 0 };
         let kind = if is_action {
             AtomKind::Action { action: eval, unchanged: None, enabled: None }
         } else {

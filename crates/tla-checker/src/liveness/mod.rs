@@ -5,16 +5,27 @@
 //! counterexample. Ported from tla-ts `liveness.ts`, `tableau.ts`, and `liveness-checker.ts`.
 
 pub mod checker;
+pub mod convert;
 pub mod graph;
 pub mod lasso;
 pub mod live;
 pub mod tableau;
-pub mod template;
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
+    use std::sync::Arc;
+
+    use tla_eval::{Evaluator, Frames};
+    use tla_resolve::DefId;
+
     use crate::Status;
     use crate::testing::{System, run};
+
+    /// Frames for atoms that tests never evaluate.
+    pub(crate) fn frames() -> Frames {
+        let evaluator = Evaluator::new(Arc::new(crate::testing::spec("")), Vec::new());
+        evaluator.module_frames(DefId(0))
+    }
 
     const SPEC: &str = "Init == x = 0\nNext == x < 3 /\\ x' = x + 1\n\
         Spec == Init /\\ [][Next]_x\nFair == Spec /\\ WF_x(Next)\n\

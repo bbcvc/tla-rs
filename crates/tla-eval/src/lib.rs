@@ -10,6 +10,7 @@ mod env;
 mod eval;
 mod native;
 mod runtime;
+mod scope;
 mod stdlib;
 
 use std::collections::{HashMap, HashSet};
@@ -19,6 +20,7 @@ pub use config::{Model, OperatorTable, bind_model, config_value};
 pub use eval::NextAction;
 pub use native::{Arg, Ctx, Native, Operator};
 pub use runtime::{CheckerOptions, Registers, Runtime, Statistics};
+pub use scope::Frames;
 use tla_ast::{Span, Symbol};
 use tla_resolve::{DefId, ModuleId, Spec, VarId};
 pub use tla_value::{self as value, Value};
@@ -205,19 +207,6 @@ impl Evaluator {
     /// as a constant expression when there is no state.
     pub fn eval_def(&self, def: DefId, state: Option<&State>) -> Result<Value> {
         self.eval_zero_arity(def, state, None)
-    }
-
-    /// Evaluates a module-level definition without parameters with some slots of its frame
-    /// bound to values, as the variables of a quantifier the model checker unrolls over a
-    /// constant set, in `state` and on the step to `next` when they are given.
-    pub fn eval_bound(
-        &self,
-        def: DefId,
-        bound: &[(usize, Value)],
-        state: Option<&State>,
-        next: Option<&State>,
-    ) -> Result<Value> {
-        self.eval_with_slots(def, bound, state, next)
     }
 
     /// Evaluates a definition without parameters, such as an action or an action property, on

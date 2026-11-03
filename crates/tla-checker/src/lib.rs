@@ -217,8 +217,13 @@ pub fn check<S: Successors>(
     // TLC builds the liveness checker, which translates the temporal formulas, before it
     // checks the assumptions, and only for a spec with variables.
     let liveness = match has_variables {
-        true => match liveness::checker::Checker::new(&evaluator, &plan.properties, &plan.fairness)
-        {
+        true => match liveness::checker::Checker::new(
+            &evaluator,
+            &plan.properties,
+            &plan.fairness,
+            &overrides,
+            &plan.enabled,
+        ) {
             Ok(liveness) => liveness,
             Err(message) => return Outcome::error(message),
         },

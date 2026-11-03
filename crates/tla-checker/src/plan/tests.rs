@@ -3,7 +3,6 @@ use std::collections::HashMap;
 use tla_resolve::{DefBody, Spec};
 
 use super::{Plan, Usage, plan};
-use crate::liveness::template::Template;
 use crate::testing::spec;
 
 fn planned(body: &str, config: &str) -> Result<(Spec, Plan), String> {
@@ -29,9 +28,8 @@ fn splits_a_specification_into_init_next_and_fairness() {
     assert!(plan.fairness.is_empty());
     let body = format!("{SPEC}\nLater == <>(x > 2)");
     let (_, plan) = planned(&body, "SPECIFICATION Spec\nPROPERTY Later").unwrap();
-    assert!(matches!(plan.fairness[..], [Template::Fairness { strong: false, .. }]));
-    assert!(matches!(&plan.properties[..], [(name, Template::Eventually(body))]
-        if name == "Later" && matches!(**body, Template::State(_))));
+    assert!(plan.fairness.len() == 1 && !plan.enabled.is_empty());
+    assert!(matches!(&plan.properties[..], [(name, _)] if name == "Later"));
 
     // Parts that aren't definitions get definitions of their own.
     let (spec, plan) = planned(
