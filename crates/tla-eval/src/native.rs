@@ -47,8 +47,10 @@ pub(crate) enum OperatorKind {
     },
     Builtin(Builtin),
     /// An operator implemented in Rust.
-    Closure(Arc<dyn Fn(&mut Ctx<'_>, &[Value]) -> Result<Value> + Send + Sync>),
+    Closure(Arc<RustOperator>),
 }
+
+type RustOperator = dyn Fn(&mut Ctx<'_>, &[Value]) -> Result<Value> + Send + Sync;
 
 impl Operator {
     /// An operator implemented by a Rust closure, for natives and tests.
@@ -63,23 +65,18 @@ impl Operator {
 pub struct Ctx<'a> {
     pub(crate) evaluator: &'a Evaluator,
     pub(crate) state: Option<&'a State>,
+    /// The next state, which an operator argument reads when it primes an expression.
+    pub(crate) next: Option<&'a State>,
 }
 
 impl<'a> Ctx<'a> {
     pub(crate) fn new(evaluator: &'a Evaluator, state: Option<&'a State>) -> Self {
-        Self { evaluator, state }
+        Self { evaluator, state, next: None }
     }
 
     /// Applies an operator argument to `args`.
     pub fn call(&mut self, op: &Operator, args: &[Value]) -> Result<Value> {
-        match &op.0 {
-            OperatorKind::Def { def, parent } => self
-                .evaluator
-                .call_def(*def, parent.clone(), args.to_vec(), self.state)
-                .map_err(|error| Error(error.message)),
-            OperatorKind::Builtin(builtin) => self.evaluator.apply_builtin(*builtin, args),
-            OperatorKind::Closure(apply) => apply(self, args),
-        }
+        self.evaluator.apply_operator(op, args, self.state, self.next)
     }
 
     pub fn runtime(&self) -> &crate::Runtime {

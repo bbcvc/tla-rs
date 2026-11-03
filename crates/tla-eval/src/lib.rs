@@ -60,15 +60,20 @@ pub enum ConstBinding {
 /// The variables of one state, by [`tla_resolve::VarId`].
 pub type State = Arc<[Value]>;
 
+/// A handle to an evaluator. Clones share the specification, the constants, and the runtime, so
+/// that lazy values can keep the evaluator they need.
+#[derive(Clone)]
 pub struct Evaluator {
     pub(crate) spec: Arc<Spec>,
     /// By [`tla_resolve::ConstId`].
-    pub(crate) constants: Vec<ConstBinding>,
+    pub(crate) constants: Arc<[ConstBinding]>,
     /// The native implementation of each definition TLC overrides, by [`DefId`].
-    pub(crate) natives: Vec<Option<Native>>,
+    pub(crate) natives: Arc<[Option<Native>]>,
     /// What the configuration replaces each definition with, by [`DefId`].
-    pub(crate) overrides: Vec<Option<ConstBinding>>,
-    pub(crate) runtime: Runtime,
+    pub(crate) overrides: Arc<[Option<ConstBinding>]>,
+    pub(crate) runtime: Arc<Runtime>,
+    /// Whether each definition is a function definition that refers to itself, by [`DefId`].
+    pub(crate) is_recursive: Arc<[bool]>,
 }
 
 impl Evaluator {
@@ -88,15 +93,25 @@ impl Evaluator {
                     .flatten()
             })
             .collect();
-        let overrides = vec![None; spec.defs.len()];
-        Self { spec, constants, natives, overrides, runtime: Runtime::default() }
+        let overrides = vec![None; spec.defs.len()].into();
+        let is_recursive = eval::recursive_functions(&spec).into();
+        Self {
+            spec,
+            constants: constants.into(),
+            natives,
+            overrides,
+            runtime: Arc::default(),
+            is_recursive,
+        }
     }
 
     /// Replaces definitions with the values or definitions the configuration gives them.
     pub fn with_overrides(mut self, overrides: Vec<(DefId, ConstBinding)>) -> Self {
+        let mut replaced = self.overrides.to_vec();
         for (def, binding) in overrides {
-            self.overrides[def.index()] = Some(binding);
+            replaced[def.index()] = Some(binding);
         }
+        self.overrides = replaced.into();
         self
     }
 
@@ -111,6 +126,12 @@ impl Evaluator {
     /// Evaluates a definition without parameters, such as an `ASSUME` or `Init`, in `state`, or
     /// as a constant expression when there is no state.
     pub fn eval_def(&self, def: DefId, state: Option<&State>) -> Result<Value> {
-        self.eval_zero_arity(def, state)
+        self.eval_zero_arity(def, state, None)
+    }
+
+    /// Evaluates a definition without parameters, such as an action or an action property, on
+    /// the step from `state` to `next`, which primed expressions read.
+    pub fn eval_action(&self, def: DefId, state: &State, next: &State) -> Result<Value> {
+        self.eval_zero_arity(def, Some(state), Some(next))
     }
 }
