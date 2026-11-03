@@ -3,7 +3,7 @@
 use std::cmp::Ordering;
 use std::sync::Arc;
 
-use crate::{Error, LazySet, Result, Value, bail};
+use crate::{Error, LazySet, Result, Value, bail, fail};
 
 /// Sorts values by [`Value::compare`] and drops duplicates, or fails if two can't be compared.
 pub(crate) fn sort_unique(mut elements: Vec<Value>) -> Result<Vec<Value>> {
@@ -144,7 +144,7 @@ fn keep(set: &Value, mut test: impl FnMut(&Value) -> Result<bool>) -> Result<Arc
 /// The sets `UNION base` combines, which TLC must be able to enumerate.
 fn union_sets(base: &Value) -> Result<Arc<[Value]>> {
     if !is_tlc_enumerable(base) {
-        bail!("Attempted to enumerate the nonenumerable set:\nUNION({base})");
+        fail!([base], "Attempted to enumerate the nonenumerable set:\nUNION({base})");
     }
     base.elements()
 }
@@ -156,7 +156,10 @@ fn union_set<'a>(base: &Value, set: &'a Value, index: usize) -> Result<&'a Value
     if index == 0 {
         bail!("Attempted to enumerate UNION(s), but some element of s is nonenumerable.");
     }
-    bail!("Attempted to enumerate the nonenumerable set:\n{set}\nwhen enumerating:\nUNION({base})")
+    fail!(
+        [set, base],
+        "Attempted to enumerate the nonenumerable set:\n{set}\nwhen enumerating:\nUNION({base})"
+    )
 }
 
 /// The first key of keys that form an interval, as TLC keeps the domain of such a function.
@@ -301,7 +304,7 @@ impl Value {
             Value::MixedSet(elements) => Ok(sort_like_tlc(elements)?.into()),
             Value::Interval(low, high) => Ok((*low..=*high).map(Value::Int).collect()),
             Value::Lazy(set) => self.lazy_elements(set),
-            _ => bail!("Expected a set but found {self}"),
+            _ => fail!([self], "Expected a set but found {self}"),
         }
     }
 
@@ -313,13 +316,14 @@ impl Value {
                     return Ok(Arc::from([Value::empty_set()]));
                 }
                 if !base.is_set() {
-                    bail!(
+                    fail!(
+                        [base],
                         "Attempted to compute the value of an expression of form\nSUBSET S, but S is a non-enumerable value:\n{base}"
                     );
                 }
                 let base = base.elements()?;
                 if base.len() > 30 {
-                    bail!("Overflow when computing the number of elements in:\n{self}");
+                    fail!([self], "Overflow when computing the number of elements in:\n{self}");
                 }
                 Ok(subsets(&base).into())
             }
@@ -328,13 +332,15 @@ impl Value {
                     return Ok(Arc::from([]));
                 }
                 if is_overridden(domain) {
-                    bail!(
+                    fail!(
+                        [domain],
                         "Attempted to enumerate a set of the form [D -> R],but the domain D:\n{domain}\ncannot be enumerated."
                     );
                 }
                 let keys = domain.elements()?;
                 if !keys.is_empty() && is_overridden(range) {
-                    bail!(
+                    fail!(
+                        [range],
                         "Attempted to enumerate a set of the form [D -> R],but the range R:\n{range}\ncannot be enumerated."
                     );
                 }
@@ -374,11 +380,12 @@ impl Value {
                 Ok(choices(&lists).into_iter().map(Value::tuple).collect())
             }
             LazySet::Seq(_) | LazySet::Nat | LazySet::Int | LazySet::String | LazySet::Any => {
-                bail!("Attempted to enumerate the non-enumerable set {self}")
+                fail!([self], "Attempted to enumerate the non-enumerable set {self}")
             }
             LazySet::Cup(left, right) => {
                 if !is_tlc_enumerable(left) || !is_tlc_enumerable(right) {
-                    bail!(
+                    fail!(
+                        [left, right],
                         "Attempted to enumerate S \\cup T when S:\n{left}\nand T:\n{right}\nare not both enumerable"
                     );
                 }
@@ -391,7 +398,8 @@ impl Value {
                 {
                     (true, _) => (left, right),
                     (false, true) => (right, left),
-                    (false, false) => bail!(
+                    (false, false) => fail!(
+                        [left, right],
                         "Attempted to enumerate S \\cap T when neither S:\n{left}\nnor T:\n{right}\nis enumerable"
                     ),
                 };
@@ -399,13 +407,17 @@ impl Value {
             }
             LazySet::Minus(left, right) => {
                 if !is_tlc_enumerable(left) {
-                    bail!("Attempted to enumerate S \\ T when S:\n{left}\nis not enumerable.");
+                    fail!(
+                        [left],
+                        "Attempted to enumerate S \\ T when S:\n{left}\nis not enumerable."
+                    );
                 }
                 keep(left, |element| Ok(!right.contains(element)?))
             }
             LazySet::Filtered { base, test } => {
                 if !is_tlc_enumerable(base) {
-                    bail!(
+                    fail!(
+                        [base],
                         "Attempted to enumerate {{ x \\in S : p(x) }} when S:\n{base}\nis not enumerable"
                     );
                 }
@@ -458,7 +470,7 @@ impl Value {
                 }
                 _ => Ok(self.elements()?.is_empty()),
             },
-            _ => bail!("Shouldn't call isEmpty() on value {self}"),
+            _ => fail!([self], "Shouldn't call isEmpty() on value {self}"),
         }
     }
 
@@ -490,16 +502,21 @@ impl Value {
                 Value::Int(value) => Ok(low <= value && value <= high),
                 Value::Model(_) => Ok(false),
                 _ if low > high => Ok(false),
-                _ => bail!(
+                _ => fail!(
+                    [value, self],
                     "Attempted to check if the value:\n{value}\nis in the integer interval {self}"
                 ),
             },
             Value::Lazy(set) => self.lazy_contains(set, value),
             Value::Func(func) if func.keys.iter().all(|key| matches!(key, Value::Str(_))) => {
-                bail!("Attempted to check if element:\n{value}\nis in the record:\n{self}")
+                fail!(
+                    [value, self],
+                    "Attempted to check if element:\n{value}\nis in the record:\n{self}"
+                )
             }
             Value::Tuple(_) => bail!("Attempted to check set membership in a tuple value."),
-            _ => bail!(
+            _ => fail!(
+                [value, self],
                 "Attempted to check if the value:\n{value}\nis an element of the {} {self}",
                 describe_kind(self)
             ),
@@ -511,7 +528,8 @@ impl Value {
         match set {
             LazySet::Subset(base) => {
                 if !value.is_set() || is_overridden(value) {
-                    bail!(
+                    fail!(
+                        [value],
                         "Attempted to check if the non-enumerable value\n{value}\nis element of\n{}",
                         self.printed()?
                     );
@@ -528,7 +546,8 @@ impl Value {
                     if is_model {
                         return Ok(false);
                     }
-                    bail!(
+                    fail!(
+                        [value],
                         "Attempted to check if \n{value}\nwhich is not a TLC function value, is in the set of functions:\n{}",
                         self.printed()?
                     );
@@ -561,7 +580,8 @@ impl Value {
                     if is_model {
                         return Ok(false);
                     }
-                    bail!(
+                    fail!(
+                        [value],
                         "Attempted to check if non-record\n{value}\nis in the set of records:\n{}",
                         self.printed()?
                     );
@@ -588,7 +608,8 @@ impl Value {
                     if is_function || is_model {
                         return Ok(false);
                     }
-                    bail!(
+                    fail!(
+                        [value],
                         "Attempted to check if non-tuple\n{value}\nis in the set of tuples:\n{}",
                         self.printed()?
                     );
@@ -609,7 +630,10 @@ impl Value {
                     if is_model {
                         return Ok(false);
                     }
-                    bail!("Attempted to check if the value:\n{value}\nis an element of {self}.");
+                    fail!(
+                        [value, self],
+                        "Attempted to check if the value:\n{value}\nis an element of {self}."
+                    );
                 };
                 for item in items.iter() {
                     if !base.contains(item)? {
@@ -627,7 +651,10 @@ impl Value {
                 match value {
                     Value::Model(_) => Ok(false),
                     _ if !is_member_type => {
-                        bail!("Attempted to check if the value:\n{value}\nis an element of {self}.")
+                        fail!(
+                            [value, self],
+                            "Attempted to check if the value:\n{value}\nis an element of {self}."
+                        )
                     }
                     Value::Int(value) if matches!(set, LazySet::Nat) => Ok(*value >= 0),
                     _ => Ok(true),
@@ -639,7 +666,8 @@ impl Value {
             LazySet::Filtered { base, test } => Ok(base.contains(value)? && test(value)?),
             LazySet::Union(base) => {
                 if !is_tlc_enumerable(base) {
-                    bail!(
+                    fail!(
+                        [value, base],
                         "Attempted to check if:\n {value}\nis an element of the non-enumerable set:\n UNION({base})"
                     );
                 }
@@ -717,12 +745,16 @@ impl Value {
         let overflow =
             || Error(format!("Overflow when computing the number of elements in:\n{self}"));
         match self {
-            Value::Bool(_) | Value::Int(_) | Value::Str(_) => bail!(
+            Value::Bool(_) | Value::Int(_) | Value::Str(_) => fail!(
+                [self],
                 "Attempted to compute the number of elements in the {} {self}.",
                 describe_kind(self)
             ),
             Value::Model(_) => {
-                bail!("Attempted to compute the number of elements in the model value {self}.")
+                fail!(
+                    [self],
+                    "Attempted to compute the number of elements in the model value {self}."
+                )
             }
             Value::Tuple(items) => Ok(items.len() as i32),
             Value::Func(func) => Ok(func.keys.len() as i32),
@@ -739,7 +771,8 @@ impl Value {
             Value::MixedSet(_) => Ok(self.elements()?.len() as i32),
             Value::Lazy(set) => match &**set {
                 LazySet::Seq(_) | LazySet::Nat | LazySet::Int | LazySet::String | LazySet::Any => {
-                    bail!(
+                    fail!(
+                        [self],
                         "Attempted to compute the number of elements in the overridden value {self}."
                     )
                 }

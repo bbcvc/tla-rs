@@ -37,6 +37,16 @@ macro_rules! bail {
     };
 }
 
+/// Fails like [`bail!`], unless printing one of the values in brackets fails first, as TLC's
+/// message fails when it normalizes a set enumeration it can't sort.
+macro_rules! fail {
+    ([$($value:expr),*], $($arg:tt)*) => {{
+        $($value.check_printable()?;)*
+        $crate::bail!($($arg)*)
+    }};
+}
+pub(crate) use fail;
+
 /// A test a lazily filtered set applies to each element.
 pub type Predicate = Arc<dyn Fn(&Value) -> Result<bool> + Send + Sync>;
 

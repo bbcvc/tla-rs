@@ -5,7 +5,7 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 
 use crate::set::{search, sort_unique};
-use crate::{Func, LazyFunc, Result, Symbol, Value, bail};
+use crate::{Func, LazyFunc, Result, Symbol, Value, bail, fail};
 
 /// The order a spec wrote the keys of a function in, as the index in [`Func::keys`] of each key.
 pub(crate) struct WrittenOrder {
@@ -153,7 +153,9 @@ impl Value {
             Value::Func(func) => {
                 func.written_entries().map(|(key, value)| (key.clone(), value.clone())).collect()
             }
-            other => bail!("Attempted to enumerate {other}, which is not a finite function"),
+            other => {
+                fail!([other], "Attempted to enumerate {other}, which is not a finite function")
+            }
         })
     }
 
@@ -192,23 +194,28 @@ impl Value {
                 {
                     return Ok(items[*index as usize - 1].clone());
                 }
-                bail!(
+                fail!(
+                    [self, arg],
                     "Attempted to apply tuple\n{self}\nto argument {arg}, which is out of bounds."
                 )
             }
             Value::Func(func) => match search(&func.keys, arg)? {
                 Ok(index) => Ok(func.values[index].clone()),
-                Err(_) => bail!(
+                Err(_) => fail!(
+                    [self, arg],
                     "Attempted to apply function:\n{self}\nto argument {arg}, which is not in the domain of the function."
                 ),
             },
             Value::LazyFunc(lazy) => {
                 if !lazy.domain.contains(arg)? {
-                    bail!("Attempted to apply a function to {arg}, which is not in its domain");
+                    fail!(
+                        [arg],
+                        "Attempted to apply a function to {arg}, which is not in its domain"
+                    );
                 }
                 (lazy.apply)(arg)
             }
-            _ => bail!("Attempted to apply {self}, which is not a function"),
+            _ => fail!([self], "Attempted to apply {self}, which is not a function"),
         }
     }
 
@@ -220,7 +227,8 @@ impl Value {
                     "Attempted to access nonexistent field '{name}' of record\n{self}"
                 ))
             }),
-            _ => bail!(
+            _ => fail!(
+                [self],
                 "Attempted to access field '{name}' of {} {self}, which is not a record",
                 self.kind()
             ),
@@ -233,7 +241,7 @@ impl Value {
             Value::Tuple(items) => Ok(Value::Interval(1, items.len() as i32)),
             Value::Func(func) => Ok(Value::Set(func.keys.to_vec().into())),
             Value::LazyFunc(lazy) => Ok(lazy.domain.clone()),
-            _ => bail!("DOMAIN expects a function but received {self}"),
+            _ => fail!([self], "DOMAIN expects a function but received {self}"),
         }
     }
 
@@ -274,7 +282,8 @@ impl Value {
                     if matches!(key, Value::Model(_)) {
                         return Ok(self.clone());
                     }
-                    bail!(
+                    fail!(
+                        [self, key],
                         "Attempted to apply EXCEPT to the tuple\n{self}\nwith the non-integer key {key}"
                     )
                 };
@@ -313,7 +322,7 @@ impl Value {
                     }),
                 })))
             }
-            _ => bail!("Attempted to apply EXCEPT construct to the value {self}."),
+            _ => fail!([self], "Attempted to apply EXCEPT construct to the value {self}."),
         }
     }
 }

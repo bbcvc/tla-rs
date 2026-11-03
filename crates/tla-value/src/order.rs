@@ -8,7 +8,8 @@
 
 use std::cmp::Ordering;
 
-use crate::{LazySet, Result, Value, bail, model_type};
+use crate::format::printable;
+use crate::{LazySet, Result, Value, fail, model_type};
 
 /// Fails as TLC does when a typed model value meets a value of another type.
 fn check_model_types(left: &Value, right: &Value, is_equality: bool) -> Result<()> {
@@ -26,12 +27,19 @@ fn check_model_types(left: &Value, right: &Value, is_equality: bool) -> Result<(
             if left_type.is_none() || right_type.is_none() || left_type == right_type {
                 return Ok(());
             }
-            bail!("Attempted to {action} the differently-typed model values {left} and {right}")
+            fail!(
+                [left, right],
+                "Attempted to {action} the differently-typed model values {left} and {right}"
+            )
         }
         (Value::Model(_), _) if left_type.is_some() => {
-            bail!("Attempted to {action} the typed model value {left} and non-model value\n{right}")
+            fail!(
+                [left, right],
+                "Attempted to {action} the typed model value {left} and non-model value\n{right}"
+            )
         }
-        _ => bail!(
+        _ => fail!(
+            [right, left],
             "Attempted to {action} the typed model value {right} and the non-model value\n{left}"
         ),
     }
@@ -66,10 +74,13 @@ fn compare_overridden(left: &Value, right: &Value, verb: &str) -> Result<Orderin
             true => Value::Set(left.elements()?),
             false => left.clone(),
         };
-        bail!("Attempted to {verb} the set {shown} with the value:\n{right}")
+        fail!([shown, right], "Attempted to {verb} the set {shown} with the value:\n{right}")
     };
     let Some(right_name) = overridden(right) else {
-        bail!("Attempted to compare overridden value {left} with non-overridden value:\n{right}")
+        fail!(
+            [left, right],
+            "Attempted to compare overridden value {left} with non-overridden value:\n{right}"
+        )
     };
     match (left_name, right_name) {
         ("Seq", "Seq") => {
@@ -84,7 +95,7 @@ fn compare_overridden(left: &Value, right: &Value, verb: &str) -> Result<Orderin
         }
         ("Nat", "Int") => Ok(Ordering::Less),
         ("Int", "Nat") => Ok(Ordering::Greater),
-        _ => bail!("Attempted to compare {left} with the value\n{right}"),
+        _ => fail!([left, right], "Attempted to compare {left} with the value\n{right}"),
     }
 }
 
@@ -151,13 +162,17 @@ impl Value {
             (Bool(left), Bool(right)) => Ok(left == right),
             (Int(_) | Str(_) | Bool(_), _) => {
                 let kind = self.kind();
-                bail!("Attempted to check equality of {kind} {self} with non-{kind}:\n{other}")
+                fail!(
+                    [self, other],
+                    "Attempted to check equality of {kind} {self} with non-{kind}:\n{other}"
+                )
             }
             _ if self.is_function() && other.is_function() => {
                 Ok(compare_functions(self, other, "check equality of")? == Ordering::Equal)
             }
             _ if self.is_set() && other.is_set() => set_equals(self, other),
-            _ => bail!(
+            _ => fail!(
+                [self, other],
                 "Attempted to check equality of {} {self} with {} {other}",
                 self.kind(),
                 other.kind()
@@ -200,7 +215,10 @@ fn compare_functions(left: &Value, right: &Value, verb: &str) -> Result<Ordering
                 && !right_keys.is_empty()
                 && is_record(&left_keys) != is_record(&right_keys);
             if is_mismatch && is_record(&left_keys) {
-                bail!("Attempted to {verb} record:\n{left}\nwith non-record\n{right}");
+                fail!(
+                    [left, right],
+                    "Attempted to {verb} record:\n{left}\nwith non-record\n{right}"
+                );
             }
             if left_keys.len() != right_keys.len() && !is_mismatch {
                 return Ok(left_keys.len().cmp(&right_keys.len()));
@@ -221,6 +239,9 @@ fn compare_functions(left: &Value, right: &Value, verb: &str) -> Result<Ordering
 
 /// TLC's error comparing values of different kinds, worded by the class of the left one.
 fn mismatch(left: &Value, right: &Value) -> crate::Error {
+    if let Err(error) = printable(&[left, right]) {
+        return error;
+    }
     let message = match left {
         Value::Bool(_) | Value::Int(_) | Value::Str(_) => {
             let kind = left.kind();
