@@ -376,3 +376,24 @@ fn records_where_an_instantiated_module_refers_to_its_variables() {
     recorded.sort();
     assert_eq!(recorded, [("u".to_owned(), "u".to_owned()), ("v".to_owned(), "v".to_owned())]);
 }
+
+#[test]
+fn records_the_names_and_places_tlc_reports_actions_by() {
+    let inner = "---- MODULE Inner ----\nVARIABLE u\nStep(n) == u' = n\n====\n";
+    let root = "---- MODULE M ----\nVARIABLE x\nI == INSTANCE Inner WITH u <- x\nNext == I!Step(1)\n====\n";
+    let spec = spec(root, &[("Inner", inner)]);
+    let text = |module: tla_resolve::ModuleId, span: tla_ast::Span| {
+        spec.modules[module.index()].source[span.start as usize..span.end as usize].to_owned()
+    };
+    let qualified: Vec<(String, String)> = spec
+        .qualified_names
+        .iter()
+        .map(|((module, span), name)| (text(*module, *span), name.to_string()))
+        .collect();
+    assert_eq!(qualified, [("I!Step(1)".to_owned(), "I!Step".to_owned())]);
+    let ExprKind::Call { def: step, .. } = body_of(&spec, "Next") else { panic!("a call") };
+    let names: Vec<String> = spec.param_names[step].iter().map(|name| name.to_string()).collect();
+    assert_eq!(names, ["n"]);
+    let (module, span) = spec.instance_spans[step];
+    assert_eq!(text(module, span), "I == INSTANCE Inner WITH u <- x");
+}

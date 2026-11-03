@@ -205,6 +205,8 @@ impl Resolver<'_> {
     pub(crate) fn operator(&mut self, elab: &Elab, definition: &ast::OperatorDef) -> Result<DefId> {
         let arities = definition.params.iter().map(|param| param.arity).collect();
         let def = self.claim_def(elab, definition.name, arities, false)?;
+        let names = definition.params.iter().map(|param| param.name.symbol).collect();
+        self.spec.param_names.insert(def, names);
         self.push_frame(Vec::new());
         let body = definition
             .params
@@ -252,7 +254,17 @@ impl Resolver<'_> {
             A::Qualified { path, name, args } => {
                 match self.qualified_reference(elab, path, *name, args, span, None)? {
                     Some(Reference::Expr(kind)) => kind,
-                    _ => self.qualified(elab, path, *name, args)?,
+                    _ => {
+                        let mut qualified = String::new();
+                        for component in path {
+                            qualified.push_str(component.name.symbol.as_str());
+                            qualified.push('!');
+                        }
+                        qualified.push_str(name.symbol.as_str());
+                        let qualified = Symbol::intern(&qualified);
+                        self.spec.qualified_names.insert((elab.module, span), qualified);
+                        self.qualified(elab, path, *name, args)?
+                    }
                 }
             }
             A::Subexpression(selectors) => match self.reference(elab, selectors, span, None)? {
