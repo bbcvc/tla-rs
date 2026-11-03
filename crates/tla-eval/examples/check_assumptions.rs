@@ -4,7 +4,7 @@
 //!
 //! ```text
 //! cargo run --release -p tla-eval --example check_assumptions -- DIR [--library DIR]...
-//!     [--expected expected.json] [--timeout SECONDS] [--jobs N]
+//!     [--expected expected.json] [--timeout SECONDS] [--jobs N] [--outcomes FILE]
 //! ```
 //!
 //! A model TLC records as an `assumption-violation` should violate an assumption here, and a
@@ -23,7 +23,7 @@ use std::time::{Duration, Instant};
 use tla_eval::{CheckerOptions, Evaluator, bind_model};
 
 const USAGE: &str = "usage: check_assumptions DIR [--library DIR]... [--expected FILE] \
-                     [--timeout SECONDS] [--jobs N]";
+                     [--timeout SECONDS] [--jobs N] [--outcomes FILE]";
 
 enum Outcome {
     Satisfied,
@@ -181,12 +181,14 @@ fn main() {
     let mut library = HashMap::new();
     let mut library_args = Vec::new();
     let mut expected = None;
+    let mut outcomes_path = None;
     let mut timeout = Duration::from_secs(10);
     let mut jobs = std::thread::available_parallelism().map_or(4, |count| count.get());
     while let Some(flag) = args.next() {
         let value = args.next().expect(USAGE);
         match flag.as_str() {
             "--expected" => expected = Some(PathBuf::from(value)),
+            "--outcomes" => outcomes_path = Some(PathBuf::from(value)),
             "--timeout" => timeout = Duration::from_secs_f64(value.parse().expect(USAGE)),
             "--jobs" => jobs = value.parse().expect(USAGE),
             "--library" => {
@@ -247,6 +249,12 @@ fn main() {
         count(|outcome| matches!(outcome, Outcome::Timeout)),
         started.elapsed()
     );
+
+    if let Some(path) = outcomes_path {
+        let lines: String =
+            outcomes.iter().map(|(id, outcome)| format!("{id}\t{}\n", outcome.encode())).collect();
+        std::fs::write(path, lines).unwrap();
+    }
 
     let Some(expected) = expected else { return };
     let records: Vec<serde_json::Value> =
