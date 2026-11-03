@@ -292,3 +292,216 @@ fn names_an_operator_of_a_parameterized_instance_like_sany() {
     );
     assert_eq!((found.module.as_str(), found.line, found.column), ("M", 4, 11));
 }
+
+#[test]
+fn checks_an_instantiated_module_by_itself() {
+    let inner = "---- MODULE Inner ----\nVARIABLE y\nBad == [](y')\n====";
+    let source = "---- MODULE M ----\nVARIABLE x\nI == INSTANCE Inner WITH y <- x\n====";
+    let found = error(source, &[("Inner", inner)]);
+    assert_eq!(found.message, "[] followed by action not of form [A]_v.");
+    assert_eq!((found.module.as_str(), found.line), ("Inner", 3));
+
+    // SANY doesn't check the definitions of an instance with the substitutions in place.
+    let constant = "---- MODULE Logic ----\nCONSTANT A, B\nBoth == A /\\ B\n====";
+    let source =
+        "---- MODULE M ----\nVARIABLE x\nI == INSTANCE Logic WITH A <- [](x = 1), B <- x'\n====";
+    spec(source, &[("Logic", constant)]);
+}
+
+const INNER_MODULES: &[(&str, &str)] = &[
+    ("Stateful", "EXTENDS Naturals\nCONSTANT c, Op(_)\nVARIABLE v\nUse == Op(v) + c"),
+    ("Pure", "EXTENDS Naturals\nCONSTANT c, Op(_)\nUse == Op(c) + c"),
+    ("Primed", "EXTENDS Naturals\nCONSTANT c, Op(_)\nUse == Op(c)' + c"),
+    ("Vars", "EXTENDS Naturals\nVARIABLE v, w\nUse == v + w"),
+    ("Applied", "CONSTANT c, Op(_)\nUse == Op(c)"),
+    ("Assumed", "CONSTANT C, D\nASSUME C = {}\nTHEOREM ASSUME D PROVE TRUE"),
+    ("Nested", "EXTENDS Naturals\nCONSTANT c, Op(_)\nVARIABLE v\nUse == Op(v') /\\ c = 1"),
+    ("Twice", "CONSTANT c, Op(_, _)\nUse == Op(c, c)\nOther(d) == Op(d, c)"),
+    (
+        "Outer",
+        "EXTENDS Naturals\nCONSTANT c\nN == INSTANCE Twice WITH c <- c, Op <- LAMBDA a, b : a + b\nUse == N!Use",
+    ),
+    (
+        "Functions",
+        "EXTENDS Naturals\nCONSTANT c\nf[i \\in {1}] == c + i\nRECURSIVE g(_)\ng(n) == IF n = 0 THEN c ELSE g(n - 1)",
+    ),
+];
+
+fn check_substitution(body: &str) -> Result<Spec, ResolveError> {
+    let modules: Vec<(String, String)> = INNER_MODULES
+        .iter()
+        .map(|(name, text)| (name.to_string(), format!("---- MODULE {name} ----\n{text}\n====")))
+        .collect();
+    let modules: Vec<(&str, &str)> =
+        modules.iter().map(|(name, text)| (name.as_str(), text.as_str())).collect();
+    let source = format!(
+        "---- MODULE Main ----\nEXTENDS Naturals\nVARIABLE x\n{body}\nInit == x = 0\nNext == x' = x\n===="
+    );
+    resolve_with(&source, &modules)
+}
+
+fn at_most(module: &str, name: &str, level: u8) -> String {
+    format!(
+        "Level error in instantiating module '{module}':\nThe level of the expression or operator substituted for '{name}' \nmust be at most {level}."
+    )
+}
+
+fn non_leibniz(module: &str) -> String {
+    format!(
+        "Error in instantiating module '{module}':\n A non-Leibniz operator substituted for 'Op'."
+    )
+}
+
+fn argument_at_most(module: &str, index: usize, maximum: u8) -> String {
+    format!(
+        "Level error when instantiating module '{module}':\nThe level of the argument {index} of the operator Op' \nmust be at most {maximum}."
+    )
+}
+
+#[test]
+fn rejects_substitutions_above_the_levels_a_module_allows() {
+    // tla-ts's cases, with the first error SANY reports for each. tla-ts also rejects
+    // `Assumed WITH D <- [](x = 0)` for `THEOREM ASSUME D PROVE TRUE`, which the parser drops.
+    let cases = [
+        (
+            "I == INSTANCE Stateful WITH c <- 1, Op <- LAMBDA a : a + x, v <- x",
+            at_most("Stateful", "Op", 0),
+        ),
+        (
+            "I == INSTANCE Stateful WITH c <- x, Op <- LAMBDA a : a, v <- x",
+            at_most("Stateful", "c", 0),
+        ),
+        (
+            "I == INSTANCE Stateful WITH c <- x', Op <- LAMBDA a : a, v <- x",
+            at_most("Stateful", "c", 0),
+        ),
+        ("INSTANCE Stateful WITH c <- x, Op <- LAMBDA a : a, v <- x", at_most("Stateful", "c", 0)),
+        (
+            "F(a) == a + x\nI == INSTANCE Stateful WITH c <- 1, Op <- F, v <- x",
+            at_most("Stateful", "Op", 0),
+        ),
+        ("I == INSTANCE Vars WITH v <- x', w <- x", at_most("Vars", "v", 1)),
+        ("I == INSTANCE Vars WITH v <- [](x = 1), w <- x", at_most("Vars", "v", 1)),
+        ("I == INSTANCE Primed WITH c <- 1, Op <- LAMBDA a : a + x", at_most("Primed", "Op", 0)),
+        ("I == INSTANCE Pure WITH c <- [](x = 1), Op <- LAMBDA a : a", at_most("Pure", "c", 2)),
+        ("I == INSTANCE Assumed WITH C <- [](x = 0), D <- TRUE", at_most("Assumed", "C", 2)),
+        ("I == INSTANCE Outer WITH c <- [](x = 1)", at_most("Outer", "c", 2)),
+        ("I == INSTANCE Functions WITH c <- [](x = 1)", at_most("Functions", "c", 2)),
+        (
+            "I == INSTANCE Applied WITH c <- [](x = 1), Op <- LAMBDA a : a + 1",
+            argument_at_most("Applied", 0, 2),
+        ),
+        (
+            "F(a) == LET G == a' IN G\nI == INSTANCE Applied WITH c <- [](x = 1), Op <- F",
+            argument_at_most("Applied", 0, 1),
+        ),
+        (
+            "I == INSTANCE Twice WITH c <- [](x = 1), Op <- LAMBDA a, b : a + b",
+            argument_at_most("Twice", 0, 2),
+        ),
+        (
+            "F(a) == LET G == a' IN G\nI == INSTANCE Nested WITH c <- 1, Op <- F, v <- x",
+            at_most("Nested", "Op", 0),
+        ),
+        (
+            "Foo == LET I == INSTANCE Stateful WITH c <- x, Op <- LAMBDA a : a, v <- x IN I!Use",
+            at_most("Stateful", "c", 0),
+        ),
+        (
+            "Foo == LET k == x\n           I == INSTANCE Stateful WITH c <- k, Op <- LAMBDA a : a, v <- x IN I!Use",
+            at_most("Stateful", "c", 0),
+        ),
+        (
+            "Foo == LET k == x\n           j == k + 1\n           I == INSTANCE Stateful WITH c <- j, Op <- LAMBDA a : a, v <- x IN I!Use",
+            at_most("Stateful", "c", 0),
+        ),
+        (
+            "Foo == LET F(a) == a + x\n           I == INSTANCE Stateful WITH c <- 1, Op <- F, v <- x IN I!Use",
+            at_most("Stateful", "Op", 0),
+        ),
+        (
+            "Foo == LET F(a) == a'\n           I == INSTANCE Pure WITH c <- 1, Op <- F IN I!Use",
+            non_leibniz("Pure"),
+        ),
+        ("F(a) == a'\nI == INSTANCE Pure WITH c <- 1, Op <- F", non_leibniz("Pure")),
+        ("I == INSTANCE Pure WITH c <- 1, Op <- LAMBDA a : ENABLED a", non_leibniz("Pure")),
+        ("I == INSTANCE Pure WITH c <- 1, Op <- LAMBDA a : UNCHANGED a", non_leibniz("Pure")),
+        ("I == INSTANCE Pure WITH c <- 1, Op <- LAMBDA a : [](a = 1)", non_leibniz("Pure")),
+        (
+            "G(b) == b'\nF(a) == G(a) + 1\nI == INSTANCE Pure WITH c <- 1, Op <- F",
+            non_leibniz("Pure"),
+        ),
+        (
+            "a ++ b == a' + b\nF(a) == a ++ 1\nI == INSTANCE Pure WITH c <- 1, Op <- F",
+            non_leibniz("Pure"),
+        ),
+        (
+            "F(a) == \\E k \\in {1} : a' = k\nI == INSTANCE Pure WITH c <- 1, Op <- F",
+            non_leibniz("Pure"),
+        ),
+        ("F(a) == [a = 1]_a\nI == INSTANCE Pure WITH c <- 1, Op <- F", non_leibniz("Pure")),
+    ];
+    for (body, message) in cases {
+        let found = check_substitution(body).expect_err(body);
+        assert_eq!(found.message, message, "{body}");
+    }
+}
+
+#[test]
+fn reports_a_substitution_error_at_the_whole_instance() {
+    let body = "I == INSTANCE Pure WITH c <- 1, Op <- LAMBDA a : ENABLED a";
+    let found = check_substitution(body).unwrap_err();
+    assert_eq!((found.module.as_str(), found.line, found.column), ("Main", 4, 1));
+    assert_eq!(found.span.end - found.span.start, body.len() as u32);
+}
+
+#[test]
+fn rejects_the_operator_a_constant_operator_argument_needs() {
+    let body = "F(a) == LET G == a' IN G\nI == INSTANCE Nested WITH c <- 1, Op <- F, v <- x";
+    let found = check_substitution(body).unwrap_err();
+    assert_eq!(found.message, at_most("Nested", "Op", 0));
+    // The second error SANY reports for it, alone.
+    let nested = "---- MODULE Inner ----\nCONSTANT Op(_)\nVARIABLE v\nUse == Op(v') = 1\n====";
+    let source = "---- MODULE M ----\nEXTENDS Naturals\nVARIABLE x\nF(a) == a + 1\nG(a) == LET H == a' IN 1\nI == INSTANCE Inner WITH Op <- F, v <- x\nJ == INSTANCE Inner WITH Op <- G, v <- x\n====";
+    let found = error(source, &[("Inner", nested)]);
+    assert_eq!(
+        found.message,
+        "Level error in instantiating module 'Inner':\nThe level of the argument 1 of the operator G \nmust be at least 2."
+    );
+}
+
+#[test]
+fn accepts_substitutions_within_the_levels_a_module_allows() {
+    for body in [
+        "I == INSTANCE Stateful WITH c <- 1, Op <- LAMBDA a : a + 1, v <- x",
+        "I == INSTANCE Pure WITH c <- x, Op <- LAMBDA a : a + x",
+        "I == INSTANCE Pure WITH c <- x', Op <- LAMBDA a : a",
+        "I == INSTANCE Vars WITH v <- ENABLED (x' = 1), w <- x",
+        "I == INSTANCE Applied WITH c <- x', Op <- LAMBDA a : a + 1",
+        "I == INSTANCE Applied WITH c <- [](x = 1), Op <- LAMBDA a : a",
+        "I == INSTANCE Assumed WITH C <- x', D <- x'",
+        "I == INSTANCE Outer WITH c <- x'",
+        "I == INSTANCE Nested WITH c <- 1, Op <- LAMBDA a : a = 1, v <- x",
+        "I == INSTANCE Twice WITH c <- [](x = 1), Op <- LAMBDA a, b : a",
+        "P(k) == INSTANCE Stateful WITH c <- k, Op <- LAMBDA a : a + k, v <- x",
+        "Foo == LET k == 1\n           I == INSTANCE Stateful WITH c <- k, Op <- LAMBDA a : a, v <- x IN I!Use",
+        "Foo == \\E k \\in {1} : LET I == INSTANCE Stateful WITH c <- k, Op <- LAMBDA a : a, v <- x IN I!Use",
+        "F(a) == x' + a\nI == INSTANCE Pure WITH c <- 1, Op <- F",
+        "F(a) == LET G == a' IN G\nI == INSTANCE Pure WITH c <- 1, Op <- F",
+        "F(a) == LET G == 1 IN a' + G\nI == INSTANCE Pure WITH c <- 1, Op <- F",
+        "F(a) == LET G(b) == b' IN G(a)\nI == INSTANCE Pure WITH c <- 1, Op <- F",
+        "H(K(_)) == K(1)\nF(a) == H(LAMBDA b : a') + 1\nI == INSTANCE Pure WITH c <- 1, Op <- F",
+        "P(G(_)) == INSTANCE Pure WITH c <- 1, Op <- G\nF(a) == a'\nUse == P(F)!Use",
+    ] {
+        check_substitution(body).unwrap_or_else(|error| panic!("{body}: {error}"));
+    }
+}
+
+#[test]
+fn checks_a_nested_module_without_the_names_around_it() {
+    // The variable of the enclosing module doesn't make the nested module non-constant.
+    let source = "---- MODULE M ----\nVARIABLE x\n---- MODULE Inner ----\nCONSTANT c\nASSUME c = {}\n====\nI == INSTANCE Inner WITH c <- [](x = 0)\n====";
+    let found = error(source, &[]);
+    assert_eq!(found.message, at_most("Inner", "c", 2));
+    assert_eq!((found.line, found.column), (7, 1));
+}

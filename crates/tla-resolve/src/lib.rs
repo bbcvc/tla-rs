@@ -97,6 +97,7 @@ pub fn resolve(source: &str, loader: &mut dyn ModuleLoader) -> Result<Spec> {
         layout: Layout::default(),
         qualifier: None,
         is_instantiating: false,
+        instantiated: HashSet::new(),
         sections: 0,
     };
     let root = resolver.add_file(modules, source.into(), false);
@@ -157,6 +158,8 @@ pub(crate) struct Resolver<'l> {
     qualifier: Option<Rc<str>>,
     /// Whether a module is being elaborated under the substitutions of an `INSTANCE`.
     is_instantiating: bool,
+    /// The modules elaborated under the substitutions of an `INSTANCE`.
+    instantiated: HashSet<ModuleId>,
     /// The number of `RECURSIVE` sections so far.
     sections: usize,
 }

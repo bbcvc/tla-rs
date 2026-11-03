@@ -12,7 +12,8 @@ use crate::ir::{
     Builtin, ConstId, Declaration, Def, DefBody, DefId, Expr, ExprKind, Local, ModuleId,
     ModuleInfo, OpRef, Scope, VarId,
 };
-use crate::levels::layout::{DefLayout, FrameLayout};
+use crate::levels::join;
+use crate::levels::layout::{DefLayout, FrameLayout, Instantiation, Substituted, SubstitutedValue};
 use crate::{ResolveError, Resolver, Result, stdlib};
 
 /// What a name at module level stands for.
@@ -128,6 +129,7 @@ pub(crate) struct Substitution {
 pub(crate) struct Parameter {
     pub name: Symbol,
     pub arity: usize,
+    pub is_variable: bool,
 }
 
 pub(crate) struct ParsedModule {
@@ -290,12 +292,17 @@ impl Resolver<'_> {
         }
         for unit in &module.ast.units {
             let declared: Vec<Parameter> = match unit {
-                Unit::Variables(names) => {
-                    names.iter().map(|name| Parameter { name: name.symbol, arity: 0 }).collect()
-                }
+                Unit::Variables(names) => names
+                    .iter()
+                    .map(|name| Parameter { name: name.symbol, arity: 0, is_variable: true })
+                    .collect(),
                 Unit::Constants(decls) => decls
                     .iter()
-                    .map(|decl| Parameter { name: decl.name.symbol, arity: decl.arity })
+                    .map(|decl| Parameter {
+                        name: decl.name.symbol,
+                        arity: decl.arity,
+                        is_variable: false,
+                    })
                     .collect(),
                 _ => continue,
             };
@@ -353,6 +360,9 @@ impl Resolver<'_> {
         let visible_from = std::mem::replace(&mut self.visible_from, self.frames.len());
         let is_instantiating = self.is_instantiating;
         self.is_instantiating |= substitution.is_some();
+        if self.is_instantiating {
+            self.instantiated.insert(module.id);
+        }
         let result = self.elaborate_units(module, substitution, depth);
         self.is_instantiating = is_instantiating;
         self.visible_from = visible_from;
@@ -497,7 +507,7 @@ impl Resolver<'_> {
                 self.function(elab, def, definition)?;
             }
             Unit::Instance(instance) => {
-                let context = self.instantiate(elab, instance)?;
+                let context = self.instantiate(elab, instance, instance.span)?;
                 for (name, entry) in &context.names {
                     let is_exported =
                         matches!(entry.kind, SymbolKind::Operator | SymbolKind::Module);
@@ -656,10 +666,12 @@ impl Resolver<'_> {
     }
 
     /// Instantiates the module an `INSTANCE` names, with its definitions at the current depth.
+    /// `span` is the whole `INSTANCE`, or `I == INSTANCE ...`.
     pub(crate) fn instantiate(
         &mut self,
         elab: &Elab,
         instance: &tla_ast::Instance,
+        span: Span,
     ) -> Result<Rc<Context>> {
         let target = self.load(instance.module, elab.module)?;
         let parameters = self.parameters(&target)?;
@@ -707,6 +719,27 @@ impl Resolver<'_> {
         if parameters.is_empty() {
             return self.shared(&target);
         }
+        let substitutions = parameters
+            .iter()
+            .map(|parameter| Substituted {
+                name: parameter.name,
+                is_variable: parameter.is_variable,
+                arity: parameter.arity,
+                value: match &substitution[&parameter.name] {
+                    Binding::Inline(expr) => SubstitutedValue::Inline((**expr).clone()),
+                    Binding::Def(def) => SubstitutedValue::Def(*def),
+                    _ => unreachable!("a substitution is a definition or an inlined value"),
+                },
+            })
+            .collect();
+        self.layout.instantiations.push(Instantiation {
+            module: target.id,
+            instancer: elab.module,
+            span,
+            substitutions,
+            is_instantiated: self.is_instantiating,
+            order: self.spec.defs.len(),
+        });
         self.substitutions += 1;
         let substitution = Substitution { id: self.substitutions, names: substitution };
         self.elaborate(&target, Some(Rc::new(substitution)), depth)
@@ -756,6 +789,7 @@ impl Resolver<'_> {
             _ => {}
         }
         let def = self.new_def(elab.module, name, vec![0; arity], depth);
+        self.layout.defs[def.index()].is_substitution = true;
         self.finish_def(def, DefBody::Expr(resolved), frame);
         Ok(Binding::Def(def))
     }
@@ -776,7 +810,8 @@ impl Resolver<'_> {
         let outer = self.qualifier.clone();
         let qualifier = format!("{}{}!", outer.as_deref().unwrap_or(""), definition.name.symbol);
         self.qualifier = Some(qualifier.into());
-        let context = self.instantiate(elab, &definition.instance);
+        let span = join(definition.name.span, definition.instance.span);
+        let context = self.instantiate(elab, &definition.instance, span);
         self.qualifier = outer;
         if has_params {
             self.frames.pop();
