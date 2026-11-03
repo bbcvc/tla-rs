@@ -13,7 +13,7 @@ use tla_ast::Quantifier;
 use tla_resolve::{DefId, Expr, ExprKind, Local, VarId};
 use tla_value::{LazySet, Symbol, Value};
 
-pub(crate) use self::builtin::describe;
+use self::builtin::describe;
 pub(crate) use self::function::recursive_functions;
 use crate::env::{Env, Slot};
 use crate::{EvalError, Evaluator, Result, State};
