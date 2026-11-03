@@ -362,6 +362,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "tla-resolve"
+version = "0.1.0"
+dependencies = [
+ "thiserror",
+ "tla-ast",
+ "tla-parser",
+]
+
+[[package]]
 name = "tree-sitter"
 version = "0.27.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"

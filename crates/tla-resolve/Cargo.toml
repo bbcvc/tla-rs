@@ -1,0 +1,11 @@
+[package]
+name = "tla-resolve"
+description = "Resolves names in TLA+ modules into an evaluable program"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+thiserror.workspace = true
+tla-ast.workspace = true
+tla-parser.workspace = true
