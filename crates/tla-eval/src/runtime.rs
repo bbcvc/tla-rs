@@ -31,7 +31,20 @@ pub struct Runtime {
     checker: RwLock<Checker>,
     random: Mutex<Randomness>,
     started_at: SystemTime,
+    /// The values `TLCCache` keeps.
+    cache: Mutex<Cache>,
 }
+
+/// The values `TLCCache` keeps, by the address of the expression and then by the closure: those
+/// of expressions that don't read the state, and those of the others for the last state read.
+#[derive(Default)]
+struct Cache {
+    constant: CachedValues,
+    state: Option<(State, CachedValues)>,
+}
+
+/// The values of each expression, by its address, with the closures they were computed with.
+type CachedValues = HashMap<usize, Vec<(Value, Value)>>;
 
 #[derive(Default)]
 pub struct Registers {
@@ -139,11 +152,51 @@ impl Default for Runtime {
                 workers: HashMap::new(),
             }),
             started_at: SystemTime::now(),
+            cache: Mutex::default(),
         }
     }
 }
 
 impl Runtime {
+    /// The value `TLCCache` keeps for the expression at `key` with `closure`, in `state` if the
+    /// expression reads it.
+    pub(crate) fn cached(
+        &self,
+        key: usize,
+        state: Option<&State>,
+        closure: &Value,
+    ) -> Result<Option<Value>> {
+        let cache = self.cache.lock().unwrap();
+        let values = match (state, &cache.state) {
+            (None, _) => cache.constant.get(&key),
+            (Some(state), Some((cached, values))) if Arc::ptr_eq(state, cached) => values.get(&key),
+            (Some(_), _) => None,
+        };
+        for (cached, value) in values.into_iter().flatten() {
+            if cached.equals(closure)? {
+                return Ok(Some(value.clone()));
+            }
+        }
+        Ok(None)
+    }
+
+    /// Keeps the value of the expression at `key` with `closure` for `TLCCache`.
+    pub(crate) fn cache(&self, key: usize, state: Option<State>, closure: Value, value: Value) {
+        let mut cache = self.cache.lock().unwrap();
+        let values = match state {
+            None => &mut cache.constant,
+            Some(state) => {
+                let is_same =
+                    matches!(&cache.state, Some((cached, _)) if Arc::ptr_eq(&state, cached));
+                if !is_same {
+                    cache.state = Some((state, HashMap::new()));
+                }
+                &mut cache.state.as_mut().expect("the state was just set").1
+            }
+        };
+        values.entry(key).or_default().push((closure, value));
+    }
+
     pub fn print(&self, line: String) {
         self.output.lock().unwrap().push(line);
     }

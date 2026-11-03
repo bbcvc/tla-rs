@@ -102,6 +102,8 @@ pub struct Evaluator {
     /// TLC's `TLCEval`, and the applications of it whose argument TLC normalizes, by address.
     pub(crate) tlc_eval: Option<DefId>,
     pub(crate) normalizing_evaluations: Arc<HashSet<usize>>,
+    /// TLCExt's `TLCCache`, whose Java override caches the value of its expression.
+    pub(crate) tlc_cache: Option<DefId>,
     /// TLC's split of each next-state relation split so far into actions.
     pub(crate) next_actions: Arc<Mutex<HashMap<DefId, Arc<[NextAction]>>>>,
 }
@@ -133,6 +135,11 @@ impl Evaluator {
         let is_constant_definition = eval::constant_definitions(&spec).into();
         let constant_values = (0..spec.defs.len()).map(|_| OnceLock::new()).collect();
         let tlc_eval = eval::tlc_eval(&spec);
+        let tlc_cache = spec.defs.iter().position(|def| {
+            let module = spec.modules[def.module.index()].name.as_str();
+            module == "TLCExt" && def.name.as_str() == "TLCCache"
+        });
+        let tlc_cache = tlc_cache.map(|index| DefId(index as u32));
         let normalizing_evaluations = Arc::new(
             tlc_eval.map(|def| eval::normalizing_evaluations(&spec, def)).unwrap_or_default(),
         );
@@ -148,6 +155,7 @@ impl Evaluator {
             constant_values,
             tlc_eval,
             normalizing_evaluations,
+            tlc_cache,
             next_actions: Arc::default(),
         }
     }

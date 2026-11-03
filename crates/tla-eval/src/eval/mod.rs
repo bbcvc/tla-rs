@@ -17,7 +17,9 @@ use tla_resolve::{DefId, Expr, ExprKind, Local, ModuleId, VarId};
 use tla_value::{LazySet, Symbol, Value};
 
 pub use self::action::NextAction;
-pub(crate) use self::analysis::{normalizing_evaluations, recursive_functions, tlc_eval};
+pub(crate) use self::analysis::{
+    mentions_variables, normalizing_evaluations, recursive_functions, tlc_eval,
+};
 use self::builtin::describe;
 pub(crate) use self::constants::constant_definitions;
 use crate::env::{Env, Slot, StateRef};

@@ -7,6 +7,26 @@ use tla_resolve::{
     Bound, Builtin, DefBody, DefId, ExceptKey, Expr, ExprKind, Level, OpRef, Scope, Spec,
 };
 
+/// Whether `expr` reads a variable, itself or through a definition it applies.
+pub(crate) fn mentions_variables(spec: &Spec, expr: &Expr) -> bool {
+    let mut pending = vec![expr];
+    while let Some(expr) = pending.pop() {
+        match &expr.kind {
+            ExprKind::Var(_) => return true,
+            ExprKind::Call { def, .. } | ExprKind::OpArg(OpRef::Def { def, .. })
+                if spec
+                    .levels
+                    .get(def.index())
+                    .is_some_and(|levels| levels.level != Level::Constant) =>
+            {
+                return true;
+            }
+            _ => for_each_child(expr, &mut |child| pending.push(child)),
+        }
+    }
+    false
+}
+
 /// Whether each definition is a function definition whose body refers to the function, itself
 /// or through a definition inside it, by [`DefId`].
 pub(crate) fn recursive_functions(spec: &Spec) -> Vec<bool> {

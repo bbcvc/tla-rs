@@ -2,7 +2,8 @@
 //!
 //! `AssertError` and `TLCDefer` take their arguments unevaluated, as TLC's Java methods do.
 //! `PickSuccessor`, which needs the successor state and the states seen, fails as unsupported.
-//! `TLCCache` evaluates its expression each time, where TLC caches it: its value is TLC's.
+//! The evaluator keeps the values of `TLCCache` as TLC does; its native here, which an operator
+//! argument reaches, evaluates the expression each time.
 
 use tla_resolve::RootName;
 use tla_value::{Symbol, Value};
