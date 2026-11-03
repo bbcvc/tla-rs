@@ -14,6 +14,8 @@ mod postcondition;
 pub mod search;
 #[cfg(test)]
 mod testing;
+#[cfg(test)]
+mod tests;
 
 use std::collections::HashMap;
 use std::fmt;
@@ -156,6 +158,15 @@ pub fn check<S: Successors>(
     };
     let has_variables = !spec.variables.is_empty();
     let assumptions = spec.assumptions.clone();
+    let substitutions: Vec<_> = model
+        .constants
+        .iter()
+        .zip(&spec.constants)
+        .filter_map(|(binding, constant)| match binding {
+            ConstBinding::Def(def) => Some((constant.name, *def)),
+            _ => None,
+        })
+        .collect();
     let mut evaluator =
         Evaluator::new(Arc::new(spec), model.constants).with_overrides(model.overrides);
     if options.community_modules {
@@ -166,6 +177,9 @@ pub fn check<S: Successors>(
     runtime.set_seed(options.seed);
     // TLC creates its model checker, whose options TLCGet("config") reads, and computes the
     // constant definitions before it checks the assumptions.
+    if let Err(error) = check_substitutions(&evaluator, &substitutions) {
+        return Outcome::error(error.message);
+    }
     runtime.start(CheckerOptions::for_config(config));
     evaluator.evaluate_constant_definitions();
     if let Err(error) = check_constants(&evaluator, &mut plan) {
@@ -216,6 +230,30 @@ pub fn check<S: Successors>(
     };
     outcome.has_liveness = has_liveness;
     outcome
+}
+
+/// TLC's check of the definitions the configuration substitutes for constants, as in `C <- Foo`,
+/// before it creates its model checker: one above constant level must evaluate without a state.
+fn check_substitutions(
+    evaluator: &Evaluator,
+    substitutions: &[(tla_value::Symbol, tla_resolve::DefId)],
+) -> Result<(), Error> {
+    let levels = level::Levels::default();
+    for &(constant, def) in substitutions {
+        let spec = evaluator.spec();
+        if !spec.def(def).params.is_empty()
+            || levels.def_level(spec, def) == tla_resolve::Level::Constant
+        {
+            continue;
+        }
+        if evaluator.runtime().at_startup(|| evaluator.eval_def(def, None)).is_err() {
+            let target = spec.def(def).name;
+            return Err(Error::config(format!(
+                "The configuration file substitutes constant {constant} with non-constant {target}"
+            )));
+        }
+    }
+    Ok(())
 }
 
 /// TLC's checks of the constant-level parts of the spec and the configuration, as it processes
