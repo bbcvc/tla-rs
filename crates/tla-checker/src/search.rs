@@ -33,6 +33,25 @@ pub trait Successors {
     ) -> Result<()>;
 }
 
+impl Successors for Evaluator {
+    fn init_states(
+        &self,
+        init: &[DefId],
+        found: &mut dyn FnMut(State) -> Result<bool>,
+    ) -> Result<()> {
+        Evaluator::init_states(self, init, found)
+    }
+
+    fn next_states(
+        &self,
+        next: DefId,
+        state: &State,
+        found: &mut dyn FnMut(State) -> Result<bool>,
+    ) -> Result<()> {
+        Evaluator::next_states(self, next, state, found)
+    }
+}
+
 /// How a search ended.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Ending {
@@ -297,6 +316,7 @@ impl<S: Successors + ?Sized> Explorer<'_, S> {
             span: def.span,
             line,
             column,
+            incomplete: None,
         }
     }
 
@@ -330,6 +350,7 @@ impl<S: Successors + ?Sized> Explorer<'_, S> {
             span: Default::default(),
             line: 0,
             column: 0,
+            incomplete: None,
         })
     }
 

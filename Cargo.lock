@@ -345,6 +345,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "tla-checker"
+version = "0.1.0"
+dependencies = [
+ "serde_json",
+ "tla-ast",
+ "tla-eval",
+ "tla-parser",
+ "tla-resolve",
+ "tla-value",
+]
+
+[[package]]
 name = "tla-eval"
 version = "0.1.0"
 dependencies = [
