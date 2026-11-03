@@ -266,3 +266,20 @@ fn reports_syntax_errors_with_positions() {
 
     assert_eq!(parse_module("no module here").unwrap_err().message, "no module found");
 }
+
+#[test]
+fn aligns_tabs_to_eight_columns_like_sany() {
+    let source =
+        "---- MODULE Tabs ----\nVARIABLE x\nNext == /\\ x' = 1\n\t/\\ x = 0\nS == \"a\tb\"\n====\n";
+    let module = parse(source);
+    assert!(matches!(body(&module, "Next"), ExprKind::And(conjuncts) if conjuncts.len() == 2));
+    assert_eq!(body(&module, "S"), &ExprKind::Str(Symbol::intern("a\tb")));
+    let span = definition(&module, "S").body.span;
+    assert_eq!(&source[span.start as usize..span.end as usize], "\"a\tb\"");
+}
+
+#[test]
+fn ignores_plus_cal_it_cannot_read_inside_comments() {
+    let source = "---- MODULE Comment ----\n(* --algorithm A { fair { while (TRUE) { skip } } } *)\nX == 1\n====\n";
+    assert!(matches!(body(&parse(source), "X"), ExprKind::Int(1)));
+}

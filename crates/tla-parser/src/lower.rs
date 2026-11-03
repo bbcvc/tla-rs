@@ -35,11 +35,48 @@ const PUNCTUATION: &[&str] = &[
 ];
 
 pub(crate) struct Lower<'a> {
+    /// The source as written. Text and spans always refer to it.
     pub source: &'a str,
+    /// The tabs expanded in the text tree-sitter parsed, if the source has any.
+    pub tabs: &'a [Tab],
 }
 
-pub(crate) fn span(node: Node) -> Span {
-    Span::new(node.start_byte(), node.end_byte())
+/// A tab that [`expand_tabs`] replaced with spaces.
+pub(crate) struct Tab {
+    expanded: usize,
+    original: usize,
+    width: usize,
+}
+
+/// Replaces each tab with spaces up to the next multiple of 8 columns, as SANY measures columns,
+/// so tree-sitter aligns `/\` and `\/` bullets the way SANY does. Returns `None` if there are no
+/// tabs.
+pub(crate) fn expand_tabs(source: &str) -> Option<(String, Vec<Tab>)> {
+    if !source.contains('\t') {
+        return None;
+    }
+    let mut text = String::with_capacity(source.len());
+    let mut tabs = Vec::new();
+    let mut column = 0;
+    for (original, char) in source.char_indices() {
+        match char {
+            '\t' => {
+                let width = 8 - column % 8;
+                tabs.push(Tab { expanded: text.len(), original, width });
+                text.extend(std::iter::repeat_n(' ', width));
+                column += width;
+            }
+            '\n' => {
+                text.push('\n');
+                column = 0;
+            }
+            _ => {
+                text.push(char);
+                column += 1;
+            }
+        }
+    }
+    Some((text, tabs))
 }
 
 /// The named children of `node` that carry meaning, in source order.
@@ -73,12 +110,30 @@ fn builtin_set_name(kind: &str) -> Option<&'static str> {
 }
 
 impl<'a> Lower<'a> {
+    /// Maps a byte offset in the parsed text back to the source.
+    fn original(&self, offset: usize) -> usize {
+        let index = self.tabs.partition_point(|tab| tab.expanded <= offset);
+        let Some(tab) = index.checked_sub(1).map(|index| &self.tabs[index]) else {
+            return offset;
+        };
+        if offset < tab.expanded + tab.width {
+            tab.original
+        } else {
+            offset - (tab.expanded + tab.width) + tab.original + 1
+        }
+    }
+
+    pub fn span(&self, node: Node) -> Span {
+        Span::new(self.original(node.start_byte()), self.original(node.end_byte()))
+    }
+
     pub fn text(&self, node: Node) -> &'a str {
-        &self.source[node.byte_range()]
+        let span = self.span(node);
+        &self.source[span.start as usize..span.end as usize]
     }
 
     pub fn error(&self, node: Node, message: impl Into<String>) -> ParseError {
-        ParseError::new(self.source, span(node), message)
+        ParseError::new(self.source, self.span(node), message)
     }
 
     pub fn unsupported(&self, node: Node, what: &str) -> ParseError {
@@ -101,7 +156,7 @@ impl<'a> Lower<'a> {
                 })?,
             },
         };
-        Ok(Name { symbol: Symbol::intern(text), span: span(node) })
+        Ok(Name { symbol: Symbol::intern(text), span: self.span(node) })
     }
 
     pub fn module(&self, node: Node) -> Result<Module> {
@@ -120,7 +175,7 @@ impl<'a> Lower<'a> {
             }
             units.extend(self.unit(child, false)?);
         }
-        Ok(Module { name: self.name(name_node)?, extends, units, span: span(node) })
+        Ok(Module { name: self.name(name_node)?, extends, units, span: self.span(node) })
     }
 
     /// Lowers a module unit or `LET` definition. Returns `None` for units TLC ignores, such as
@@ -174,7 +229,7 @@ impl<'a> Lower<'a> {
             }
             "theorem" => Unit::Theorem(Theorem {
                 name: node.child_by_field_name("name").map(|name| self.name(name)).transpose()?,
-                span: span(node),
+                span: self.span(node),
             }),
             "module" => Unit::Module(self.module(node)?),
             "use_or_hide" | "single_line" => return Ok(None),
@@ -220,7 +275,7 @@ impl<'a> Lower<'a> {
             module: module.ok_or_else(|| self.error(node, "INSTANCE has no module name"))?,
             substitutions,
             is_local,
-            span: span(node),
+            span: self.span(node),
         })
     }
 

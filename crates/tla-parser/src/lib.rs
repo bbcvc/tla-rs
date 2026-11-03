@@ -12,7 +12,7 @@ pub use config::{
 use tla_ast::{Module, Span};
 use tree_sitter::{Node, Parser};
 
-use crate::lower::{Lower, span};
+use crate::lower::{Lower, expand_tabs};
 
 #[derive(Clone, Debug, PartialEq, Eq, thiserror::Error)]
 #[error("line {line}, column {column}: {message}")]
@@ -37,15 +37,18 @@ pub fn parse_module(source: &str) -> Result<Module, ParseError> {
     parser
         .set_language(&tree_sitter_tlaplus::LANGUAGE.into())
         .expect("the tree-sitter-tlaplus grammar matches the tree-sitter version");
+    let expanded = expand_tabs(source);
+    let text = expanded.as_ref().map_or(source, |(text, _)| text.as_str());
     let tree = parser
-        .parse(source, None)
+        .parse(text, None)
         .ok_or_else(|| ParseError::new(source, Span::default(), "the parser gave up"))?;
+    let lower = Lower { source, tabs: expanded.as_ref().map_or(&[], |(_, tabs)| tabs.as_slice()) };
     let root = tree.root_node();
     let mut cursor = root.walk();
     let module = root.named_children(&mut cursor).find(|child| child.kind() == "module");
     let module = module.ok_or_else(|| {
         let message = if root.is_error() { "syntax error" } else { "no module found" };
-        ParseError::new(source, span(root), message)
+        ParseError::new(source, lower.span(root), message)
     })?;
     if let Some(error) = first_error(module) {
         let message = if error.is_missing() {
@@ -53,16 +56,17 @@ pub fn parse_module(source: &str) -> Result<Module, ParseError> {
         } else {
             "syntax error".to_owned()
         };
-        return Err(ParseError::new(source, span(error), message));
+        return Err(ParseError::new(source, lower.span(error), message));
     }
-    Lower { source }.module(module)
+    lower.module(module)
 }
 
 fn first_error(node: Node) -> Option<Node> {
     if node.is_error() || node.is_missing() {
         return Some(node);
     }
-    if !node.has_error() {
+    // SANY skips comments, so a PlusCal algorithm the grammar can't read in one is no error.
+    if !node.has_error() || matches!(node.kind(), "block_comment" | "pcal_algorithm") {
         return None;
     }
     let mut cursor = node.walk();

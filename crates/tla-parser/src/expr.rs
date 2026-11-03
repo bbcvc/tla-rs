@@ -6,7 +6,7 @@ use tla_ast::{
 };
 use tree_sitter::Node;
 
-use crate::lower::{Lower, Result, children, fields, op_of, span};
+use crate::lower::{Lower, Result, children, fields, op_of};
 
 impl Lower<'_> {
     pub fn expr(&self, node: Node) -> Result<Expr> {
@@ -140,7 +140,7 @@ impl Lower<'_> {
             }
             kind => return Err(self.unsupported(node, kind)),
         };
-        Ok(Expr::new(kind, span(node)))
+        Ok(Expr::new(kind, self.span(node)))
     }
 
     fn boxed(&self, node: Node) -> Result<Box<Expr>> {
