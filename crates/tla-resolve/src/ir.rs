@@ -43,8 +43,8 @@ pub struct Spec {
     pub variables: Vec<Declaration>,
     pub constants: Vec<Declaration>,
     pub defs: Vec<Def>,
-    /// The `ASSUME`s of every module the spec uses, each as a zero-arity definition. Axioms,
-    /// which TLC doesn't check, are left out.
+    /// The `ASSUME`s TLC checks, each as a zero-arity definition: those of the root module and
+    /// the modules it extends, but not of the modules it instantiates, and not the axioms.
     pub assumptions: Vec<DefId>,
     /// The names visible at the top level of the root module, which the configuration refers to.
     pub root: HashMap<Symbol, RootName>,
