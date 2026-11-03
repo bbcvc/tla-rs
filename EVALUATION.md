@@ -96,7 +96,7 @@ cargo run --release -p tla-resolve --example resolve_corpus -- $C/.corpora --all
 cargo run --release -p tla-resolve --example resolve_corpus -- $C/.corpora $L --expected $C/expected.json
 ```
 
-The parser and resolver agree with SANY on 1,864 of the 1,873 modules SANY was recorded on. Every one of the 823 models TLC was recorded on that TLC checks resolves.
+The parser and resolver agree with SANY on 1,865 of the 1,873 modules SANY was recorded on. Every one of the 823 models TLC was recorded on that TLC checks resolves.
 
 The 9 disagreements with SANY:
 
@@ -275,4 +275,3 @@ What is left, by cause:
 | A Java class in the model's directory overrides a definition | `UserModuleOverride` |
 | Other evaluator gaps: `UNCHANGED` as an operator argument, `TLCCache`, `AssertError`'s message for a function applied outside its domain, an error comparing the integer 1 with the string "type" in `ExternalHistoryInvars` where TLC succeeds, and a stack overflow on a function whose body applies the function itself eagerly | `test52`, `ConstantContextTLCCache`, `Github696`, `MCMultiNode`, `MCMultiNodeReadsAlt`, `test45` (crash) |
 | TLC evaluates the liveness property on the initial state before it finds the invariant violation | `InitialLivenessEvaluationError` |
-| SANY rejects `USE` and `HIDE` of a proof step, which the resolver accepts | `test214` |

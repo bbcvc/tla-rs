@@ -555,6 +555,7 @@ impl Resolver<'_> {
                     self.spec.assumptions.push(def);
                 }
                 if let Some(name) = assume.name {
+                    self.statements.insert(def);
                     elab.add(name, self.operator_entry(elab.module, name, 0, def, false), source)?;
                 }
             }
@@ -562,9 +563,14 @@ impl Resolver<'_> {
                 if let (Some(name), Some(statement)) = (theorem.name, &theorem.statement) {
                     let def = self.statement(elab, Some(name), statement)?;
                     self.origins.insert(def, origin);
+                    self.statements.insert(def);
                     elab.add(name, self.operator_entry(elab.module, name, 0, def, false), source)?;
                 }
+                for hide in &theorem.hides {
+                    self.check_hide(elab, hide)?;
+                }
             }
+            Unit::Hide(hide) => self.check_hide(elab, hide)?,
             Unit::Module(inner) => {
                 let id = self.parsed[&inner.name.symbol].id;
                 let mut context = elab.context.clone();
@@ -575,6 +581,32 @@ impl Resolver<'_> {
                 }
                 self.enclosing.insert(id, (Rc::new(context), is_plain));
             }
+        }
+        Ok(())
+    }
+
+    /// SANY's check that a `HIDE` cites facts by name only: the names of theorems, assumptions,
+    /// and proof steps (`UseOrHideNode.factCheck`). A name that doesn't resolve here may be
+    /// one a proof defines, which isn't resolved, so it is left alone.
+    fn check_hide(&self, elab: &Elab, hide: &tla_ast::Hide) -> Result<()> {
+        for fact in &hide.facts {
+            let span = match fact {
+                tla_ast::HideFact::Expr(span) => *span,
+                tla_ast::HideFact::Name(name) => match self.lookup(elab, name.symbol) {
+                    Some((Entry { binding: Binding::Def(def), .. }, _))
+                        if self.statements.contains(&def) =>
+                    {
+                        continue;
+                    }
+                    Some(_) => name.span,
+                    None => continue,
+                },
+            };
+            return Err(self.error(
+                elab.module,
+                span,
+                "The only expression allowed as a fact in a HIDE is \nthe name of a theorem, assumption, or step.",
+            ));
         }
         Ok(())
     }

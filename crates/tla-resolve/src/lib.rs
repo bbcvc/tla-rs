@@ -105,6 +105,7 @@ pub fn resolve(source: &str, loader: &mut dyn ModuleLoader) -> Result<Spec> {
         elabs: 0,
         elab_contexts: HashMap::new(),
         origins: HashMap::new(),
+        statements: HashSet::new(),
         replaying: 0,
     };
     let root = resolver.add_file(modules, source.into(), false);
@@ -199,6 +200,8 @@ pub(crate) struct Resolver<'l> {
     /// Whether a subexpression reference is resolving part of a definition again, whose names
     /// may hide later ones without conflict.
     replaying: usize,
+    /// The definitions of named theorems and assumptions, which a `HIDE` may cite.
+    statements: HashSet<DefId>,
 }
 
 /// Whether TLC bundles a module of this name. A loader shouldn't supply one from a library
