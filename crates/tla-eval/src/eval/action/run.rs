@@ -7,7 +7,7 @@ use tla_resolve::{DefBody, DefId, Expr, VarId};
 use tla_value::{Symbol, Value};
 
 use super::{Action, Rest, Site};
-use crate::env::{Env, Frame, StateRef};
+use crate::env::{Env, Frame, StateRef, Version};
 use crate::{EvalError, Evaluator, Incomplete, Result, State};
 
 /// What TLC computes when it walks a predicate.
@@ -37,6 +37,10 @@ pub(crate) struct Run<'r> {
     /// assign its variables in place and undo them when they return.
     pub assigned: Vec<Option<Value>>,
     pub unassigned: usize,
+    /// Which values `assigned` holds, so that a thunk caches its value for as long as they last.
+    version: Version,
+    /// The number of versions made so far.
+    versions: u64,
     pub is_stopped: bool,
     /// The definition being enumerated, where an incomplete state is reported.
     def: DefId,
@@ -57,6 +61,8 @@ impl<'r> Run<'r> {
             current,
             assigned: vec![None; variables],
             unassigned: variables,
+            version: Version::first(),
+            versions: 0,
             is_stopped: false,
             def,
             found,
@@ -66,7 +72,7 @@ impl<'r> Run<'r> {
     /// The states expressions read: an initial predicate reads the state it assigns, and an
     /// action reads the current state and the next state it assigns.
     pub fn views(&self) -> (Option<StateRef<'_>>, Option<StateRef<'_>>) {
-        let assigned = StateRef::Partial(&self.assigned);
+        let assigned = StateRef::Partial(&self.assigned, self.version);
         match self.computation {
             Computation::Init => (Some(assigned), None),
             Computation::Next | Computation::Enabled => {
@@ -88,9 +94,13 @@ impl<'r> Run<'r> {
     ) -> Result<()> {
         self.assigned[var] = Some(value);
         self.unassigned -= 1;
+        self.versions += 1;
+        let version = self.version;
+        self.version = version.at(self.versions);
         let result = then(self);
         self.assigned[var] = None;
         self.unassigned += 1;
+        self.version = version;
         result
     }
 }

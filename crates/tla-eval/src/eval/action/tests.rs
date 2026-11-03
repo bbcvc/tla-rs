@@ -551,6 +551,15 @@ fn streams_a_union_until_tlc_caches_it() {
     // Sizing the set itself caches it.
     let sized = "\\E u \\in {UNION {0..2, {1}}} : Cardinality(u) > 0 /\\ y' \\in UNION {u, {7}}";
     assert_eq!(generated(sized), 17);
+    // An argument keeps its value until the walk assigns a variable.
+    let call = |body: &str| {
+        let body = format!(
+            "VARIABLES x, y\nInit == x = 0 /\\ y = 0\nOp(u) == {body}\nNext == Op({union})"
+        );
+        explore_body(&body).0
+    };
+    assert_eq!(call("Cardinality(u) > 0 /\\ y' \\in u /\\ UNCHANGED x"), 17);
+    assert_eq!(call("Cardinality(u) > 0 /\\ UNCHANGED x /\\ y' \\in u"), 21);
     // Sorting a set enumeration compares each element after the first, which caches it.
     let counts =
         |set: &str| explore_body(&format!("VARIABLE x\nInit == x \\in {set}\nNext == UNCHANGED x"));
