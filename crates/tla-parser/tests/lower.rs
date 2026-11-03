@@ -278,6 +278,40 @@ fn lowers_labels_and_subexpression_references() {
 }
 
 #[test]
+fn rejects_operators_that_conflict_with_enabled_like_sany() {
+    // SANY gives ENABLED, UNCHANGED, [], and <> the precedence 4-15, so an operator after their
+    // operand that binds as tightly conflicts with them. The grammar applies them to `x` alone.
+    for (expression, conflict) in [
+        ("ENABLED x'", "ENABLED and '"),
+        ("UNCHANGED x'", "UNCHANGED and '"),
+        ("[]x'", "[] and '"),
+        ("<>x^+", "<> and ^+"),
+        ("ENABLED x = y", "ENABLED and ="),
+        ("[]x \\in S", "[] and \\in"),
+    ] {
+        let source = format!("---- MODULE Conflict ----\nA == {expression}\n====\n");
+        let error = parse_module(&source).unwrap_err();
+        assert_eq!(
+            error.message,
+            format!("Precedence conflict between {conflict}."),
+            "{expression}"
+        );
+    }
+    for expression in [
+        "ENABLED (x')",
+        "UNCHANGED <<x, y>> /\\ y' = y",
+        "[]P => Q",
+        "<>[]P ~> []Q",
+        "[]P \\/ <>Q",
+        "~x' = y",
+        "SUBSET x'",
+    ] {
+        let source = format!("---- MODULE Fine ----\nA == {expression}\n====\n");
+        parse_module(&source).unwrap_or_else(|error| panic!("{expression}: {error}"));
+    }
+}
+
+#[test]
 fn reports_syntax_errors_with_positions() {
     let source = "---- MODULE Broken ----\nVARIABLE x\nNext == x \\in\nInv == x > 0\n====\n";
     let error = parse_module(source).unwrap_err();

@@ -40,10 +40,11 @@ impl Lower<'_> {
                 op: self.op(self.field(node, "symbol")?)?,
                 arg: self.boxed(self.field(node, "rhs")?)?,
             },
-            "bound_postfix_op" => ExprKind::Postfix {
-                op: self.op(self.field(node, "symbol")?)?,
-                arg: self.boxed(self.field(node, "lhs")?)?,
-            },
+            "bound_postfix_op" => {
+                let (symbol, lhs) = (self.field(node, "symbol")?, self.field(node, "lhs")?);
+                self.check_prefix_precedence(lhs, symbol, None)?;
+                ExprKind::Postfix { op: self.op(symbol)?, arg: self.boxed(lhs)? }
+            }
             "conj_list" => ExprKind::And(self.junction_items(node)?),
             "disj_list" => ExprKind::Or(self.junction_items(node)?),
             "if_then_else" => ExprKind::If {
@@ -217,8 +218,33 @@ impl Lower<'_> {
         }
     }
 
+    /// SANY rejects an operator after the operand of `ENABLED`, `UNCHANGED`, `[]`, or `<>` that
+    /// binds at least as tightly as they do (precedence 4-15), as in `ENABLED x'` or `[]x = y`. The
+    /// grammar instead applies the prefix operator to `x` alone. `infix` is the operator after it,
+    /// or `None` for a postfix one, which always does.
+    fn check_prefix_precedence(&self, lhs: Node, symbol: Node, infix: Option<Op>) -> Result<()> {
+        if lhs.kind() != "bound_prefix_op" {
+            return Ok(());
+        }
+        let prefix = self.field(lhs, "symbol")?;
+        let is_temporal_prefix =
+            matches!(prefix.kind(), "enabled" | "unchanged" | "always" | "eventually");
+        let is_looser = matches!(
+            infix,
+            Some(Op::And | Op::Or | Op::Implies | Op::Equiv | Op::LeadsTo | Op::PlusArrow)
+        );
+        if !is_temporal_prefix || is_looser {
+            return Ok(());
+        }
+        let message =
+            format!("Precedence conflict between {} and {}.", self.text(prefix), self.text(symbol));
+        Err(self.error(symbol, message))
+    }
+
     fn infix(&self, node: Node) -> Result<ExprKind> {
-        let op = self.op(self.field(node, "symbol")?)?;
+        let symbol = self.field(node, "symbol")?;
+        let op = self.op(symbol)?;
+        self.check_prefix_precedence(self.field(node, "lhs")?, symbol, Some(op))?;
         if matches!(op, Op::And | Op::Or | Op::Times) {
             let mut operands = Vec::new();
             self.flatten(node, op, &mut operands)?;
