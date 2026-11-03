@@ -175,6 +175,17 @@ enum Run {
     Crash(String),
 }
 
+impl Run {
+    /// The line the outcomes file has for the run.
+    fn encode(&self) -> String {
+        match self {
+            Run::Done(reported) => reported.encode(),
+            Run::Timeout => "timeout".into(),
+            Run::Crash(_) => "crash".into(),
+        }
+    }
+}
+
 fn check_in_child(spec: &Path, config: &Path, library_args: &[String], timeout: Duration) -> Run {
     let mut child = Command::new(std::env::current_exe().unwrap())
         .arg("--one")
@@ -214,7 +225,13 @@ struct Expected {
     distinct: Option<u64>,
     depth: Option<u64>,
     trace_length: Option<u64>,
+    /// How long TLC ran.
+    milliseconds: Option<u64>,
 }
+
+/// How long TLC may run before an error it reports is the end of its resources, as tla-ts's
+/// conformance runner takes it (`--max-tlc-ms`).
+const TLC_TIME_LIMIT_MS: u64 = 20_000;
 
 impl Expected {
     fn from_json(record: &serde_json::Value) -> Self {
@@ -226,7 +243,14 @@ impl Expected {
             distinct: number("distinctStates"),
             depth: number("depth"),
             trace_length: number("traceLength"),
+            milliseconds: number("tlcMilliseconds"),
         }
+    }
+
+    /// Whether TLC reached a verdict. TLC errs after a long run only when it runs out of memory
+    /// or disk on a state space too large for it, which tla-ts's runner leaves out.
+    fn has_verdict(&self) -> bool {
+        self.status != "error" || self.milliseconds.unwrap_or(0) <= TLC_TIME_LIMIT_MS
     }
 }
 
@@ -235,8 +259,23 @@ enum Verdict {
     Match,
     Mismatch,
     Unsupported,
+    /// TLC has no verdict to compare with.
+    Unjudged,
     Timeout,
     Crash,
+}
+
+impl Verdict {
+    fn name(self) -> &'static str {
+        match self {
+            Verdict::Match => "match",
+            Verdict::Mismatch => "mismatch",
+            Verdict::Unsupported => "unsupported",
+            Verdict::Unjudged => "no-verdict",
+            Verdict::Timeout => "timeout",
+            Verdict::Crash => "crash",
+        }
+    }
 }
 
 /// tla-ts's `compareOutcome`, with liveness left out: what differs, if anything.
@@ -366,13 +405,18 @@ fn main() {
                     let spec = config.with_extension("tla");
                     let run = check_in_child(&spec, &config, &library_args, timeout);
                     let (verdict, detail, line) = match &run {
+                        _ if !expected.has_verdict() => {
+                            let seconds = expected.milliseconds.unwrap_or(0) / 1000;
+                            let detail = format!("TLC stopped with an error after {seconds} s");
+                            (Verdict::Unjudged, Some(detail), run.encode())
+                        }
                         Run::Done(reported) => {
                             let (verdict, detail) = compare(expected, reported);
-                            (verdict, detail, reported.encode())
+                            (verdict, detail, run.encode())
                         }
-                        Run::Timeout => (Verdict::Timeout, None, "timeout".into()),
+                        Run::Timeout => (Verdict::Timeout, None, run.encode()),
                         Run::Crash(message) => {
-                            (Verdict::Crash, Some(message.clone()), "crash".into())
+                            (Verdict::Crash, Some(message.clone()), run.encode())
                         }
                     };
                     results.lock().unwrap().insert(id.clone(), (verdict, detail, line));
@@ -384,26 +428,20 @@ fn main() {
     for (id, (verdict, detail, _)) in &results {
         if *verdict != Verdict::Match {
             let detail = detail.as_deref().unwrap_or_default().replace('\n', " ");
-            println!(
-                "{:<11} {id}  {}",
-                format!("{verdict:?}").to_lowercase(),
-                truncate(&detail, 300)
-            );
+            println!("{:<11} {id}  {}", verdict.name(), truncate(&detail, 300));
         }
     }
     let mut tallies: BTreeMap<Verdict, usize> = BTreeMap::new();
     for (verdict, _, _) in results.values() {
         *tallies.entry(*verdict).or_default() += 1;
     }
-    let summary: Vec<String> = tallies
-        .iter()
-        .map(|(verdict, count)| format!("{}: {count}", format!("{verdict:?}").to_lowercase()))
-        .collect();
+    let summary: Vec<String> =
+        tallies.iter().map(|(verdict, count)| format!("{}: {count}", verdict.name())).collect();
     println!("\n{} models in {:.2?}: {}", results.len(), started.elapsed(), summary.join(", "));
     if let Some(path) = outcomes_path {
         let lines: String = results
             .iter()
-            .map(|(id, (verdict, _, line))| format!("{id}\t{verdict:?}\t{line}\n"))
+            .map(|(id, (verdict, _, line))| format!("{id}\t{}\t{line}\n", verdict.name()))
             .collect();
         std::fs::write(path, lines).unwrap();
     }
@@ -493,5 +531,15 @@ mod tests {
         let record = serde_json::json!({ "status": "error" });
         assert_eq!(compare(&expected(record.clone()), &live).0, Verdict::Unsupported);
         assert_eq!(compare(&expected(record), &reported(Status::Error)).0, Verdict::Match);
+    }
+
+    #[test]
+    fn leaves_out_tlc_running_out_of_resources() {
+        let record = serde_json::json!({ "status": "error", "tlcMilliseconds": 300_022 });
+        assert!(!expected(record).has_verdict());
+        let record = serde_json::json!({ "status": "error", "tlcMilliseconds": 400 });
+        assert!(expected(record).has_verdict());
+        let record = serde_json::json!({ "status": "success", "tlcMilliseconds": 300_022 });
+        assert!(expected(record).has_verdict());
     }
 }
