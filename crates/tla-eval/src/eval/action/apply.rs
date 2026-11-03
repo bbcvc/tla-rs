@@ -54,7 +54,7 @@ impl Evaluator {
                 &env(site, run),
                 expr,
             )?;
-            let callee = Site { frame, module: lambda.captured.module };
+            let callee = Site { frame, ..Site::of(&lambda.captured) };
             return self.act(lambda.body.get(), &callee, run, action, rest);
         }
         let mut env = env(site, run);
