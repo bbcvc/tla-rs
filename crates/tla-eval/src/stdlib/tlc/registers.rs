@@ -123,7 +123,7 @@ fn named_registers(runtime: &Runtime) -> Outcome<Vec<(Symbol, Value)>> {
 }
 
 /// The counts of `_Possible` as a function from each name to its count.
-fn possible_counts(counts: &std::collections::BTreeMap<Symbol, i32>) -> Outcome {
+pub(crate) fn possible_counts(counts: &std::collections::BTreeMap<Symbol, i32>) -> Outcome {
     let pairs = counts.iter().map(|(name, count)| (Value::Str(*name), Value::Int(*count)));
     Ok(Value::function(pairs.collect())?)
 }
@@ -185,7 +185,7 @@ pub(super) fn tlc_set(ctx: &mut Ctx<'_>, args: &[Arg]) -> Outcome {
 }
 
 /// `TLCSet(key, value)`.
-fn set_register(runtime: &Runtime, key: &Value, value: Value) -> Outcome<()> {
+pub(crate) fn set_register(runtime: &Runtime, key: &Value, value: Value) -> Outcome<()> {
     match key {
         Value::Int(index) if *index >= 0 => {
             runtime.registers.lock().unwrap().numbered.insert(*index, value);
@@ -212,6 +212,20 @@ fn set_register(runtime: &Runtime, key: &Value, value: Value) -> Outcome<()> {
         ),
     }
     Ok(())
+}
+
+/// The register `key` names, if it is set: TLCExt's `TLCGetOrDefault` reads it.
+pub(crate) fn register(runtime: &Runtime, key: &Value) -> Outcome<Option<Value>> {
+    Ok(match key {
+        Value::Int(index) => runtime.registers.lock().unwrap().numbered.get(index).cloned(),
+        Value::Str(name) if name.as_str().starts_with(NAMED_REGISTER_PREFIX) => {
+            named_registers(runtime)?
+                .into_iter()
+                .find(|(key, _)| key == name)
+                .map(|(_, value)| value)
+        }
+        _ => None,
+    })
 }
 
 #[cfg(test)]

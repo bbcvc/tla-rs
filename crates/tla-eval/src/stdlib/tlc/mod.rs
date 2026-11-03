@@ -19,6 +19,7 @@ pub(crate) use fingerprint::tlc_fingerprint;
 pub(crate) use pretty::pretty_print;
 pub(crate) use print::strict_text;
 pub(crate) use random::{JavaRandom, random_subset};
+pub(crate) use registers::{possible_counts, register, set_register};
 
 /// A method of `tlc2.module.TLC` that takes values, as `java.lang.reflect.Method` prints it.
 macro_rules! tlc_method {

@@ -83,12 +83,24 @@ macro_rules! java {
     }};
 }
 
+/// The [`Native`] of an operator that needs what natives don't get, such as unevaluated
+/// arguments or the model checker's state.
+macro_rules! unsupported {
+    ($name:literal) => {{
+        fn native(_: &mut $crate::Ctx<'_>, _: &[$crate::Arg]) -> tla_value::Result<Value> {
+            Err(tla_value::Error(concat!($name, " is not supported yet").to_owned()))
+        }
+        native as $crate::Native
+    }};
+}
+
 mod bags;
 mod finite_sets;
 mod naturals;
 mod randomization;
 mod sequences;
 pub(crate) mod tlc;
+mod tlc_ext;
 
 /// The native implementation of `name` in standard module `module`. TLC overrides the arithmetic
 /// of Naturals with that of Integers when the spec loads Integers anywhere.
@@ -99,6 +111,8 @@ pub(crate) fn lookup(module: &str, name: &str, uses_integers: bool) -> Option<Na
         "Sequences" => sequences::lookup(name),
         "FiniteSets" => finite_sets::lookup(name),
         "TLC" => tlc::lookup(name),
+        "TLCExt" => tlc_ext::lookup(name),
+        "_Possible" => tlc_ext::lookup_possible(name),
         "Bags" => bags::lookup(name, uses_integers),
         "Randomization" => randomization::lookup(name),
         _ => None,

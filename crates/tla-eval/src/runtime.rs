@@ -167,6 +167,14 @@ impl Runtime {
         }
     }
 
+    pub(crate) fn behavior(&self, state: &State) -> Option<Vec<State>> {
+        self.checker.read().unwrap().behavior.as_ref().map(|behavior| behavior(state))
+    }
+
+    pub(crate) fn counter_example(&self) -> Option<Value> {
+        self.checker.read().unwrap().counter_example.clone()
+    }
+
     pub(crate) fn spec(&self) -> Option<Value> {
         self.checker.read().unwrap().spec.clone()
     }
