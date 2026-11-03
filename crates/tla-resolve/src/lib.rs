@@ -12,6 +12,7 @@
 
 mod expr;
 mod ir;
+mod levels;
 mod module;
 mod stdlib;
 
@@ -22,6 +23,7 @@ pub use ir::*;
 use tla_ast::{Span, Symbol};
 
 use crate::expr::FrameScope;
+use crate::levels::layout::Layout;
 use crate::module::{Binding, Context, Parameter, ParsedModule};
 
 /// Supplies the source of a module by name, or `None` if it has no such module.
@@ -77,6 +79,7 @@ pub fn resolve(source: &str, loader: &mut dyn ModuleLoader) -> Result<Spec> {
             defs: Vec::new(),
             assumptions: Vec::new(),
             root: HashMap::new(),
+            levels: Vec::new(),
         },
         parsed: HashMap::new(),
         parameters: HashMap::new(),
@@ -91,6 +94,10 @@ pub fn resolve(source: &str, loader: &mut dyn ModuleLoader) -> Result<Spec> {
         recursive: HashMap::new(),
         enclosing: HashMap::new(),
         inner_origins: HashMap::new(),
+        layout: Layout::default(),
+        qualifier: None,
+        is_instantiating: false,
+        sections: 0,
     };
     let root = resolver.add_file(modules, source.into(), false);
     let context = resolver.plain(&root)?;
@@ -113,6 +120,7 @@ pub fn resolve(source: &str, loader: &mut dyn ModuleLoader) -> Result<Spec> {
             Some((*name, root))
         })
         .collect();
+    resolver.check_levels()?;
     Ok(resolver.spec)
 }
 
@@ -143,6 +151,14 @@ pub(crate) struct Resolver<'l> {
     /// The enclosing module and place of each nested module, to tell a second elaboration of
     /// it from a different module of the same name.
     inner_origins: HashMap<Symbol, (ModuleId, Span)>,
+    /// What the level pass needs to know of the program beyond the IR.
+    layout: Layout,
+    /// `I!J!` while elaborating the module of the named instance `J` in that of `I`.
+    qualifier: Option<Rc<str>>,
+    /// Whether a module is being elaborated under the substitutions of an `INSTANCE`.
+    is_instantiating: bool,
+    /// The number of `RECURSIVE` sections so far.
+    sections: usize,
 }
 
 /// Whether TLC bundles a module of this name. A loader shouldn't supply one from a library

@@ -2,7 +2,7 @@
 
 use std::rc::Rc;
 
-use tla_ast::{self as ast, Component, Name, Op, Symbol, Unit};
+use tla_ast::{self as ast, Component, Name, Op, Span, Symbol, Unit};
 
 use crate::ir::{
     Bound, Builtin, DefBody, DefId, ExceptKey, ExceptUpdate, Expr, ExprKind, Local, OpRef, Pattern,
@@ -14,8 +14,14 @@ use crate::{Resolver, Result};
 /// The names one frame binds so far and how many slots it uses.
 #[derive(Default)]
 pub(crate) struct FrameScope {
+    /// The frame's index in the level pass's layout.
+    pub id: usize,
     pub names: Vec<(Symbol, Entry)>,
     pub slots: usize,
+    /// The definitions of the `LET`s resolved in the frame.
+    pub lets: Vec<DefId>,
+    /// The span of the body of each `LET` resolved in the frame.
+    pub let_bodies: Vec<Span>,
 }
 
 /// The built-in operator an operator symbol stands for, if TLA+ defines it itself.
@@ -184,21 +190,23 @@ impl Resolver<'_> {
             };
             return Err(self.error(elab.module, name.span, message));
         }
-        Ok(self.new_def(elab.module, name, params, depth))
+        let def = self.new_def(elab.module, name, params, depth);
+        self.layout.defs[def.index()].section = self.pending_section(elab.module);
+        Ok(def)
     }
 
     /// Resolves an operator definition, at module level or in a `LET`.
     pub(crate) fn operator(&mut self, elab: &Elab, definition: &ast::OperatorDef) -> Result<DefId> {
         let arities = definition.params.iter().map(|param| param.arity).collect();
         let def = self.claim_def(elab, definition.name, arities, false)?;
-        self.frames.push(FrameScope::default());
+        self.push_frame(Vec::new());
         let body = definition
             .params
             .iter()
             .try_for_each(|param| self.bind_slot(elab, param.name, param.arity).map(|_| ()))
             .and_then(|()| self.expr(elab, &definition.body));
         let frame = self.frames.pop().unwrap();
-        self.finish_def(def, DefBody::Expr(body?), frame.slots);
+        self.finish_def(def, DefBody::Expr(body?), frame);
         Ok(def)
     }
 
@@ -209,13 +217,13 @@ impl Resolver<'_> {
         def: DefId,
         definition: &ast::FunctionDef,
     ) -> Result<()> {
-        self.frames.push(FrameScope::default());
+        self.push_frame(Vec::new());
         let resolved = self.bounds(elab, &definition.bounds).and_then(|bounds| {
             let body = self.expr(elab, &definition.body)?;
             Ok(DefBody::Function { bounds, body })
         });
         let frame = self.frames.pop().unwrap();
-        self.finish_def(def, resolved?, frame.slots);
+        self.finish_def(def, resolved?, frame);
         Ok(())
     }
 
@@ -436,6 +444,9 @@ impl Resolver<'_> {
         let mark = self.mark();
         let resolved = self.let_defs(elab, defs).and_then(|()| self.expr(elab, body));
         self.release(mark);
+        if let (Ok(body), Some(frame)) = (&resolved, self.frames.last_mut()) {
+            frame.let_bodies.push(body.span);
+        }
         resolved
     }
 
@@ -451,11 +462,13 @@ impl Resolver<'_> {
                 Unit::Operator(definition) => {
                     let def = self.operator(elab, definition)?;
                     self.bind_def(elab, definition.name, definition.params.len(), def)?;
+                    self.frames.last_mut().unwrap().lets.push(def);
                 }
                 Unit::Function(definition) => {
                     let def = self.claim_def(elab, definition.name, Vec::new(), true)?;
                     self.bind_def(elab, definition.name, 0, def)?;
                     self.function(elab, def, definition)?;
+                    self.frames.last_mut().unwrap().lets.push(def);
                 }
                 Unit::ModuleDef(definition) => {
                     let info = self.named_instance(elab, definition)?;
@@ -592,13 +605,13 @@ impl Resolver<'_> {
                 let depth = self.depth();
                 let name = Name { symbol: Symbol::intern("LAMBDA"), span: arg.span };
                 let def = self.new_def(elab.module, name, vec![0; arity], depth);
-                self.frames.push(FrameScope::default());
+                self.push_frame(Vec::new());
                 let body = params
                     .iter()
                     .try_for_each(|param| self.bind_slot(elab, *param, 0).map(|_| ()))
                     .and_then(|()| self.expr(elab, body));
                 let frame = self.frames.pop().unwrap();
-                self.finish_def(def, DefBody::Expr(body?), frame.slots);
+                self.finish_def(def, DefBody::Expr(body?), frame);
                 Ok(OpRef::Def { def, scope: Scope::Up(0) })
             }
             ast::ExprKind::Apply { name, args } if args.is_empty() => {
