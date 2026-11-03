@@ -667,6 +667,11 @@ impl Resolver<'_> {
             ..DefLayout::default()
         });
         let id = DefId(self.spec.defs.len() as u32 - 1);
+        if self.is_instantiating
+            && let Some(span) = self.instance_span
+        {
+            self.spec.instance_spans.insert(id, span);
+        }
         self.pending.insert(id);
         id
     }
@@ -796,7 +801,11 @@ impl Resolver<'_> {
         });
         self.substitutions += 1;
         let substitution = Substitution { id: self.substitutions, names: substitution };
-        self.elaborate(&target, Some(Rc::new(substitution)), depth)
+        let outer = self.instance_span;
+        self.instance_span = outer.or(Some((elab.module, span)));
+        let context = self.elaborate(&target, Some(Rc::new(substitution)), depth);
+        self.instance_span = outer;
+        context
     }
 
     /// Resolves the value of `name <- value` as a definition at `depth`, or as an expression to

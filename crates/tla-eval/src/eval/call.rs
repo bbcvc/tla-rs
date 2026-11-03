@@ -27,6 +27,20 @@ impl Evaluator {
         state: Option<StateRef<'_>>,
         next: Option<StateRef<'_>>,
     ) -> Result<Value> {
+        self.call_def_in(def, parent, args, state, next, Enabled::Outside)
+    }
+
+    /// [`Evaluator::call_def`] of an operator passed where `enabled` tells, whose body it is
+    /// evaluated in.
+    fn call_def_in(
+        &self,
+        def: DefId,
+        parent: Option<Arc<Frame>>,
+        args: Vec<Value>,
+        state: Option<StateRef<'_>>,
+        next: Option<StateRef<'_>>,
+        enabled: Enabled,
+    ) -> Result<Value> {
         let info = self.spec.def(def);
         if args.len() != info.params.len() {
             let message = format!(
@@ -53,7 +67,7 @@ impl Evaluator {
                     Arg::Value(value) => Slot::Value(value.clone()),
                     Arg::Op(op) => Slot::Op(op.clone()),
                 });
-                self.enter(def, parent.clone(), slots.collect(), state, next, Default::default())
+                self.enter(def, parent.clone(), slots.collect(), state, next, (false, enabled))
             };
             let mut ctx = Ctx::new(self, state);
             ctx.next = next;
@@ -65,7 +79,7 @@ impl Evaluator {
             return self.constant_value(def);
         }
         let slots = args.into_iter().map(Slot::Value).collect();
-        self.enter(def, parent, slots, state, next, Default::default())
+        self.enter(def, parent, slots, state, next, (false, enabled))
     }
 
     /// Evaluates the body of `def` in a new frame holding `slots`.
@@ -270,7 +284,7 @@ impl Evaluator {
             return Err(self.error(env, expr, "Expected an operator but found a value"));
         };
         let op = op.clone();
-        if let OperatorKind::Def { def, parent } = &op.0
+        if let OperatorKind::Def { def, parent, enabled } = &op.0
             && self.natives[def.index()].is_none()
             && self.overrides[def.index()].is_none()
         {
@@ -279,13 +293,19 @@ impl Evaluator {
             }
             let slots =
                 args.iter().map(|arg| self.arg_slot(arg, env)).collect::<Result<Vec<_>>>()?;
+            // The operator keeps the mode of where it was passed, under the prime of the caller.
+            let enabled = match (*enabled, env.enabled) {
+                (Enabled::Outside, _) => Enabled::Outside,
+                (_, Enabled::Primed) => Enabled::Primed,
+                (enabled, _) => enabled,
+            };
             return self.enter(
                 *def,
                 parent.clone(),
                 slots,
                 env.state,
                 env.next,
-                (env.keep_lazy, env.enabled),
+                (env.keep_lazy, enabled),
             );
         }
         // An operator of actions passed as an argument, as `'` or `UNCHANGED` in `Op(UNCHANGED)`,
@@ -310,8 +330,8 @@ impl Evaluator {
         next: Option<StateRef<'_>>,
     ) -> tla_value::Result<Value> {
         match &op.0 {
-            OperatorKind::Def { def, parent } => self
-                .call_def(*def, parent.clone(), args.to_vec(), state, next)
+            OperatorKind::Def { def, parent, enabled } => self
+                .call_def_in(*def, parent.clone(), args.to_vec(), state, next, *enabled)
                 .map_err(|error| Error(error.message)),
             OperatorKind::Builtin(builtin) => self.apply_builtin(*builtin, args),
             OperatorKind::Closure(apply) => {
@@ -451,9 +471,11 @@ impl Evaluator {
     /// The operator an argument for a parameter such as `F(_)` stands for.
     pub(super) fn operator(&self, op: &OpRef, expr: &Expr, env: &Env<'_>) -> Result<Operator> {
         let kind = match op {
-            OpRef::Def { def, scope } => {
-                OperatorKind::Def { def: *def, parent: self.scope_frame(scope, env)? }
-            }
+            OpRef::Def { def, scope } => OperatorKind::Def {
+                def: *def,
+                parent: self.scope_frame(scope, env)?,
+                enabled: env.enabled,
+            },
             OpRef::Param(local) => {
                 return match env.slot(local.hops, local.slot) {
                     Slot::Op(op) => Ok(op.clone()),
@@ -461,7 +483,9 @@ impl Evaluator {
                 };
             }
             OpRef::Const(id) => match self.constants.get(id.index()) {
-                Some(ConstBinding::Def(def)) => OperatorKind::Def { def: *def, parent: None },
+                Some(ConstBinding::Def(def)) => {
+                    OperatorKind::Def { def: *def, parent: None, enabled: Enabled::Outside }
+                }
                 Some(ConstBinding::Value(value)) => {
                     let value = value.clone();
                     return Ok(Operator::closure(move |_, _| Ok(value.clone())));

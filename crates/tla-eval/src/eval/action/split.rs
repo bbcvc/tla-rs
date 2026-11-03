@@ -22,15 +22,15 @@ use crate::{Evaluator, Result, State};
 /// One of the actions TLC splits a next-state relation into.
 ///
 /// TLC keeps a call of a definition of a module instantiated with substitutions whole, names it
-/// as SANY does, `I!Op`, and places it at the `INSTANCE`. The resolved spec keeps neither the
-/// instance's name nor where the `INSTANCE` is, so such an action is named after the definition
-/// and placed at the call.
+/// as SANY does, `I!Op`, and places it at the `INSTANCE`, or at the call when it can't compute
+/// the arguments as constants.
 #[derive(Clone)]
 pub struct NextAction {
-    /// The definition TLC names the action after: the one whose body holds it.
+    /// The definition TLC names the action after, as SANY names it: the one whose body holds
+    /// it, or that a call TLC keeps whole applies.
     pub name: Symbol,
-    /// The values of the parameters of that definition, which TLC prints after the name.
-    pub parameters: Vec<Value>,
+    /// The parameters of that definition and their values, which TLC prints after the name.
+    pub parameters: Vec<(Symbol, Value)>,
     /// Where the action is: its expression, or the call TLC doesn't split further.
     pub module: tla_resolve::ModuleId,
     pub span: Span,
@@ -56,15 +56,16 @@ impl NextAction {
         if self.parameters.is_empty() {
             return self.name.to_string();
         }
-        let values: Vec<String> = self.parameters.iter().map(Value::to_string).collect();
+        let values: Vec<String> =
+            self.parameters.iter().map(|(_, value)| value.to_string()).collect();
         format!("{}({})", self.name, values.join(","))
     }
 }
 
-/// The definition whose body the split is in.
+/// The definition whose body the split is in, and the name TLC gives it.
 struct Closure {
     name: Symbol,
-    params: usize,
+    def: DefId,
 }
 
 impl Evaluator {
@@ -109,7 +110,7 @@ impl Evaluator {
         };
         let DefBody::Expr(body) = &info.body else { unreachable!("a walked definition") };
         let mut actions = Vec::new();
-        let closure = Closure { name: info.name, params: 0 };
+        let closure = Closure { name: info.name, def: target };
         self.split(body, &site, &closure, next, &mut actions);
         Ok(actions)
     }
@@ -169,34 +170,43 @@ impl Evaluator {
             return;
         };
         let info = self.spec.def(target);
-        let call = |parameters: Vec<Value>| NextAction {
-            name: info.name,
+        // As SANY names the operator a reference applies: I!Op through the instance I.
+        let name = self.spec.qualified_names.get(&(site.module, expr.span)).copied();
+        let name = name.unwrap_or(info.name);
+        let call = |parameters: Vec<(Symbol, Value)>, (module, span)| NextAction {
+            name,
             parameters,
-            module: site.module,
-            span: expr.span,
+            module,
+            span,
             next,
             body: Body::Expr { expr: self.spec_ref(expr), site: site.clone() },
         };
+        let at_call = (site.module, expr.span);
         let are_constant = args.iter().all(|arg| is_constant(&self.spec, arg));
-        // TLC keeps an action of a module instantiated with substitutions whole, with the values
-        // of constant arguments.
+        // TLC keeps an action of a module instantiated with substitutions whole, at the INSTANCE
+        // with the values of constant arguments, and at the call otherwise.
         if info.is_instantiated {
-            let values = if are_constant { self.constant_values(args, site) } else { None };
-            actions.push(call(values.unwrap_or_default()));
+            let instance = self.spec.instance_spans.get(&target).copied().unwrap_or(at_call);
+            let action = match are_constant.then(|| self.constant_values(args, site)).flatten() {
+                Some(values) => call(self.named(target, values), instance),
+                None if args.is_empty() => call(Vec::new(), instance),
+                None => call(Vec::new(), at_call),
+            };
+            actions.push(action);
             return;
         }
         if !are_constant || self.is_constant_value(target) {
-            actions.push(call(Vec::new()));
+            actions.push(call(Vec::new(), at_call));
             return;
         }
         let Some(values) = self.constant_values(args, site) else {
-            actions.push(call(Vec::new()));
+            actions.push(call(Vec::new(), at_call));
             return;
         };
         let parent =
             if target == def { self.scope_frame(scope, &constant_env(site)) } else { Ok(None) };
         let Ok(parent) = parent else {
-            actions.push(call(Vec::new()));
+            actions.push(call(Vec::new(), at_call));
             return;
         };
         let DefBody::Expr(body) = &info.body else { unreachable!("a walked definition") };
@@ -206,7 +216,7 @@ impl Evaluator {
             module: info.module,
             enabled: site.enabled,
         };
-        let closure = Closure { name: info.name, params: info.params.len() };
+        let closure = Closure { name, def: target };
         self.split(body, &callee, &closure, next, actions);
     }
 
@@ -225,15 +235,25 @@ impl Evaluator {
             && self.constant_value(def).is_ok()
     }
 
+    /// The parameters of `def`, named, with `values`.
+    fn named(&self, def: DefId, values: Vec<Value>) -> Vec<(Symbol, Value)> {
+        let names = self.spec.param_names.get(&def).map(Vec::as_slice).unwrap_or_default();
+        let unnamed = Symbol::intern("_");
+        let names = names.iter().copied().chain(std::iter::repeat(unnamed));
+        names.zip(values).collect()
+    }
+
     /// The action `expr` of `site` in `closure`, named after the closure.
     fn split_action(&self, expr: &Expr, site: &Site, closure: &Closure, next: DefId) -> NextAction {
-        let parameters = site.frame.slots[..closure.params]
+        let params = self.spec.def(closure.def).params.len();
+        let values = site.frame.slots[..params]
             .iter()
             .filter_map(|slot| match slot {
                 Slot::Value(value) => Some(value.clone()),
                 _ => None,
             })
             .collect();
+        let parameters = self.named(closure.def, values);
         NextAction {
             name: closure.name,
             parameters,

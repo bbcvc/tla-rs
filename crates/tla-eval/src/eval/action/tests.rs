@@ -704,13 +704,33 @@ fn keeps_an_action_of_an_instance_whole() {
     .unwrap();
     let evaluator = Evaluator::new(Arc::new(spec), Vec::new());
     let actions = evaluator.next_actions(def(&evaluator, "Next")).unwrap();
-    // TLC names these I!Inc, I!Dec(1), I!Dec, and I!Both, at the INSTANCE but for I!Dec(x).
-    let signatures: Vec<String> = actions.iter().map(|action| action.signature()).collect();
-    assert_eq!(signatures, ["Inc", "Dec(1)", "Dec", "Both"]);
+    // As tla-ts finds: at the INSTANCE, but for I!Dec(x), whose argument isn't a constant.
+    let labels: Vec<String> = actions.iter().map(|action| evaluator.action_label(action)).collect();
+    let instance = "line 4, col 1 to line 4, col 33 of module M";
     assert_eq!(
-        evaluator.action_label(&actions[2]),
-        "Dec line 6, col 30 to line 6, col 37 of module M"
+        labels,
+        [
+            format!("I!Inc {instance}"),
+            format!("I!Dec(1) {instance}"),
+            "I!Dec line 6, col 30 to line 6, col 37 of module M".to_owned(),
+            format!("I!Both {instance}"),
+        ]
     );
+    let parameters: Vec<String> =
+        actions[1].parameters.iter().map(|(name, value)| format!("{name} = {value}")).collect();
+    assert_eq!(parameters, ["n = 1"]);
+    let unnamed = source
+        .replace("I == INSTANCE", "INSTANCE")
+        .replace("I!Inc \\/ I!Dec(1) \\/ I!Dec(x) \\/ I!Both", "Inc \\/ Dec(1)");
+    let spec = tla_resolve::resolve(&unnamed, &mut |name: &str| {
+        (name == "Counter").then(|| inner.to_owned())
+    })
+    .unwrap();
+    let unnamed = Evaluator::new(Arc::new(spec), Vec::new());
+    let split = unnamed.next_actions(def(&unnamed, "Next")).unwrap();
+    let labels: Vec<String> = split.iter().map(|action| unnamed.action_label(action)).collect();
+    let instance = "line 4, col 1 to line 4, col 28 of module M";
+    assert_eq!(labels, [format!("Inc {instance}"), format!("Dec(1) {instance}")]);
     let current = state(vec![Value::Int(5)]);
     let mut successors = Vec::new();
     for action in actions.iter() {
@@ -915,4 +935,122 @@ Unassigned == I!H
     assert!(
         error.message.starts_with("In evaluation, the identifier v@ENABLED is either undefined")
     );
+}
+
+#[test]
+fn takes_apart_a_variable_an_instance_substitutes_an_expression_for() {
+    let inner = r#"---- MODULE Inner ----
+EXTENDS Naturals
+VARIABLES u, v
+F == ENABLED (u' = 0 /\ v' = 1)
+G == ENABLED (u = 2 /\ u' = 5)
+K == ENABLED (UNCHANGED u /\ u' = 2 /\ v' = v + 1)
+L == ENABLED (u' = 1 /\ u' > 0)
+M == ENABLED (u' = 1 /\ u' = 2)
+N == ENABLED (UNCHANGED <<u, v>> /\ v' = 1)
+====
+"#;
+    let source = r#"---- MODULE M ----
+EXTENDS Naturals
+VARIABLE x
+I == INSTANCE Inner WITH u <- x + 1, v <- x
+Values == <<I!F, I!G, I!K, I!L, I!M, I!N>>
+====
+"#;
+    let spec =
+        tla_resolve::resolve(source, &mut |name: &str| (name == "Inner").then(|| inner.to_owned()))
+            .unwrap();
+    let evaluator = Evaluator::new(Arc::new(spec), Vec::new());
+    let current = state(vec![Value::Int(1)]);
+    // As tla-ts finds: u' is a variable of its own, and u, unprimed or kept, is x + 1.
+    let value = evaluator.eval_def(def(&evaluator, "Values"), Some(&current)).unwrap();
+    assert_eq!(value.to_string(), "<<TRUE, TRUE, TRUE, TRUE, FALSE, TRUE>>");
+}
+
+#[test]
+fn names_an_incomplete_action_of_an_instance_as_sany_does() {
+    let inner = "---- MODULE Counter ----\nVARIABLE v\nSet == v' = 1\n====\n";
+    let source = "---- MODULE M ----\nVARIABLES x, y\nI == INSTANCE Counter WITH v <- x\nOther == x' = 2 /\\ y' = 2\nNext == I!Set \\/ Other\n====\n";
+    let spec = tla_resolve::resolve(source, &mut |name: &str| {
+        (name == "Counter").then(|| inner.to_owned())
+    })
+    .unwrap();
+    let evaluator = Evaluator::new(Arc::new(spec), Vec::new());
+    let current = state(vec![Value::Int(0), Value::Int(0)]);
+    let error = next_states(&evaluator, "Next", &current).unwrap_err();
+    assert_eq!(
+        error.message,
+        "Successor state is not completely specified by action I!Set of the next-state relation. The following variable is not defined: y."
+    );
+}
+
+#[test]
+fn takes_apart_a_variable_an_instance_substitutes_a_definition_for() {
+    // As in the refinement EWD840 checks, TD == INSTANCE SyncTerminationDetection, whose
+    // variable terminationDetected the spec defines rather than declares.
+    let inner = r#"---- MODULE Sync ----
+VARIABLES active, detected
+terminated == ~active
+Detect == terminated /\ detected' = TRUE /\ UNCHANGED active
+Wake == active' = TRUE /\ UNCHANGED detected
+vars == <<active, detected>>
+D == ENABLED <<Detect>>_vars
+W == ENABLED <<Wake>>_vars
+P == ENABLED (detected' = detected)
+====
+"#;
+    let source = r#"---- MODULE M ----
+EXTENDS Naturals
+VARIABLES active, tpos
+detected == tpos = 0
+TD == INSTANCE Sync
+Values == <<TD!D, TD!W, TD!P>>
+====
+"#;
+    let spec =
+        tla_resolve::resolve(source, &mut |name: &str| (name == "Sync").then(|| inner.to_owned()))
+            .unwrap();
+    let evaluator = Evaluator::new(Arc::new(spec), Vec::new());
+    let values = |active: bool, tpos: i32| {
+        let current = state(vec![Value::Bool(active), Value::Int(tpos)]);
+        evaluator.eval_def(def(&evaluator, "Values"), Some(&current)).unwrap().to_string()
+    };
+    // As tla-ts finds.
+    assert_eq!(values(false, 0), "<<FALSE, TRUE, TRUE>>");
+    assert_eq!(values(false, 1), "<<TRUE, TRUE, TRUE>>");
+    assert_eq!(values(true, 0), "<<FALSE, FALSE, TRUE>>");
+}
+
+#[test]
+fn passes_an_operator_its_mode_under_an_enabled_of_an_instance() {
+    // Github725g: under ENABLED Step in the instance, the LAMBDA SelectSeq applies reads a' as
+    // the module's own variable, which Step sets to 1, so c' is <<2, 3>> and Step is disabled.
+    let inner = r#"---- MODULE Inner ----
+EXTENDS Sequences, Naturals
+VARIABLES a, b, c
+Step == /\ a = 0
+        /\ b' = 42
+        /\ a' = 1
+        /\ c' = SelectSeq(c, LAMBDA e: e /= a')
+        /\ c' = <<1, 2, 3>>
+Kept == /\ a' = 1
+        /\ c' = SelectSeq(c, LAMBDA e: e /= a')
+StepEnabled == ENABLED Step
+KeptEnabled == ENABLED <<Kept>>_<<a, c>>
+====
+"#;
+    let source = r#"---- MODULE M ----
+VARIABLES b, q, s
+Svc == INSTANCE Inner WITH c <- s, a <- b, b <- q
+Values == <<Svc!StepEnabled, Svc!KeptEnabled>>
+====
+"#;
+    let spec =
+        tla_resolve::resolve(source, &mut |name: &str| (name == "Inner").then(|| inner.to_owned()))
+            .unwrap();
+    let evaluator = Evaluator::new(Arc::new(spec), Vec::new());
+    let sequence = Value::tuple(vec![Value::Int(1), Value::Int(2), Value::Int(3)]);
+    let current = state(vec![Value::Int(0), Value::Int(0), sequence]);
+    let value = evaluator.eval_def(def(&evaluator, "Values"), Some(&current)).unwrap();
+    assert_eq!(value.to_string(), "<<FALSE, TRUE>>");
 }

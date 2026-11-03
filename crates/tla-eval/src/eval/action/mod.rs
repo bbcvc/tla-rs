@@ -88,22 +88,7 @@ impl Evaluator {
         match *rest {
             Rest::Done => self.complete(run, action),
             Rest::Conjuncts { conjuncts, site, rest } => {
-                let Some((first, others)) = conjuncts.split_first() else {
-                    return self.resume(run, action, rest);
-                };
-                // Once every variable has a value, TLC evaluates the conjuncts left as
-                // predicates, so a disjunction among them yields one state rather than one for
-                // each disjunct that holds. Its getNextStates does so only with warnings on.
-                if run.is_shortcut && run.is_complete() {
-                    for conjunct in conjuncts {
-                        if !self.holds(conjunct, site, run, false)? {
-                            return Ok(());
-                        }
-                    }
-                    return self.resume(run, action, rest);
-                }
-                let rest = Rest::Conjuncts { conjuncts: others, site, rest };
-                self.act(first, site, run, action.fixed(), &rest)
+                self.conjoin(conjuncts, false, site, run, action, rest)
             }
             Rest::Defs { defs, rest } => match defs.split_first() {
                 None => self.resume(run, action, rest),
@@ -147,6 +132,46 @@ impl Evaluator {
         }
     }
 
+    /// Walks the conjuncts of `site` in turn, then `rest`. `is_first` tells the first conjunct
+    /// of a conjunction from the conjuncts left after one. A conjunct that is a plain guard is
+    /// tested in place, rather than walked with what follows it as its continuation, which
+    /// keeps the stack of a long conjunction of guards flat.
+    fn conjoin(
+        &self,
+        mut conjuncts: &[Expr],
+        mut is_first: bool,
+        site: &Site,
+        run: &mut Run<'_>,
+        action: Action,
+        rest: &Rest<'_>,
+    ) -> Result<()> {
+        loop {
+            let Some((first, others)) = conjuncts.split_first() else {
+                return self.resume(run, action, rest);
+            };
+            // Once every variable has a value, TLC evaluates the conjuncts left as predicates,
+            // so a disjunction among them yields one state rather than one for each disjunct
+            // that holds. Its getNextStates does so only with warnings on.
+            if !is_first && run.is_shortcut && run.is_complete() {
+                for conjunct in conjuncts {
+                    if !self.holds(conjunct, site, run, false)? {
+                        return Ok(());
+                    }
+                }
+                return self.resume(run, action, rest);
+            }
+            if !is_walked(first) {
+                if !self.holds(first, site, run, true)? {
+                    return Ok(());
+                }
+                (conjuncts, is_first) = (others, false);
+                continue;
+            }
+            let rest = Rest::Conjuncts { conjuncts: others, site, rest };
+            return self.act(first, site, run, action.fixed(), &rest);
+        }
+    }
+
     /// Walks the predicate `expr` of `site`, continuing with `rest` for each way it holds.
     fn act(
         &self,
@@ -161,13 +186,7 @@ impl Evaluator {
         }
         match &expr.kind {
             ExprKind::And(items) | ExprKind::Builtin { op: Builtin::And, args: items } => {
-                match items.split_first() {
-                    None => self.resume(run, action, rest),
-                    Some((first, others)) => {
-                        let rest = Rest::Conjuncts { conjuncts: others, site, rest };
-                        self.act(first, site, run, action.fixed(), &rest)
-                    }
-                }
+                self.conjoin(items, true, site, run, action, rest)
             }
             ExprKind::Or(items) | ExprKind::Builtin { op: Builtin::Or, args: items } => {
                 for item in items {
@@ -285,7 +304,7 @@ impl Evaluator {
                     Slot::Op(op) => op.clone(),
                     _ => return self.guard(expr, site, run, action, rest),
                 };
-                let OperatorKind::Def { def, parent } = &operator.0 else {
+                let OperatorKind::Def { def, parent, enabled } = &operator.0 else {
                     if let (OperatorKind::Builtin(Builtin::Unchanged), [arg]) =
                         (&operator.0, &args[..])
                     {
@@ -297,7 +316,9 @@ impl Evaluator {
                     return self.guard(expr, site, run, action, rest);
                 };
                 let parent = if target == *def { parent.clone() } else { None };
-                let callee = self.callee(target, parent, args, site, run)?;
+                let mut callee = self.callee(target, parent, args, site, run)?;
+                // The operator keeps the mode of where it was passed.
+                callee.enabled = *enabled;
                 let info = self.spec.def(target);
                 let DefBody::Expr(body) = &info.body else { unreachable!("a walked definition") };
                 self.act(body, &callee, run, action.called(info.name), rest)
@@ -383,7 +404,15 @@ impl Evaluator {
         let callee = self.entered(def, target, scope, args, site, run)?;
         let info = self.spec.def(target);
         let DefBody::Expr(body) = &info.body else { unreachable!("a walked definition") };
-        self.act(body, &callee, run, action.called(info.name), rest)
+        // TLC names the action as SANY names the operator: I!Op through the instance I.
+        let name = match action.is_fixed {
+            true => info.name,
+            false => {
+                let qualified = self.spec.qualified_names.get(&(site.module, expr.span));
+                qualified.copied().unwrap_or(info.name)
+            }
+        };
+        self.act(body, &callee, run, action.called(name), rest)
     }
 
     /// The site of the body of `def` called with `args` of `site`, in a frame whose parent is
@@ -527,6 +556,36 @@ impl Evaluator {
         };
         self.error(&env, expr, message)
     }
+}
+
+/// Whether [`Evaluator::act`] walks `expr` rather than test it as a guard: a kind of expression
+/// it may assign variables through.
+fn is_walked(expr: &Expr) -> bool {
+    matches!(
+        expr.kind,
+        ExprKind::And(_)
+            | ExprKind::Or(_)
+            | ExprKind::If { .. }
+            | ExprKind::Case { .. }
+            | ExprKind::Quant { quantifier: Quantifier::Exists | Quantifier::Forall, .. }
+            | ExprKind::Builtin {
+                op: Builtin::And
+                    | Builtin::Or
+                    | Builtin::Eq
+                    | Builtin::In
+                    | Builtin::SubsetEq
+                    | Builtin::Unchanged
+                    | Builtin::Implies,
+                ..
+            }
+            | ExprKind::BoxAction { .. }
+            | ExprKind::AngleAction { .. }
+            | ExprKind::Call { .. }
+            | ExprKind::CallConst { .. }
+            | ExprKind::CallParam { .. }
+            | ExprKind::FuncApp { .. }
+            | ExprKind::Local(_)
+    )
 }
 
 #[cfg(test)]

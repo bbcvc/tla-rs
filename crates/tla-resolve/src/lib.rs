@@ -83,6 +83,10 @@ pub fn resolve(source: &str, loader: &mut dyn ModuleLoader) -> Result<Spec> {
             assumptions: Vec::new(),
             root: HashMap::new(),
             levels: Vec::new(),
+            instance_variables: HashMap::new(),
+            param_names: HashMap::new(),
+            qualified_names: HashMap::new(),
+            instance_spans: HashMap::new(),
         },
         parsed: HashMap::new(),
         parameters: HashMap::new(),
@@ -99,6 +103,7 @@ pub fn resolve(source: &str, loader: &mut dyn ModuleLoader) -> Result<Spec> {
         inner_origins: HashMap::new(),
         layout: Layout::default(),
         qualifier: None,
+        instance_span: None,
         is_instantiating: false,
         instantiated: HashSet::new(),
         sections: 0,
@@ -185,6 +190,9 @@ pub(crate) struct Resolver<'l> {
     layout: Layout,
     /// `I!J!` while elaborating the module of the named instance `J` in that of `I`.
     qualifier: Option<Rc<str>>,
+    /// The outermost `INSTANCE` with substitutions being elaborated, which the definitions it
+    /// makes record.
+    instance_span: Option<(ModuleId, Span)>,
     /// Whether a module is being elaborated under the substitutions of an `INSTANCE`.
     is_instantiating: bool,
     /// The modules elaborated under the substitutions of an `INSTANCE`.

@@ -50,6 +50,21 @@ pub struct Spec {
     pub root: HashMap<Symbol, RootName>,
     /// The levels of each definition, by [`DefId`], as SANY computes them.
     pub levels: Vec<DefLevels>,
+    /// Where a module an `INSTANCE` substitutes into refers to one of its own variables, which
+    /// resolution replaces with what the instance substitutes, by the module and the span of
+    /// the reference, with the variable's name. TLC's ENABLED binds such a variable, primed,
+    /// by its name rather than priming what is substituted for it.
+    pub instance_variables: HashMap<(ModuleId, Span), Symbol>,
+    /// The names of the parameters of each operator definition, which TLC reports with the
+    /// values of an action's parameters.
+    pub param_names: HashMap<DefId, Vec<Symbol>>,
+    /// The name SANY gives the operator a reference through an instance applies, `I!J!Op`, by
+    /// the module and the span of the reference.
+    pub qualified_names: HashMap<(ModuleId, Span), Symbol>,
+    /// Where the outermost `INSTANCE` with substitutions that a definition elaborates a module
+    /// under is: the instancing module and the span of `INSTANCE ...` or `I == INSTANCE ...`.
+    /// TLC places an action it keeps whole there.
+    pub instance_spans: HashMap<DefId, (ModuleId, Span)>,
 }
 
 impl Spec {

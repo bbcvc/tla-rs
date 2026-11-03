@@ -5,7 +5,7 @@ use std::sync::Arc;
 use tla_resolve::{Builtin, DefId};
 use tla_value::{Error, Result, Value};
 
-use crate::env::{Frame, StateRef};
+use crate::env::{Enabled, Frame, StateRef};
 use crate::{Evaluator, State};
 
 /// A native implementation of a standard module's operator. It receives its arguments
@@ -40,10 +40,12 @@ pub struct Operator(pub(crate) OperatorKind);
 
 #[derive(Clone)]
 pub(crate) enum OperatorKind {
-    /// A definition, with the frame it captures.
+    /// A definition, with the frame it captures, and whether it was passed in the operand of an
+    /// ENABLED of an instantiated module, which it is evaluated in as an argument is.
     Def {
         def: DefId,
         parent: Option<Arc<Frame>>,
+        enabled: Enabled,
     },
     Builtin(Builtin),
     /// An operator implemented in Rust.
