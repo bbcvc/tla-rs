@@ -83,9 +83,21 @@ macro_rules! java {
     }};
 }
 
+/// The [`Native`] of an operator that needs what natives don't get, such as unevaluated
+/// arguments or the model checker's state.
+macro_rules! unsupported {
+    ($name:literal) => {{
+        fn native(_: &mut $crate::Ctx<'_>, _: &[$crate::Arg]) -> tla_value::Result<Value> {
+            Err(tla_value::Error(concat!($name, " is not supported yet").to_owned()))
+        }
+        native as $crate::Native
+    }};
+}
+
 mod finite_sets;
 mod naturals;
 mod sequences;
+pub(crate) mod tlc;
 
 /// The native implementation of `name` in standard module `module`. TLC overrides the arithmetic
 /// of Naturals with that of Integers when the spec loads Integers anywhere.
@@ -95,6 +107,7 @@ pub(crate) fn lookup(module: &str, name: &str, uses_integers: bool) -> Option<Na
         "Integers" => naturals::lookup_integers(name),
         "Sequences" => sequences::lookup(name),
         "FiniteSets" => finite_sets::lookup(name),
+        "TLC" => tlc::lookup(name),
         _ => None,
     }
 }
@@ -180,6 +193,45 @@ fn sequence_elements(value: &Value) -> Outcome<Option<Arc<[Value]>>> {
         },
         _ => Ok(None),
     }
+}
+
+/// The pairs of a finite function, in key order.
+fn function_pairs(function: &Value) -> Outcome<Vec<(Value, Value)>> {
+    match function {
+        Value::Tuple(items) => Ok(items
+            .iter()
+            .enumerate()
+            .map(|(index, item)| (Value::Int(index as i32 + 1), item.clone()))
+            .collect()),
+        Value::Func(func) => {
+            Ok(func.keys.iter().cloned().zip(func.values.iter().cloned()).collect())
+        }
+        _ => fail_eval!("Attempted to enumerate {function}, which is not a finite function"),
+    }
+}
+
+/// The elements of a set the operator `name` enumerates. TLC evaluates some operators in its
+/// core, where a wrong argument is a failure of evaluation rather than of the operator.
+fn enumerable_elements(value: &Value, name: &str, is_core: bool) -> Outcome<Arc<[Value]>> {
+    let failure = |message: String| {
+        if is_core { Failure::Eval(Error(message)) } else { Failure::Module(Error(message)) }
+    };
+    if !value.is_set() {
+        return Err(failure(format!("{name} expects a set but received {value}")));
+    }
+    if !value.is_enumerable() {
+        return Err(failure(format!("{name} cannot enumerate the non-enumerable set {value}")));
+    }
+    Ok(value.elements()?)
+}
+
+/// The set of `elements`, failing as TLC does when it can't sort them.
+fn sorted_set(elements: Vec<Value>) -> Outcome {
+    let set = Value::set(elements)?;
+    if matches!(set, Value::MixedSet(_)) {
+        return Ok(Value::Set(set.elements()?));
+    }
+    Ok(set)
 }
 
 /// The kind of a value as some of TLC's errors name it, which calls every function a function.
