@@ -72,8 +72,18 @@ fn check(spec_path: &Path, config_path: &Path, library: &HashMap<String, PathBuf
             spec.modules[0].name
         ));
     }
+    // TLC loads a class named after each module from beside the spec.
+    let classes = spec
+        .modules
+        .iter()
+        .filter_map(|module| {
+            let class = std::fs::read(directory.join(format!("{}.class", module.name))).ok()?;
+            Some((module.name.as_str().to_owned(), class))
+        })
+        .collect();
     // TLC records the expected results with -nowarning.
-    let options = Options { seed: TLC_SEED, variable_order, nowarning: true, ..Options::default() };
+    let options =
+        Options { seed: TLC_SEED, classes, variable_order, nowarning: true, ..Options::default() };
     tla_checker::check(spec, &config, &options, |evaluator| evaluator.clone())
 }
 

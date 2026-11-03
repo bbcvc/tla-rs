@@ -128,6 +128,11 @@ impl Evaluator {
         {
             return self.eval(arg, env);
         }
+        if self.tlc_cache == Some(def)
+            && let [cached, closure] = args
+        {
+            return self.tlc_cache(cached, closure, expr, env);
+        }
         if let Some(native) = self.natives[def.index()] {
             return self.call_native(native, def, scope, args, expr, env);
         }
@@ -137,9 +142,59 @@ impl Evaluator {
         if args.len() != info.params.len() {
             return Err(self.arity_error(def, args.len(), env, expr));
         }
+        if args.is_empty() && self.is_cached_let[def.index()] {
+            return self.let_value(def, scope, env);
+        }
         let parent = self.scope_frame(scope, env)?;
         let slots = args.iter().map(|arg| self.arg_slot(arg, env)).collect::<Result<Vec<_>>>()?;
         self.enter(def, parent, slots, env.state, env.next, (env.keep_lazy, env.enabled))
+    }
+
+    /// The value of the `LET` definition `def`, computed once for the frame the `LET` is
+    /// evaluated in and the states, as TLC binds it to a `LazyValue`.
+    fn let_value(&self, def: DefId, scope: &Scope, env: &Env<'_>) -> Result<Value> {
+        let parent = self.scope_frame(scope, env)?;
+        if let Some(frame) = &parent
+            && let Some(value) = frame.let_value(def, env)
+        {
+            return Ok(value);
+        }
+        let context = (env.keep_lazy, env.enabled);
+        let value = self.enter(def, parent.clone(), Vec::new(), env.state, env.next, context)?;
+        if let Some(frame) = &parent {
+            frame.keep_let_value(def, self.let_reads[def.index()], env, value.clone());
+        }
+        Ok(value)
+    }
+
+    /// `TLCCache(expr, closure)`: the value `expr` had when last computed with a `closure` equal
+    /// to this one, as TLC's Java override keeps it. An `expr` that reads the state is kept for
+    /// the state it read (tla-ts `TLCCache`).
+    #[cold]
+    #[inline(never)]
+    fn tlc_cache(
+        &self,
+        cached: &Expr,
+        closure: &Expr,
+        expr: &Expr,
+        env: &mut Env<'_>,
+    ) -> Result<Value> {
+        let closure = self.eval(closure, env)?;
+        let state = match env.state {
+            _ if !super::mentions_variables(&self.spec, cached) => None,
+            Some(StateRef::Complete(state)) => Some(state.clone()),
+            // A state still being assigned changes, so nothing is kept for it.
+            Some(StateRef::Partial(..)) | None => return self.eval(cached, env),
+        };
+        let key = cached as *const Expr as usize;
+        if let Some(value) =
+            self.runtime.cached(key, state.as_ref(), &closure).at(self, env, expr)?
+        {
+            return Ok(value);
+        }
+        let value = self.eval(cached, env)?;
+        self.runtime.cache(key, state, closure, value.clone());
+        Ok(value)
     }
 
     #[cold]

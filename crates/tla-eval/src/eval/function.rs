@@ -8,6 +8,7 @@ use tla_value::{Error, Key, LazyFunc, LazySet, Symbol, Value};
 use super::bound::{Binder, Variable, bind_frame, binders, tuple_items};
 use super::{At, STACK_OVERFLOW, describe, is_stack_low};
 use crate::env::{Captured, Env, Frame, SpecRef};
+use crate::stdlib::tlc::pretty_print;
 use crate::{EvalError, Evaluator, Result};
 
 /// The parameters, body, and scope of a function that TLC keeps lazy, which successor
@@ -147,6 +148,18 @@ impl Evaluator {
             [arg] => self.eval(arg, env)?,
             _ => Value::tuple(self.eval_all(args, env)?),
         };
+        if let Value::LazyFunc(lazy) = &function
+            && lazy
+                .source
+                .as_ref()
+                .and_then(|source| source.downcast_ref::<Lambda>())
+                .is_some_and(|lambda| bounds_binders(lambda.bounds.get()) == 1)
+        {
+            if !lazy.domain.contains(&argument).at(self, env, expr)? {
+                return Err(self.error(env, expr, lambda_domain_error(&function, &argument)));
+            }
+            return (lazy.apply)(&argument).at(self, env, expr);
+        }
         function.apply(&argument).at(self, env, expr)
     }
 
@@ -204,8 +217,13 @@ impl Evaluator {
             _ => Value::tuple(self.eval_all(args, env)?),
         };
         if !domain.contains(&argument).at(self, env, expr)? {
-            let message =
-                format!("Attempted to apply a function to {argument}, which is not in its domain");
+            let message = if bounds_binders(bounds) == 1 {
+                // The function the evaluator would have built, which TLC prints.
+                let function = self.call(def, scope, &[], expr, env)?;
+                lambda_domain_error(&function, &argument)
+            } else {
+                format!("Attempted to apply a function to {argument}, which is not in its domain")
+            };
             return Err(self.error(env, expr, message));
         }
         bind_argument(bounds, &argument, &mut inner.frame).at(self, env, expr)?;
@@ -290,6 +308,22 @@ impl Evaluator {
         }
         Ok(current)
     }
+}
+
+/// The number of variables `bounds` binds, a tuple pattern counting as one.
+fn bounds_binders(bounds: &[Bound]) -> usize {
+    bounds.iter().map(|bound| binders(&bound.pattern).count()).sum()
+}
+
+/// TLC's error for applying a function it keeps lazy, a `FcnLambdaValue` of one variable, to an
+/// argument outside its domain.
+#[cold]
+fn lambda_domain_error(function: &Value, argument: &Value) -> String {
+    format!(
+        "In applying the function\n{},\nthe first argument is:\n{}\nwhich is not in its domain.\n",
+        pretty_print(&function.to_string()),
+        pretty_print(&argument.to_string())
+    )
 }
 
 /// Binds the argument a lazy function is applied to: a value for one bound variable, or a

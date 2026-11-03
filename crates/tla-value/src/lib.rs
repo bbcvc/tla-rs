@@ -15,6 +15,7 @@ mod fingerprint;
 mod format;
 mod func;
 mod order;
+mod permute;
 mod set;
 mod stream;
 
@@ -92,7 +93,7 @@ pub enum Value {
 /// never depend on it.
 #[derive(Clone)]
 pub struct Func {
-    pub keys: Box<[Value]>,
+    pub keys: Arc<[Value]>,
     pub values: Box<[Value]>,
     pub(crate) written: Option<Box<func::WrittenOrder>>,
 }
@@ -250,9 +251,7 @@ impl Value {
 
 /// The type letter of a model value named `T_rest`.
 pub(crate) fn model_type(name: Symbol) -> Option<char> {
-    let mut chars = name.as_str().chars();
-    let first = chars.next()?;
-    (chars.next() == Some('_') && chars.next().is_some()).then_some(first)
+    name.model_type()
 }
 
 impl fmt::Debug for Value {
