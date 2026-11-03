@@ -76,7 +76,9 @@ impl Value {
     pub fn materialize(&self) -> Result<Value> {
         let Value::LazyFunc(lazy) = self else { return Ok(self.clone()) };
         if !lazy.domain.is_enumerable() {
-            bail!("Attempted to enumerate the function {self}, whose domain is infinite");
+            // TLC sizes the domain first, which fails as the domain fails.
+            lazy.domain.cardinality()?;
+            bail!("Attempted to enumerate a function whose domain {} is infinite", lazy.domain);
         }
         let keys = lazy.domain.elements()?;
         let values = keys.iter().map(|key| (lazy.apply)(key)).collect::<Result<Vec<_>>>()?;
@@ -227,5 +229,20 @@ mod tests {
             outer.except(&missing, &mut |_| Ok(Value::TRUE)).unwrap().to_string(),
             "[x |-> <<1, 2>>]"
         );
+    }
+
+    /// Materializing a function over a domain TLC can't enumerate fails as sizing the domain
+    /// does, and printing such a function doesn't recurse into that failure.
+    #[test]
+    fn refuses_to_materialize_an_infinite_domain() {
+        let function = Value::LazyFunc(std::sync::Arc::new(crate::LazyFunc {
+            domain: Value::lazy(crate::LazySet::Nat),
+            apply: std::sync::Arc::new(|_| Ok(Value::Int(0))),
+        }));
+        assert_eq!(
+            function.materialize().unwrap_err().0,
+            "Attempted to compute the number of elements in the overridden value Nat."
+        );
+        assert!(!function.to_string().is_empty());
     }
 }

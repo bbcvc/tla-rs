@@ -53,8 +53,15 @@ fn overridden(value: &Value) -> Option<&'static str> {
 }
 
 fn compare_overridden(left: &Value, right: &Value, verb: &str) -> Result<Ordering> {
-    let (Some(left_name), Some(right_name)) = (overridden(left), overridden(right)) else {
-        bail!("Attempted to {verb} the set {left} with the value:\n{right}")
+    let Some(left_name) = overridden(left) else {
+        let shown = match left.is_enumerable() {
+            true => left.elements().map(Value::Set).unwrap_or_else(|_| left.clone()),
+            false => left.clone(),
+        };
+        bail!("Attempted to {verb} the set {shown} with the value:\n{right}")
+    };
+    let Some(right_name) = overridden(right) else {
+        bail!("Attempted to compare overridden value {left} with non-overridden value:\n{right}")
     };
     match (left_name, right_name) {
         ("Seq", "Seq") => {
@@ -112,7 +119,7 @@ impl Value {
                 }
                 compare_elements(&self.elements()?, &other.elements()?)
             }
-            _ => bail!("Attempted to compare {} {self} with {} {other}", self.kind(), other.kind()),
+            _ => Err(mismatch(self, other)),
         }
     }
 
@@ -185,6 +192,24 @@ fn compare_functions(left: &Value, right: &Value) -> Result<Ordering> {
     }
 }
 
+/// TLC's error comparing values of different kinds, worded by the class of the left one.
+fn mismatch(left: &Value, right: &Value) -> crate::Error {
+    let message = match left {
+        Value::Bool(_) | Value::Int(_) | Value::Str(_) => {
+            let kind = left.kind();
+            format!("Attempted to compare {kind} {left} with non-{kind}:\n{right}")
+        }
+        Value::Func(_) if left.kind() == "record" => {
+            format!("Attempted to compare record:\n{left}\nwith non-record\n{right}")
+        }
+        _ if left.is_function() => {
+            format!("Attempted to compare the function {left} with the value:\n{right}")
+        }
+        _ => format!("Attempted to compare the set {left} with the value:\n{right}"),
+    };
+    crate::Error(message)
+}
+
 fn set_equals(left: &Value, right: &Value) -> Result<bool> {
     use LazySet::{FuncSet, Product, RecordSet, Subset};
     if let (Value::Interval(low, high), Value::Interval(other_low, other_high)) = (left, right) {
@@ -207,8 +232,11 @@ fn set_equals(left: &Value, right: &Value) -> Result<bool> {
                 return Ok(domain.equals(other_domain)? && range.equals(other_range)?);
             }
             (RecordSet(fields), RecordSet(other_fields)) => {
-                if left.is_empty()? || right.is_empty()? {
-                    return Ok(left.is_empty()? && right.is_empty()?);
+                if left.is_empty()? {
+                    return right.is_empty();
+                }
+                if right.is_empty()? {
+                    return Ok(false);
                 }
                 if fields.len() != other_fields.len() {
                     return Ok(false);
@@ -222,8 +250,11 @@ fn set_equals(left: &Value, right: &Value) -> Result<bool> {
                 return Ok(true);
             }
             (Product(factors), Product(other_factors)) => {
-                if left.is_empty()? || right.is_empty()? {
-                    return Ok(left.is_empty()? && right.is_empty()?);
+                if left.is_empty()? {
+                    return right.is_empty();
+                }
+                if right.is_empty()? {
+                    return Ok(false);
                 }
                 if factors.len() != other_factors.len() {
                     return Ok(false);

@@ -103,7 +103,7 @@ fn rejects_misapplied_functions_and_records() {
     );
     assert_eq!(
         message("{1} \\subseteq 1 /\\ 1 \\subseteq {1}"),
-        "Attempted to check if the value:\n1\nis an element of integer 1"
+        "Attempted to check if the value:\n1\nis an element of the integer 1"
     );
     assert_eq!(
         message("STRING \\subseteq {1}"),
