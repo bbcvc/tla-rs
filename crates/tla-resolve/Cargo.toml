@@ -9,3 +9,6 @@ license.workspace = true
 thiserror.workspace = true
 tla-ast.workspace = true
 tla-parser.workspace = true
+
+[dev-dependencies]
+serde_json.workspace = true
