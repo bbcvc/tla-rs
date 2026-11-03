@@ -244,6 +244,15 @@ impl Resolver<'_> {
             A::Str(value) => ExprKind::Str(*value),
             A::Apply { name, args } => return self.apply_name(elab, *name, args, span),
             A::Qualified { path, name, args } => self.qualified(elab, path, *name, args)?,
+            A::Subexpression(_) => {
+                return Err(self.error(
+                    elab.module,
+                    span,
+                    "A subexpression reference is not supported.",
+                ));
+            }
+            // A label only names its body for subexpression references.
+            A::Label { body, .. } => return self.expr(elab, body),
             A::Lambda { .. } => {
                 return Err(self.error(
                     elab.module,

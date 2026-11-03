@@ -1,8 +1,8 @@
 //! Lowers tree-sitter-tlaplus expression nodes into [`tla_ast::Expr`].
 
 use tla_ast::{
-    CaseArm, Component, ExceptKey, ExceptUpdate, Expr, ExprKind, Fairness, Name, Op, Pattern,
-    Quantifier, Symbol,
+    CaseArm, Component, ExceptKey, ExceptUpdate, Expr, ExprKind, Fairness, Name, Op, Operand,
+    Pattern, Quantifier, Selector, SelectorKind, Symbol,
 };
 use tree_sitter::Node;
 
@@ -12,8 +12,14 @@ impl Lower<'_> {
     pub fn expr(&self, node: Node) -> Result<Expr> {
         let kind = match node.kind() {
             "parentheses" => return self.only_child(node),
-            // Labels only name subexpressions for proofs, which TLC doesn't check.
-            "label" => return self.expr(self.field(node, "expression")?),
+            "label" => ExprKind::Label {
+                name: self.name(self.field(node, "name")?)?,
+                params: fields(node, "parameter")
+                    .into_iter()
+                    .map(|param| self.name(param))
+                    .collect::<Result<_>>()?,
+                body: self.boxed(self.field(node, "expression")?)?,
+            },
             "nat_number" => ExprKind::Int(self.int(node, self.text(node), 10)?),
             "binary_number" | "octal_number" | "hex_number" => self.radix_int(node)?,
             "real_number" => return Err(self.unsupported(node, "a real number")),
@@ -27,7 +33,7 @@ impl Lower<'_> {
                 name: self.name(self.field(node, "name")?)?,
                 args: self.exprs(fields(node, "parameter"))?,
             },
-            "prefixed_op" => self.qualified(node)?,
+            "prefixed_op" | "subexpression" => self.reference(node)?,
             "bound_nonfix_op" => self.nonfix(node)?,
             "bound_infix_op" => self.infix(node)?,
             "bound_prefix_op" => ExprKind::Prefix {
@@ -135,9 +141,7 @@ impl Lower<'_> {
                     body: self.boxed(body)?,
                 }
             }
-            "subexpression" | "proof_step_ref" => {
-                return Err(self.unsupported(node, "a subexpression reference"));
-            }
+            "proof_step_ref" => return Err(self.unsupported(node, "a proof step reference")),
             kind => return Err(self.unsupported(node, kind)),
         };
         Ok(Expr::new(kind, self.span(node)))
@@ -267,45 +271,82 @@ impl Lower<'_> {
         Ok(kind)
     }
 
-    /// `M!Op(args)`, `M(x)!Op`, or `M!N!Op`.
-    fn qualified(&self, node: Node) -> Result<ExprKind> {
-        let mut path = Vec::new();
-        self.components(self.field(node, "prefix")?, &mut path)?;
-        let op = self.field(node, "op")?;
-        let (name, args) = match op.kind() {
-            "bound_op" => {
-                (self.name(self.field(op, "name")?)?, self.exprs(fields(op, "parameter"))?)
-            }
-            "bound_nonfix_op" => {
-                let symbol = self.field(op, "symbol")?;
-                let args =
-                    children(op).into_iter().filter(|child| child.id() != symbol.id()).collect();
-                (self.name(symbol)?, self.exprs(args)?)
-            }
-            _ => (self.name(op)?, Vec::new()),
-        };
+    /// A name with `!` in it: `M!Op(args)` or `M(x)!N!Op` through instances, or a reference to
+    /// part of a definition such as `Op(1)!lab(2)` or `Op!2!<<`. A reference of names only is
+    /// [`ExprKind::Qualified`], and resolution tells instances from labels.
+    fn reference(&self, node: Node) -> Result<ExprKind> {
+        let mut selectors = Vec::new();
+        self.selectors(node, &mut selectors)?;
+        let is_names =
+            selectors.iter().all(|selector| matches!(selector.kind, SelectorKind::Name { .. }));
+        if !is_names {
+            return Ok(ExprKind::Subexpression(selectors));
+        }
+        let mut path: Vec<Component> = selectors
+            .into_iter()
+            .map(|selector| match selector.kind {
+                SelectorKind::Name { name, args } => Component { name, args },
+                _ => unreachable!("only names"),
+            })
+            .collect();
+        let Component { name, args } = path.pop().expect("a reference has a name after a `!`");
         Ok(ExprKind::Qualified { path, name, args })
     }
 
-    fn components(&self, prefix: Node, path: &mut Vec<Component>) -> Result<()> {
-        for child in children(prefix) {
-            match child.kind() {
-                "subexpr_prefix" => self.components(child, path)?,
-                "subexpr_component" => {
-                    let [inner] = self.exact::<1>(child)?;
-                    path.push(match inner.kind() {
-                        "bound_op" => Component {
-                            name: self.name(self.field(inner, "name")?)?,
-                            args: self.exprs(fields(inner, "parameter"))?,
-                        },
-                        "identifier_ref" => Component { name: self.name(inner)?, args: Vec::new() },
-                        _ => return Err(self.unsupported(inner, "a subexpression reference")),
-                    });
+    fn selectors(&self, node: Node, selectors: &mut Vec<Selector>) -> Result<()> {
+        for child in children(node) {
+            let kind = match child.kind() {
+                "subexpr_prefix" => {
+                    self.selectors(child, selectors)?;
+                    continue;
                 }
-                _ => return Err(self.unsupported(child, "a subexpression reference")),
-            }
+                "subexpr_component" => self.name_selector(self.exact::<1>(child)?[0])?,
+                "subexpr_tree_nav" => {
+                    // `:`, `<<`, and `>>` are punctuation elsewhere, so take the child as it is.
+                    let nav =
+                        child.named_child(0).ok_or_else(|| self.error(child, "empty selector"))?;
+                    self.navigation(nav)?
+                }
+                "proof_step_ref" => return Err(self.unsupported(child, "a proof step reference")),
+                _ => self.name_selector(child)?,
+            };
+            selectors.push(Selector { kind, span: self.span(child) });
         }
         Ok(())
+    }
+
+    /// `Op`, `Op(a, b)`, `++(a, b)`, or `++` between `!`s.
+    fn name_selector(&self, node: Node) -> Result<SelectorKind> {
+        let (name, args) = match node.kind() {
+            "bound_op" => {
+                (self.name(self.field(node, "name")?)?, self.exprs(fields(node, "parameter"))?)
+            }
+            "bound_nonfix_op" => {
+                let symbol = self.field(node, "symbol")?;
+                let args =
+                    children(node).into_iter().filter(|child| child.id() != symbol.id()).collect();
+                (self.name(symbol)?, self.exprs(args)?)
+            }
+            _ => (self.name(node)?, Vec::new()),
+        };
+        Ok(SelectorKind::Name { name, args })
+    }
+
+    /// `!<<`, `!>>`, `!2`, `!:`, `!@`, or `!(a, b)`.
+    fn navigation(&self, node: Node) -> Result<SelectorKind> {
+        Ok(match node.kind() {
+            "langle_bracket" => SelectorKind::Operand(Operand::First),
+            "rangle_bracket" => SelectorKind::Operand(Operand::Second),
+            "child_id" => {
+                let index =
+                    self.text(node).parse().map_err(|_| self.error(node, "operand too large"))?;
+                SelectorKind::Operand(Operand::Index(index))
+            }
+            "colon" => SelectorKind::Colon,
+            "address" => SelectorKind::At,
+            "operator_args" => SelectorKind::Bound(self.exprs(children(node))?),
+            kind => return Err(self.unsupported(node, kind)),
+        })
     }
 
     fn junction_items(&self, node: Node) -> Result<Vec<Expr>> {

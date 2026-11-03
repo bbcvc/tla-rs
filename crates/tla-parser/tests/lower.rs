@@ -1,6 +1,6 @@
 use tla_ast::{
-    Bound, ExceptKey, Expr, ExprKind, Fairness, Module, Op, OpDecl, Pattern, Quantifier, Symbol,
-    Unit,
+    Bound, ExceptKey, Expr, ExprKind, Fairness, Module, Op, OpDecl, Operand, Pattern, Quantifier,
+    SelectorKind, Symbol, Unit,
 };
 use tla_parser::parse_module;
 
@@ -249,6 +249,32 @@ fn lowers_references_and_literals() {
     let ExprKind::Infix { op: Op::In, lhs, rhs } = body(&module, "Records") else { panic!() };
     assert!(matches!(&lhs.kind, ExprKind::Record(fields) if fields.len() == 2));
     assert!(matches!(&rhs.kind, ExprKind::RecordSet(fields) if fields.len() == 2));
+}
+
+#[test]
+fn lowers_labels_and_subexpression_references() {
+    let module = parse(
+        "---- MODULE Refs ----\nOp(a) == lab(a) :: a\nNames == Op(1)!lab(2)\nThrough == I!J!Op\nPositions == F(2)!3!<<!>>!:!@!(1, 2)!++(3, 4)\n====",
+    );
+    let ExprKind::Label { name, params, body: labelled } = body(&module, "Op") else { panic!() };
+    assert_eq!((name.symbol.as_str(), params.len()), ("lab", 1));
+    assert_eq!(apply_name(labelled), "a");
+
+    let ExprKind::Qualified { path, name, args } = body(&module, "Names") else { panic!() };
+    assert_eq!((path[0].args.len(), name.symbol.as_str(), args.len()), (1, "lab", 1));
+    let ExprKind::Qualified { path, .. } = body(&module, "Through") else { panic!() };
+    assert_eq!(path.len(), 2);
+
+    let ExprKind::Subexpression(selectors) = body(&module, "Positions") else { panic!() };
+    let kinds: Vec<_> = selectors.iter().map(|selector| &selector.kind).collect();
+    assert!(matches!(kinds[0], SelectorKind::Name { args, .. } if args.len() == 1));
+    assert_eq!(kinds[1], &SelectorKind::Operand(Operand::Index(3)));
+    assert_eq!(kinds[2], &SelectorKind::Operand(Operand::First));
+    assert_eq!(kinds[3], &SelectorKind::Operand(Operand::Second));
+    assert_eq!((kinds[4], kinds[5]), (&SelectorKind::Colon, &SelectorKind::At));
+    assert!(matches!(kinds[6], SelectorKind::Bound(args) if args.len() == 2));
+    assert!(matches!(kinds[7], SelectorKind::Name { name, args }
+        if name.symbol.as_str() == "++" && args.len() == 2));
 }
 
 #[test]

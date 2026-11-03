@@ -7,8 +7,8 @@ mod expr;
 mod op;
 
 pub use expr::{
-    Bound, CaseArm, Component, ExceptKey, ExceptUpdate, Expr, ExprKind, Fairness, Pattern,
-    Quantifier,
+    Bound, CaseArm, Component, ExceptKey, ExceptUpdate, Expr, ExprKind, Fairness, Operand, Pattern,
+    Quantifier, Selector, SelectorKind,
 };
 pub use op::Op;
 pub use tla_intern::Symbol;
