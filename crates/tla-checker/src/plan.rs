@@ -47,6 +47,8 @@ pub struct Plan {
     pub temporals: usize,
     pub constraints: Vec<Check>,
     pub action_constraints: Vec<Check>,
+    /// The `VIEW`, whose value tells states apart instead of their variables.
+    pub view: Option<DefId>,
     /// Constant-level parts whose value decides whether they are checked, which the model
     /// checker evaluates before it starts.
     pub constants: Vec<Constant>,
@@ -123,7 +125,7 @@ pub fn plan(
         }
     }
     if let Some(view) = config.view {
-        planner.operator("view function", view)?;
+        planner.plan.view = Some(planner.operator("view function", view)?);
     }
     Ok(planner.plan)
 }

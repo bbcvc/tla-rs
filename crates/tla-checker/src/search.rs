@@ -4,13 +4,13 @@
 //! repeats and initial states included, and the distinct states, as TLC does.
 
 use std::collections::HashSet;
-use std::hash::{DefaultHasher, Hasher};
 use std::sync::{Arc, Mutex};
 
 use tla_eval::{EvalError, Evaluator, Result, State, Statistics};
 use tla_resolve::DefId;
 use tla_value::Value;
 
+use crate::fingerprint::Fingerprinter;
 use crate::plan::{Check, Plan};
 
 /// The states of a model, which the model checker explores: TLC's order of the initial states
@@ -125,23 +125,11 @@ impl Graph {
     }
 }
 
-/// A fingerprint that agrees with value equality, wide enough that two distinct states don't
-/// share one in practice.
-fn fingerprint(state: &[Value]) -> std::result::Result<u128, String> {
-    let mut halves = [DefaultHasher::new(), DefaultHasher::new()];
-    halves[1].write_u8(0x5a);
-    for hasher in &mut halves {
-        for value in state {
-            value.fingerprint(hasher).map_err(|error| error.to_string())?;
-        }
-    }
-    Ok((u128::from(halves[0].finish()) << 64) | u128::from(halves[1].finish()))
-}
-
 struct Explorer<'a, S: Successors + ?Sized> {
     successors: &'a S,
     evaluator: &'a Evaluator,
     plan: &'a Plan,
+    fingerprinter: &'a Fingerprinter,
     check_deadlock: bool,
     seen: HashSet<u128>,
     graph: Arc<Mutex<Graph>>,
@@ -162,6 +150,7 @@ pub fn search<S: Successors + ?Sized>(
     successors: &S,
     evaluator: &Evaluator,
     plan: &Plan,
+    fingerprinter: &Fingerprinter,
     check_deadlock: bool,
 ) -> Search {
     let graph = Arc::new(Mutex::new(Graph::default()));
@@ -189,6 +178,7 @@ pub fn search<S: Successors + ?Sized>(
         successors,
         evaluator,
         plan,
+        fingerprinter,
         check_deadlock,
         seen: HashSet::new(),
         graph,
@@ -344,7 +334,7 @@ impl<S: Successors + ?Sized> Explorer<'_, S> {
     }
 
     fn fingerprint(&self, state: &State) -> Result<u128> {
-        fingerprint(state).map_err(|message| EvalError {
+        self.fingerprinter.fingerprint(self.evaluator, state).map_err(|message| EvalError {
             message,
             module: tla_value::Symbol::intern(""),
             span: Default::default(),

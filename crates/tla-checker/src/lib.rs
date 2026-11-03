@@ -7,6 +7,7 @@
 //! it. Liveness isn't checked yet: a model's temporal properties are left out, and its safety
 //! part is checked.
 
+mod fingerprint;
 mod level;
 pub mod plan;
 pub mod search;
@@ -165,6 +166,11 @@ pub fn check<S: Successors>(
     if let Err(error) = check_constants(&evaluator, &mut plan) {
         return Outcome::error(error.message);
     }
+    let fingerprinter =
+        match fingerprint::Fingerprinter::new(&evaluator, plan.view, config.symmetry) {
+            Ok(fingerprinter) => fingerprinter,
+            Err(error) => return Outcome::error(error.message),
+        };
     if let Some(outcome) = check_assumptions(&evaluator, &assumptions) {
         return outcome;
     }
@@ -179,7 +185,8 @@ pub fn check<S: Successors>(
         return Outcome { has_liveness, ..outcome };
     }
     let successors = successors(&evaluator);
-    let searched = search::search(&successors, &evaluator, &plan, config.check_deadlock);
+    let searched =
+        search::search(&successors, &evaluator, &plan, &fingerprinter, config.check_deadlock);
     let mut outcome = match searched.ending {
         Ending::Success => Outcome {
             generated: Some(searched.generated),
