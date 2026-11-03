@@ -9,6 +9,9 @@
 
 mod fingerprint;
 mod level;
+// Wired into the search in the commits that follow.
+#[allow(dead_code)]
+mod liveness;
 pub mod plan;
 mod postcondition;
 pub mod search;
