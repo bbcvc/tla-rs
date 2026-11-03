@@ -66,22 +66,20 @@ pub(crate) struct InstanceEnabled {
     /// The ENABLEDs in instantiated definitions, by address.
     pub enabled: HashSet<usize>,
     /// The slot of the state being assigned that each variable of an instantiated module stands
-    /// for in such an operand, by the address of the expression substituted for it: the slot of
-    /// the root module's variable of that name, or one past them.
-    pub variables: HashMap<usize, usize>,
+    /// for in such an operand, and its name, by the address of the expression substituted for
+    /// it: the slot of the root module's variable of that name, or one past them.
+    pub variables: HashMap<usize, (usize, Symbol)>,
     /// The number of slots, the root module's variables and those past them.
     pub slots: usize,
 }
 
-/// Finds what [`InstanceEnabled`] describes. Resolution puts a variable substituted for a
-/// variable of an instantiated module where the module refers to it, so a variable whose text
-/// there is another name stands for the module's variable of that name.
+/// Finds what [`InstanceEnabled`] describes, from where resolution recorded that an
+/// instantiated module refers to its own variables.
 pub(crate) fn instance_enabled(spec: &Spec) -> InstanceEnabled {
     let mut found = InstanceEnabled { slots: spec.variables.len(), ..InstanceEnabled::default() };
     let mut slots: HashMap<Symbol, usize> =
         spec.variables.iter().enumerate().map(|(index, var)| (var.name, index)).collect();
     for info in spec.defs.iter().filter(|info| info.is_instantiated) {
-        let source = &spec.modules[info.module.index()].source;
         let mut pending: Vec<&Expr> = match &info.body {
             DefBody::Expr(body) => vec![body],
             DefBody::Function { bounds, body } => {
@@ -93,17 +91,14 @@ pub(crate) fn instance_enabled(spec: &Spec) -> InstanceEnabled {
                 ExprKind::Builtin { op: Builtin::Enabled, .. } => {
                     found.enabled.insert(expr as *const Expr as usize);
                 }
-                ExprKind::Var(var) => {
-                    let text = source.get(expr.span.start as usize..expr.span.end as usize);
-                    let is_name = |text: &&str| {
-                        text.chars().all(|char| char.is_alphanumeric() || char == '_')
-                            && *text != spec.variables[var.index()].name.as_str()
-                    };
-                    if let Some(name) = text.filter(is_name) {
+                // What an instance substitutes for a variable: an inlined variable, or a call of
+                // the definition of a larger expression.
+                ExprKind::Var(_) | ExprKind::Call { .. } => {
+                    if let Some(&name) = spec.instance_variables.get(&(info.module, expr.span)) {
                         let next = found.slots;
-                        let slot = *slots.entry(Symbol::intern(name)).or_insert(next);
+                        let slot = *slots.entry(name).or_insert(next);
                         found.slots = found.slots.max(slot + 1);
-                        found.variables.insert(expr as *const Expr as usize, slot);
+                        found.variables.insert(expr as *const Expr as usize, (slot, name));
                     }
                 }
                 _ => {}

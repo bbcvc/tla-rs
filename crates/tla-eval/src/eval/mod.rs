@@ -99,6 +99,15 @@ impl Evaluator {
             ExprKind::Var(id) => self.var(*id, expr, env),
             ExprKind::Const(id) => self.constant(*id, expr, env),
             ExprKind::Local(local) => self.local(*local, expr, env),
+            // A primed variable of an instantiated module, in the operand of its ENABLED, that
+            // the instance substitutes an expression for.
+            ExprKind::Call { .. }
+                if env.enabled == Enabled::Primed
+                    && let Some(&(slot, name)) =
+                        self.instance_enabled.variables.get(&(expr as *const Expr as usize)) =>
+            {
+                self.instance_variable(slot, name, expr, env)
+            }
             ExprKind::Call { def, scope, args } => self.call(*def, scope, args, expr, env),
             ExprKind::CallParam { param, args } => self.call_param(*param, args, expr, env),
             ExprKind::CallConst { id, args } => self.call_const(*id, args, expr, env),
@@ -269,24 +278,17 @@ impl Evaluator {
     }
 
     fn var(&self, id: VarId, expr: &Expr, env: &Env<'_>) -> Result<Value> {
-        let mut index = id.index();
-        let mut is_instance = false;
         // A primed variable of an instantiated module in the operand of its ENABLED.
         if env.enabled == Enabled::Primed
-            && let Some(&slot) =
+            && let Some(&(slot, name)) =
                 self.instance_enabled.variables.get(&(expr as *const Expr as usize))
         {
-            (index, is_instance) = (slot, true);
+            return self.instance_variable(slot, name, expr, env);
         }
-        match env.state.and_then(|state| state.get(index)) {
+        match env.state.and_then(|state| state.get(id.index())) {
             Some(value) => Ok(value.clone()),
             None => {
-                // tla-ts names the module's variable apart from the spec's.
-                let source = &self.spec.modules[env.module.index()].source;
-                let name = match source.get(expr.span.start as usize..expr.span.end as usize) {
-                    Some(text) if is_instance => format!("{text}@ENABLED"),
-                    _ => self.spec.variables[id.index()].name.to_string(),
-                };
+                let name = self.spec.variables[id.index()].name;
                 Err(self.error(
                     env,
                     expr,
@@ -296,6 +298,30 @@ impl Evaluator {
                     ),
                 ))
             }
+        }
+    }
+
+    /// The variable `name` of an instantiated module, which the operand of its ENABLED binds
+    /// in `slot` of the state being assigned, which `env` reads as its state under the prime.
+    #[cold]
+    fn instance_variable(
+        &self,
+        slot: usize,
+        name: Symbol,
+        expr: &Expr,
+        env: &Env<'_>,
+    ) -> Result<Value> {
+        match env.state.and_then(|state| state.get(slot)) {
+            Some(value) => Ok(value.clone()),
+            // tla-ts names the module's variable apart from the spec's.
+            None => Err(self.error(
+                env,
+                expr,
+                format!(
+                    "In evaluation, the identifier {name}@ENABLED is either undefined or not an operator.\n{}",
+                    self.range(env, expr)
+                ),
+            )),
         }
     }
 

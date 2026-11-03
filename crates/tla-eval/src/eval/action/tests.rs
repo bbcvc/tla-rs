@@ -916,3 +916,33 @@ Unassigned == I!H
         error.message.starts_with("In evaluation, the identifier v@ENABLED is either undefined")
     );
 }
+
+#[test]
+fn takes_apart_a_variable_an_instance_substitutes_an_expression_for() {
+    let inner = r#"---- MODULE Inner ----
+EXTENDS Naturals
+VARIABLES u, v
+F == ENABLED (u' = 0 /\ v' = 1)
+G == ENABLED (u = 2 /\ u' = 5)
+K == ENABLED (UNCHANGED u /\ u' = 2 /\ v' = v + 1)
+L == ENABLED (u' = 1 /\ u' > 0)
+M == ENABLED (u' = 1 /\ u' = 2)
+N == ENABLED (UNCHANGED <<u, v>> /\ v' = 1)
+====
+"#;
+    let source = r#"---- MODULE M ----
+EXTENDS Naturals
+VARIABLE x
+I == INSTANCE Inner WITH u <- x + 1, v <- x
+Values == <<I!F, I!G, I!K, I!L, I!M, I!N>>
+====
+"#;
+    let spec =
+        tla_resolve::resolve(source, &mut |name: &str| (name == "Inner").then(|| inner.to_owned()))
+            .unwrap();
+    let evaluator = Evaluator::new(Arc::new(spec), Vec::new());
+    let current = state(vec![Value::Int(1)]);
+    // As tla-ts finds: u' is a variable of its own, and u, unprimed or kept, is x + 1.
+    let value = evaluator.eval_def(def(&evaluator, "Values"), Some(&current)).unwrap();
+    assert_eq!(value.to_string(), "<<TRUE, TRUE, TRUE, TRUE, FALSE, TRUE>>");
+}

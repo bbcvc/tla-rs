@@ -44,7 +44,8 @@ impl Evaluator {
             ExprKind::Builtin { op: Builtin::Prime, args } if is_primed => {
                 self.target_at(&args[0], site, run, false, depth + 1)
             }
-            ExprKind::Var(var) if !is_primed => Ok(Some(self.slot(var.index(), target, site))),
+            _ if !is_primed && let Some(slot) = self.instance_slot(target, site) => Ok(Some(slot)),
+            ExprKind::Var(var) if !is_primed => Ok(Some(var.index())),
             ExprKind::Local(local) => match &site.frame.up(local.hops).slots[local.slot] {
                 Slot::Thunk(thunk) if Arc::ptr_eq(thunk.expr.spec(), &self.spec) => {
                     let origin = Site::of(&thunk.captured);
@@ -62,15 +63,15 @@ impl Evaluator {
         }
     }
 
-    /// The slot of the state being assigned that the variable `var`, written `expr`, assigns:
-    /// its own, or in the operand of an ENABLED of an instantiated module, the one TLC binds the
-    /// module's variable to.
-    fn slot(&self, var: usize, expr: &Expr, site: &Site) -> usize {
+    /// The slot of the state being assigned that `expr` assigns in the operand of an ENABLED of
+    /// an instantiated module, where it stands for a variable of the module, which TLC binds by
+    /// its name rather than assigning what the instance substitutes for it.
+    fn instance_slot(&self, expr: &Expr, site: &Site) -> Option<usize> {
         if site.enabled == Enabled::Outside {
-            return var;
+            return None;
         }
         let address = expr as *const Expr as usize;
-        self.instance_enabled.variables.get(&address).copied().unwrap_or(var)
+        self.instance_enabled.variables.get(&address).map(|&(slot, _)| slot)
     }
 
     /// `x' = e`, `x' \in S`, or `x' \subseteq S` for the variable `var`: assigns `var` if the
@@ -154,6 +155,11 @@ impl Evaluator {
         rest: &Rest<'_>,
         depth: usize,
     ) -> Result<()> {
+        if let Some(slot) = self.instance_slot(sub, site) {
+            // The module's variable keeps the value of what the instance substitutes for it.
+            let current = self.eval(sub, &mut env(site, run))?;
+            return self.keep_slot(slot, current, sub, site, run, action, rest);
+        }
         match &sub.kind {
             _ if depth > MAXIMUM_TARGET_DEPTH => {}
             ExprKind::Tuple(items) => {
@@ -164,16 +170,9 @@ impl Evaluator {
                 return self.keep(first, site, run, action, &rest, depth + 1);
             }
             ExprKind::Var(var) => {
-                let current =
-                    run.current.expect("an action has a current state")[var.index()].clone();
-                let var = self.slot(var.index(), sub, site);
-                return match &run.assigned[var] {
-                    None => run.with_assigned(var, current, |run| self.resume(run, action, rest)),
-                    Some(assigned) => {
-                        let is_kept = assigned.equals(&current).at(self, &env(site, run), sub)?;
-                        if is_kept { self.resume(run, action, rest) } else { Ok(()) }
-                    }
-                };
+                let var = var.index();
+                let current = run.current.expect("an action has a current state")[var].clone();
+                return self.keep_slot(var, current, sub, site, run, action, rest);
             }
             ExprKind::Local(local) => {
                 if let Slot::Thunk(thunk) = &site.frame.up(local.hops).slots[local.slot]
@@ -196,5 +195,26 @@ impl Evaluator {
         }
         let is_kept = self.unchanged(sub, sub, &mut env(site, run))?;
         if is_kept { self.resume(run, action, rest) } else { Ok(()) }
+    }
+
+    /// Assigns `slot` the `current` value it keeps, or tests that it has it.
+    #[allow(clippy::too_many_arguments)]
+    fn keep_slot(
+        &self,
+        slot: usize,
+        current: Value,
+        sub: &Expr,
+        site: &Site,
+        run: &mut Run<'_>,
+        action: Action,
+        rest: &Rest<'_>,
+    ) -> Result<()> {
+        match &run.assigned[slot] {
+            None => run.with_assigned(slot, current, |run| self.resume(run, action, rest)),
+            Some(assigned) => {
+                let is_kept = assigned.equals(&current).at(self, &env(site, run), sub)?;
+                if is_kept { self.resume(run, action, rest) } else { Ok(()) }
+            }
+        }
     }
 }
