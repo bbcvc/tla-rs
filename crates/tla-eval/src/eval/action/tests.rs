@@ -834,3 +834,20 @@ Step == x' = x + 1 /\ y' = y /\ Primed(') /\ Enabled(ENABLED)
     assert_eq!(next_states(&evaluator, "Next", &current).unwrap(), ["2, 5"]);
     assert_eq!(next_states(&evaluator, "Step", &current).unwrap(), ["2, 5"]);
 }
+
+#[test]
+fn builds_lazily_a_function_that_applies_the_recursive_function_around_it() {
+    let source = r#"---- MODULE M ----
+EXTENDS Naturals
+VARIABLE x
+f[i \in 0..5] == [j \in 0..5 |->
+                    IF j = 0
+                      THEN [k \in 0..i |-> IF k = 0 THEN i ELSE f[i][1] + 1]
+                      ELSE IF i = 0 THEN j ELSE f[i-1][j] + 1]
+Next == x' = <<f[4][3], f[4][0][2], DOMAIN f[5][0]>>
+====
+"#;
+    let evaluator = evaluator(source);
+    let current = state(vec![Value::Int(0)]);
+    assert_eq!(next_states(&evaluator, "Next", &current).unwrap(), ["<<7, 6, 0..5>>"]);
+}

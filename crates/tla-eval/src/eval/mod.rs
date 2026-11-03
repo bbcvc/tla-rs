@@ -17,7 +17,9 @@ use tla_resolve::{DefId, Expr, ExprKind, Local, ModuleId, VarId};
 use tla_value::{LazySet, Symbol, Value};
 
 pub use self::action::NextAction;
-pub(crate) use self::analysis::{normalizing_evaluations, recursive_functions, tlc_eval};
+pub(crate) use self::analysis::{
+    normalizing_evaluations, recursive_constructions, recursive_functions, tlc_eval,
+};
 use self::builtin::describe;
 pub(crate) use self::constants::constant_definitions;
 use crate::env::{Env, Slot, StateRef};
@@ -113,7 +115,11 @@ impl Evaluator {
             ExprKind::Record(fields) => self.record(fields, env),
             ExprKind::RecordSet(fields) => self.record_set(fields, env),
             ExprKind::FuncSet { domain, range } => self.function_set(domain, range, env),
-            ExprKind::Function { bounds, body } => self.function(bounds, body, expr, env, false),
+            ExprKind::Function { bounds, body } => {
+                let is_lazy =
+                    self.recursive_constructions.contains(&(expr as *const Expr as usize));
+                self.function(bounds, body, expr, env, is_lazy)
+            }
             ExprKind::FuncApp { func, args } => self.apply(func, args, expr, env),
             ExprKind::Dot { record, field } => self.dot(record, *field, expr, env),
             ExprKind::Except { base, updates } => self.except(base, updates, expr, env),

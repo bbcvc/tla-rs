@@ -21,6 +21,42 @@ pub(crate) fn recursive_functions(spec: &Spec) -> Vec<bool> {
         .collect()
 }
 
+/// The function constructors in the body of a function definition that apply the function, by
+/// address, which TLC builds lazily, as tla-ts's `markRecursiveConstructions` finds them: in
+/// `f[i \in S] == [j \in T |-> ... f[i][j - 1] ...]`, building the function at once would apply
+/// `f[i]` while it computes `f[i]`.
+pub(crate) fn recursive_constructions(spec: &Spec) -> HashSet<usize> {
+    let mut found = HashSet::new();
+    for (index, info) in spec.defs.iter().enumerate() {
+        let DefBody::Function { body, .. } = &info.body else { continue };
+        let def = DefId(index as u32);
+        let mut visited = HashSet::new();
+        let mut pending = vec![body];
+        while let Some(expr) = pending.pop() {
+            match &expr.kind {
+                ExprKind::Function { body: inner, .. } if refers_to(spec, def, inner) => {
+                    found.insert(expr as *const Expr as usize);
+                }
+                // The definitions of the LETs in the body are part of it.
+                ExprKind::Call { def: called, .. }
+                    if spec.def(*called).depth > info.depth && visited.insert(*called) =>
+                {
+                    match &spec.def(*called).body {
+                        DefBody::Expr(body) => pending.push(body),
+                        DefBody::Function { bounds, body } => {
+                            pending.push(body);
+                            pending.extend(bounds.iter().map(|bound| &bound.set));
+                        }
+                    }
+                }
+                _ => {}
+            }
+            for_each_child(expr, &mut |child| pending.push(child));
+        }
+    }
+    found
+}
+
 fn refers_to(spec: &Spec, target: DefId, body: &Expr) -> bool {
     let depth = spec.def(target).depth;
     let mut visited = HashSet::new();
