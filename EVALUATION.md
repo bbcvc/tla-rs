@@ -148,14 +148,16 @@ cargo run --release -p tla-eval --example check_assumptions -- $C/.corpora \
   --expected $C/expected.json --timeout 20
 ```
 
-It checks 920 models in 22 seconds on 11 cores. Outcomes: 846 satisfied, 21 violated, 52 failing before evaluation, and 1 timing out.
+It checks 920 models in 22 seconds on 11 cores. Outcomes: 851 satisfied, 23 violated, 45 failing before evaluation, and 1 timing out.
 
-On the first run, 51 models disagreed with TLC; 8 still do:
+On the first run, 51 models disagreed with TLC; 3 still do:
 
 | Cause | Models | Plan |
 | --- | ---: | --- |
-| Subexpression selectors and labels, including the two that fail as syntax errors (`test206`, `test219`) | 7 | In progress on the `selectors` branch. |
+| `test206` and `test219` end a subexpression reference with an operator symbol that takes no arguments, which the grammar can't read (see Frontend results) | 2 | Reparse with the symbol masked, or patch the grammar. |
 | `NormalizationAssume`: TLC prints records and `@@` functions in the order the spec writes their fields; printing an unsortable set in an error message fails; and TLC skips `TLCEval`'s Java override when `TLCEval` is passed for a constant | 1 | Written field order needs tracking in `tla-value`; the rest are small. |
+
+Six models agree with TLC only by accident. Their assumptions fail where they reach the community module `IOUtils` (`IOEnv`, `IOExec`, `IODeserialize`), whose operators TLC implements in Java and the evaluator doesn't yet: `EWD998ChanTrace`, `SmokeEWD998_SC`, `MCccfraft`, `Traceccfraft`, `Traceetcdraft`, and `StringDeserialize`.
 
 The timeout is `CarTalkPuzzle` Model_3. Its `Break` filters about 2.6e10 functions, which TLC can't finish either, so TLC has no recorded result for it.
 
@@ -175,6 +177,7 @@ Still missing from evaluation:
 | Gap | Effect |
 | --- | --- |
 | `ENABLED` | Needs successor generation, which comes with the model checker. |
+| Natives for the community modules TLC overrides in Java, starting with `IOUtils` | Specs that read the environment or run commands, such as trace validation, fail where they call them. |
 | Caching constant definitions and lazy sets' enumerations | Values are the same, but chains of lazy sets re-enumerate, and impure natives such as `RandomElement` can differ from TLC. Add it with the checker. |
 | TLC's string order | Strings are ordered by when this process interns them, not as TLC interns them, so `CHOOSE` and printing over strings can differ from TLC. |
 | Written field order of records | See `NormalizationAssume` above. |
