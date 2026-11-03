@@ -12,7 +12,9 @@
 
 mod expr;
 mod ir;
+mod levels;
 mod module;
+mod selection;
 mod stdlib;
 
 use std::collections::{HashMap, HashSet};
@@ -22,6 +24,7 @@ pub use ir::*;
 use tla_ast::{Span, Symbol};
 
 use crate::expr::FrameScope;
+use crate::levels::layout::Layout;
 use crate::module::{Binding, Context, Parameter, ParsedModule};
 
 /// Supplies the source of a module by name, or `None` if it has no such module.
@@ -77,6 +80,7 @@ pub fn resolve(source: &str, loader: &mut dyn ModuleLoader) -> Result<Spec> {
             defs: Vec::new(),
             assumptions: Vec::new(),
             root: HashMap::new(),
+            levels: Vec::new(),
         },
         parsed: HashMap::new(),
         parameters: HashMap::new(),
@@ -91,9 +95,21 @@ pub fn resolve(source: &str, loader: &mut dyn ModuleLoader) -> Result<Spec> {
         recursive: HashMap::new(),
         enclosing: HashMap::new(),
         inner_origins: HashMap::new(),
+        layout: Layout::default(),
+        qualifier: None,
+        is_instantiating: false,
+        instantiated: HashSet::new(),
+        sections: 0,
+        elabs: 0,
+        elab_contexts: HashMap::new(),
+        origins: HashMap::new(),
+        replaying: 0,
     };
     let root = resolver.add_file(modules, source.into(), false);
     let context = resolver.plain(&root)?;
+    let extended = resolver.extends_closure(&root);
+    let defs = &resolver.spec.defs;
+    resolver.spec.assumptions.retain(|def| extended.contains(&defs[def.index()].module));
     if let Some(&def) = resolver.pending.iter().min() {
         let def = resolver.spec.def(def);
         let message =
@@ -113,7 +129,26 @@ pub fn resolve(source: &str, loader: &mut dyn ModuleLoader) -> Result<Spec> {
             Some((*name, root))
         })
         .collect();
+    resolver.check_levels()?;
     Ok(resolver.spec)
+}
+
+impl Resolver<'_> {
+    /// `root` and the modules it extends, directly or not.
+    fn extends_closure(&self, root: &ParsedModule) -> HashSet<ModuleId> {
+        let mut closure = HashSet::from([root.id]);
+        let mut pending = vec![root];
+        while let Some(module) = pending.pop() {
+            for name in &module.ast.extends {
+                if let Some(extended) = self.parsed.get(&name.symbol)
+                    && closure.insert(extended.id)
+                {
+                    pending.push(extended);
+                }
+            }
+        }
+        closure
+    }
 }
 
 pub(crate) struct Resolver<'l> {
@@ -143,6 +178,25 @@ pub(crate) struct Resolver<'l> {
     /// The enclosing module and place of each nested module, to tell a second elaboration of
     /// it from a different module of the same name.
     inner_origins: HashMap<Symbol, (ModuleId, Span)>,
+    /// What the level pass needs to know of the program beyond the IR.
+    layout: Layout,
+    /// `I!J!` while elaborating the module of the named instance `J` in that of `I`.
+    qualifier: Option<Rc<str>>,
+    /// Whether a module is being elaborated under the substitutions of an `INSTANCE`.
+    is_instantiating: bool,
+    /// The modules elaborated under the substitutions of an `INSTANCE`.
+    instantiated: HashSet<ModuleId>,
+    /// The number of `RECURSIVE` sections so far.
+    sections: usize,
+    /// The number of elaborations started so far.
+    elabs: usize,
+    /// The names each finished elaboration defined, by [`module::Elab::id`].
+    elab_contexts: HashMap<usize, Rc<Context>>,
+    /// Where each module-level definition comes from, for subexpression references to it.
+    origins: HashMap<DefId, selection::Origin>,
+    /// Whether a subexpression reference is resolving part of a definition again, whose names
+    /// may hide later ones without conflict.
+    replaying: usize,
 }
 
 /// Whether TLC bundles a module of this name. A loader shouldn't supply one from a library

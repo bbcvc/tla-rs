@@ -7,8 +7,8 @@ mod expr;
 mod op;
 
 pub use expr::{
-    Bound, CaseArm, Component, ExceptKey, ExceptUpdate, Expr, ExprKind, Fairness, Pattern,
-    Quantifier,
+    Bound, CaseArm, Component, ExceptKey, ExceptUpdate, Expr, ExprKind, Fairness, Operand, Pattern,
+    Quantifier, Selector, SelectorKind,
 };
 pub use op::Op;
 pub use tla_intern::Symbol;
@@ -121,6 +121,8 @@ pub struct ModuleDef {
 pub struct Assume {
     pub name: Option<Name>,
     pub expr: Expr,
+    /// Written `AXIOM` rather than `ASSUME` or `ASSUMPTION`. TLC doesn't check axioms.
+    pub is_axiom: bool,
 }
 
 /// A theorem. TLC doesn't check theorems, so the proof isn't kept. A named theorem defines its

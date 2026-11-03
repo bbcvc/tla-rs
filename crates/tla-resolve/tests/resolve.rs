@@ -286,6 +286,7 @@ Step == x < 3
 ====
 I == INSTANCE Inner WITH x <- y
 ASSUME Positive == 1 > 0
+AXIOM Granted == 2 > 1
 THEOREM Trivial == TRUE
 RECURSIVE f
 f[n \in Nat] == IF n = 0 THEN 0 ELSE f[n - 1]
@@ -298,7 +299,9 @@ Z == 1
 "#,
         &[],
     );
+    // TLC checks the ASSUME but not the AXIOM, though both define their names.
     assert_eq!(spec.assumptions.len(), 1);
+    assert_eq!(def(&spec, "Granted").params.len(), 0);
     assert!(matches!(def(&spec, "f").body, DefBody::Function { .. }));
     let ExprKind::And(conjuncts) = body_of(&spec, "Check") else { panic!() };
     assert_eq!(call_name(&spec, &conjuncts[0]), "Positive");
@@ -309,4 +312,33 @@ Z == 1
         panic!("the nested module sees < from the enclosing module's EXTENDS")
     };
     assert!(matches!(args[0].kind, ExprKind::Var(_)));
+}
+
+/// TLC checks the assumptions of the root module and of the modules it extends, but not of the
+/// modules it instantiates, as tla-ts collects them.
+#[test]
+fn collects_the_assumptions_of_extended_modules_only() {
+    let spec = spec(
+        r#"
+---- MODULE Root ----
+EXTENDS Base
+INSTANCE Plain
+I == INSTANCE Parameterized WITH c <- 1
+ASSUME RootFact == TRUE
+====
+"#,
+        &[
+            ("Base", "---- MODULE Base ----\nEXTENDS Deeper\nASSUME BaseFact == TRUE\n====\n"),
+            ("Deeper", "---- MODULE Deeper ----\nASSUME DeeperFact == TRUE\n====\n"),
+            ("Plain", "---- MODULE Plain ----\nASSUME PlainFact == TRUE\n====\n"),
+            (
+                "Parameterized",
+                "---- MODULE Parameterized ----\nCONSTANT c\nASSUME ParamFact == c = 1\n====\n",
+            ),
+        ],
+    );
+    let mut names: Vec<&str> =
+        spec.assumptions.iter().map(|&id| spec.def(id).name.as_str()).collect();
+    names.sort_unstable();
+    assert_eq!(names, ["BaseFact", "DeeperFact", "RootFact"]);
 }

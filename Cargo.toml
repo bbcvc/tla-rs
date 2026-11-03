@@ -12,6 +12,9 @@ rust-version = "1.85"
 tla-intern = { path = "crates/tla-intern" }
 tla-ast = { path = "crates/tla-ast" }
 tla-parser = { path = "crates/tla-parser" }
+tla-resolve = { path = "crates/tla-resolve" }
+tla-value = { path = "crates/tla-value" }
+tla-eval = { path = "crates/tla-eval" }
 
 lasso = { version = "0.7", features = ["multi-threaded"] }
 serde_json = "1"

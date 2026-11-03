@@ -345,6 +345,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "tla-eval"
+version = "0.1.0"
+dependencies = [
+ "serde_json",
+ "thiserror",
+ "tla-ast",
+ "tla-parser",
+ "tla-resolve",
+ "tla-value",
+]
+
+[[package]]
 name = "tla-intern"
 version = "0.1.0"
 dependencies = [
@@ -369,6 +381,14 @@ dependencies = [
  "thiserror",
  "tla-ast",
  "tla-parser",
+]
+
+[[package]]
+name = "tla-value"
+version = "0.1.0"
+dependencies = [
+ "thiserror",
+ "tla-intern",
 ]
 
 [[package]]
