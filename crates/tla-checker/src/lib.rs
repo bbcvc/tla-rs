@@ -223,7 +223,7 @@ pub fn check<S: Successors>(
         return Outcome::error(error.message);
     }
     let fingerprinter =
-        match fingerprint::Fingerprinter::new(&evaluator, plan.view, config.symmetry) {
+        match fingerprint::Fingerprinter::new(&evaluator, plan.view, config.symmetry, &tlc_order) {
             Ok(fingerprinter) => fingerprinter,
             Err(error) => return Outcome::error(error.message),
         };

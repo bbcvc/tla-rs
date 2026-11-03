@@ -7,6 +7,7 @@
 //! smallest fingerprint. TLC closes the permutations the `SYMMETRY` gives under composition, as
 //! does this.
 
+use std::borrow::Cow;
 use std::cmp::Ordering;
 use std::collections::{BTreeMap, HashSet};
 use std::hash::{BuildHasher, Hasher};
@@ -47,29 +48,75 @@ pub struct Fingerprinter {
     is_tlc: bool,
     /// The permutations other than the identity.
     permutations: Vec<Permutation>,
+    /// The variables in TLC's order, by their index in a state, if not the order they are
+    /// declared in. TLC compares and fingerprints the values of a state in that order.
+    order: Option<Vec<usize>>,
 }
 
 impl Fingerprinter {
-    /// The fingerprinter of a model with the `VIEW` and `SYMMETRY` its configuration names.
+    /// The fingerprinter of a model with the `VIEW` and `SYMMETRY` its configuration names, for
+    /// states whose variables are in TLC's `order` by their index in a state.
     pub fn new(
         evaluator: &Evaluator,
         view: Option<DefId>,
         symmetry: Option<Symbol>,
+        order: &[usize],
     ) -> Result<Self, Error> {
         let permutations = match symmetry {
             Some(name) => symmetry_group(evaluator, name)?,
             None => Vec::new(),
         };
-        Ok(Self { view, is_tlc: evaluator.has_wide_strings(), permutations })
+        let is_declared = order.iter().enumerate().all(|(position, &index)| position == index);
+        let order = (!is_declared).then(|| order.to_vec());
+        Ok(Self { view, is_tlc: evaluator.has_wide_strings(), permutations, order })
+    }
+
+    /// The values of `state` in TLC's order of the variables.
+    fn in_tlc_order<'a>(&self, state: &'a State) -> Cow<'a, [Value]> {
+        match &self.order {
+            Some(order) => order.iter().map(|&index| state[index].clone()).collect(),
+            None => Cow::Borrowed(&state[..]),
+        }
+    }
+
+    /// The permuted state TLC takes to stand for the state and its permutations: the smallest
+    /// image of the state under the symmetry, comparing its variables in TLC's order, and the
+    /// state itself unless an image is strictly smaller (tla-ts `getRepresentative`). Its
+    /// variables are in the order of `state`.
+    pub fn representative(&self, _evaluator: &Evaluator, state: &State) -> Result<State, String> {
+        if self.permutations.is_empty() {
+            return Ok(state.clone());
+        }
+        let ordered = self.in_tlc_order(state);
+        let Some(smallest) = self.smallest_permutation(&ordered)? else {
+            return Ok(state.clone());
+        };
+        let representative = match &self.order {
+            Some(order) => {
+                let mut values = state.to_vec();
+                for (position, &index) in order.iter().enumerate() {
+                    values[index] = smallest[position].clone();
+                }
+                values
+            }
+            None => smallest,
+        };
+        Ok(representative.into())
     }
 
     /// The fingerprint of `state`.
     pub fn fingerprint(&self, evaluator: &Evaluator, state: &State) -> Result<u128, String> {
         let view;
+        let ordered;
         let values = match self.view {
             Some(def) => {
                 view = evaluator.eval_def(def, Some(state)).map_err(|error| error.to_string())?;
                 std::slice::from_ref(&view)
+            }
+            // TLC's own fingerprints, and the representative it picks, follow its order.
+            None if self.is_tlc || !self.permutations.is_empty() => {
+                ordered = self.in_tlc_order(state);
+                &ordered[..]
             }
             None => &state[..],
         };
@@ -332,11 +379,11 @@ mod tests {
     fn tells_states_apart_by_the_view() {
         let evaluator = evaluator("View == x % 2", "");
         let Some(RootName::Def(view)) = evaluator.spec().lookup("View") else { panic!("View") };
-        let fingerprinter = Fingerprinter::new(&evaluator, Some(view), None).unwrap();
+        let fingerprinter = Fingerprinter::new(&evaluator, Some(view), None, &[0]).unwrap();
         let of = |x| fingerprint(&fingerprinter, &evaluator, Value::Int(x));
         assert_eq!(of(0), of(2));
         assert_ne!(of(0), of(1));
-        let plain = Fingerprinter::new(&evaluator, None, None).unwrap();
+        let plain = Fingerprinter::new(&evaluator, None, None, &[0]).unwrap();
         assert_ne!(
             fingerprint(&plain, &evaluator, Value::Int(0)),
             fingerprint(&plain, &evaluator, Value::Int(2))
@@ -348,7 +395,7 @@ mod tests {
         let body = "CONSTANT P\nPerms == Permutations(P)";
         let evaluator = evaluator(body, "CONSTANT P = {p1, p2, p3}\nSYMMETRY Perms");
         let fingerprinter =
-            Fingerprinter::new(&evaluator, None, Some(Symbol::intern("Perms"))).unwrap();
+            Fingerprinter::new(&evaluator, None, Some(Symbol::intern("Perms")), &[0]).unwrap();
         let of = |items: &[&str]| {
             let value = Value::tuple(items.iter().map(|name| model(name)).collect());
             fingerprint(&fingerprinter, &evaluator, value)
@@ -363,6 +410,24 @@ mod tests {
         };
         assert_eq!(set(&["p1"]), set(&["p3"]));
         assert_ne!(set(&["p1"]), set(&["p1", "p2"]));
+    }
+
+    /// The representative is the smallest image of the state, comparing the variables in TLC's
+    /// order, kept in the order of the state.
+    #[test]
+    fn represents_a_state_by_its_smallest_image_in_tlc_order() {
+        let body = "CONSTANT P\nPerms == Permutations(P)";
+        let evaluator = evaluator(body, "CONSTANT P = {p1, p2}\nSYMMETRY Perms");
+        let representative = |order: &[usize]| {
+            let fingerprinter =
+                Fingerprinter::new(&evaluator, None, Some(Symbol::intern("Perms")), order).unwrap();
+            let state: State = Arc::from(vec![model("p2"), model("p1")]);
+            let representative = fingerprinter.representative(&evaluator, &state).unwrap();
+            representative.iter().map(ToString::to_string).collect::<Vec<_>>()
+        };
+        assert_eq!(representative(&[0, 1]), ["p1", "p2"]);
+        // Compared second variable first, the state itself is the smallest.
+        assert_eq!(representative(&[1, 0]), ["p2", "p1"]);
     }
 
     #[test]

@@ -68,9 +68,10 @@ pub fn explore(mut spec: Spec, config: &str, system: System) -> crate::search::S
     let plan = crate::plan::plan(&mut spec, &config, &Default::default()).unwrap();
     let evaluator = tla_eval::Evaluator::new(Arc::new(spec), model.constants);
     evaluator.runtime().start(tla_eval::CheckerOptions::for_config(&config));
-    let fingerprinter =
-        crate::fingerprint::Fingerprinter::new(&evaluator, plan.view, config.symmetry).unwrap();
     let order: Vec<usize> = (0..evaluator.spec().variables.len()).collect();
+    let fingerprinter =
+        crate::fingerprint::Fingerprinter::new(&evaluator, plan.view, config.symmetry, &order)
+            .unwrap();
     crate::search::search(
         &system,
         &evaluator,
