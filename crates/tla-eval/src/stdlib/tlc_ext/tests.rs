@@ -5,7 +5,7 @@ use std::sync::Arc;
 use tla_value::{Result, Symbol, Value};
 
 use crate::stdlib::testing::{call, call_in, error, evaluator, int, operator, string, tuple};
-use crate::{Arg, Evaluator};
+use crate::{Arg, CheckerOptions, Evaluator, Operator};
 
 fn ext(evaluator: &Evaluator, name: &str, args: Vec<Arg>) -> Result<Value> {
     call_in(evaluator, "TLCExt", name, false, args)
@@ -92,10 +92,6 @@ fn evaluates_the_simple_operators() {
     // The low 32 bits of tla-ts's getTlcFingerprint([0]), 0xd0ba3e880dcdd983.
     assert_eq!(call("TLCExt", "TLCFP", &[int(0)]).unwrap().as_int(), Some(0x0dcd_d983));
     assert_eq!(
-        error("TLCExt", "AssertError", &[string("e"), int(1)]),
-        "AssertError is not supported yet"
-    );
-    assert_eq!(
         error("TLCExt", "PickSuccessor", &[Value::TRUE]),
         "PickSuccessor is not supported yet"
     );
@@ -133,4 +129,87 @@ fn counts_possibilities() {
     assert_eq!(evaluator.runtime().output.lock().unwrap().len(), 1);
     let named = ext(&evaluator, "TLCGetOrDefault", values(&[string("s:_possible"), tuple(&[])]));
     assert!(named.unwrap().equals(&counts).unwrap());
+}
+
+#[test]
+fn asserts_that_an_expression_fails_with_a_message() {
+    let evaluator = evaluator();
+    let message = |text: &'static str| Arg::Op(Operator::closure(move |_, _| Ok(string(text))));
+    let failing = || operator(|_| Err(tla_value::Error("boom".to_owned())));
+    let assert_error = |args: Vec<Arg>| ext(&evaluator, "AssertError", args);
+    assert_eq!(assert_error(vec![message("boom"), failing()]).unwrap().as_bool(), Some(true));
+    assert_eq!(assert_error(vec![message("bang"), failing()]).unwrap().as_bool(), Some(false));
+    let holding = operator(|_| Ok(Value::TRUE));
+    assert_eq!(assert_error(vec![message("boom"), holding]).unwrap().as_bool(), Some(false));
+    // Applied to values, as an operator argument is, the expression has not failed.
+    assert_eq!(assert_error(values(&[string("boom"), int(1)])).unwrap().as_bool(), Some(false));
+    assert!(
+        assert_error(values(&[int(1), int(1)]))
+            .unwrap_err()
+            .0
+            .ends_with("a non-string expression was used as the err of an AssertError(err, exp).")
+    );
+}
+
+/// The value of each assumption of `body` in a module extending `modules`, once the model
+/// checker has started with the options of `config`.
+fn assumptions(modules: &str, body: &str, config: &str) -> Vec<Result<Value>> {
+    let source = format!("---- MODULE T ----\nEXTENDS {modules}\n{body}\n====\n");
+    let spec = tla_resolve::resolve(&source, &mut |_: &str| None).unwrap();
+    let assumptions = spec.assumptions.clone();
+    let evaluator = Evaluator::new(Arc::new(spec), Vec::new());
+    let config = tla_parser::parse_config(config).unwrap();
+    evaluator.runtime().start(CheckerOptions::for_config(&config));
+    let results = assumptions.into_iter().map(|def| evaluator.eval_def(def, None));
+    results.map(|result| result.map_err(|error| tla_value::Error(error.message))).collect()
+}
+
+fn holds(results: Vec<Result<Value>>) {
+    for (index, result) in results.into_iter().enumerate() {
+        assert_eq!(result.map(|value| value.as_bool()), Ok(Some(true)), "assumption {index}");
+    }
+}
+
+/// TLC's test-model/ModuleSemanticsAssume: Bags reports sums beyond MaxInt as overflows, and
+/// RandomSubset reports a negative count, which AssertError catches.
+#[test]
+fn catches_the_failures_tlcs_module_semantics_model_asserts() {
+    let body = r#"
+MaxInt == 2147483647
+BagCardMax   == BagCardinality([x \in {1, 2} |-> MaxInt]) > MaxInt
+BagCupMax    == ([x \in {1} |-> MaxInt] (+) [x \in {1} |-> 1])[1] > MaxInt
+BagUnionMax  == BagUnion({[x \in {1} |-> MaxInt], [x \in {1} |-> 2]})[1] > MaxInt
+RandomSubsetNegRefl == RandomSubset(-1, {1, 2}) = RandomSubset(-1, {1, 2})
+ASSUME BagCardinality([x \in {1, 2} |-> 2]) = 4
+ASSUME AssertError("Overflow when computing 2147483647+2147483647", BagCardMax)
+ASSUME AssertError("Overflow when computing 2147483647+1", BagCupMax)
+ASSUME AssertError("Overflow when computing 2+2147483647", BagUnionMax)
+ASSUME AssertError("Attempted to apply the operator overridden by the Java method\npublic static tlc2.value.impl.Value tlc2.module.Randomization.RandomSubset(tlc2.value.impl.Value,tlc2.value.impl.Value),\nbut it produced the following error:\n-1",
+                   RandomSubsetNegRefl)
+ASSUME ~AssertError("Overflow", BagCardMax)
+ASSUME ~AssertError("Overflow", 1 + 1)
+"#;
+    holds(assumptions("Bags, Integers, Randomization, TLCExt", body, ""));
+}
+
+#[test]
+fn defers_and_wraps_what_tlc_hands_expressions() {
+    let body = r#"
+ASSUME TLCDefer(1 \div 0)
+ASSUME AssertError("Attempted to apply the operator overridden by the Java method\npublic static tlc2.value.impl.Value tlc2.module.TLCGetSet.TLCGetEval(tlc2.tool.impl.Tool,tla2sany.semantic.ExprOrOpArgNode[],tlc2.util.Context,tlc2.tool.TLCState,tlc2.tool.TLCState,int,tlc2.tool.coverage.CostModel),\nbut it produced the following error:\nThe second argument of \\div is 0.",
+                   TLCGet(1 \div 0))
+"#;
+    holds(assumptions("Integers, TLC, TLCExt", body, ""));
+}
+
+/// TLC's test-model/suite/test220 and DieHard/DieHardest read the model checker's options.
+#[test]
+fn reads_the_options_of_the_model_checker_in_assumptions() {
+    let body = r#"
+ASSUME TLCGet("config").deadlock = FALSE
+ASSUME TLCGet("config").mode = "bfs" /\ TLCGet("config").worker = 1
+"#;
+    holds(assumptions("TLC", body, "CHECK_DEADLOCK FALSE"));
+    let deadlock = assumptions("TLC", "ASSUME TLCGet(\"config\").deadlock", "");
+    assert_eq!(deadlock[0].clone().map(|value| value.as_bool()), Ok(Some(true)));
 }

@@ -1,27 +1,28 @@
 //! TLCExt and `_Possible`, ported from tla-ts `tlc/tlcext-operators.ts`.
 //!
-//! Natives get their arguments evaluated, so `AssertError` and `PickSuccessor`, which TLC hands
-//! unevaluated expressions, fail as unsupported. `TLCDefer` and `TLCCache` evaluate their
-//! expression, which TLC defers or caches: their values are TLC's.
+//! `AssertError` and `TLCDefer` take their arguments unevaluated, as TLC's Java methods do.
+//! `PickSuccessor`, which needs the successor state and the states seen, fails as unsupported.
+//! `TLCCache` evaluates its expression each time, where TLC caches it: its value is TLC's.
 
 use tla_resolve::RootName;
 use tla_value::{Symbol, Value};
 
 use super::tlc::{possible_counts, register, set_register, strict_text, tlc_fingerprint};
-use super::{Failure, Outcome, arg, java_error, op_arg, sequence_elements};
+use super::{Failure, Outcome, arg, forced, java_error, op_arg, sequence_elements};
 use crate::native::OperatorKind;
 use crate::{Arg, Ctx, Native, Operator};
 
 pub(super) fn lookup(name: &str) -> Option<Native> {
     Some(match name {
         "AssertEq" => native!(assert_eq),
-        "AssertError" => unsupported!("AssertError"),
+        "AssertError" => native!(assert_error),
         "TLCGetOrDefault" => native!(tlc_get_or_default),
         "TLCGetAndSet" => native!(tlc_get_and_set),
         "Trace" => native!(trace),
         "CounterExample" => native!(counter_example),
         "ToTrace" => native!(to_trace),
         "TLCModelValue" => native!(tlc_model_value),
+        // TLC runs the deferred expression only in simulation, when it extends a behavior.
         "TLCDefer" => native!(|_: &mut Ctx<'_>, _: &[Arg]| -> Outcome { Ok(Value::TRUE) }),
         "TLCNoOp" | "TLCCache" => {
             native!(|_: &mut Ctx<'_>, args: &[Arg]| -> Outcome { Ok(arg(args, 0)?.clone()) })
@@ -57,6 +58,20 @@ fn assert_eq(ctx: &mut Ctx<'_>, args: &[Arg]) -> Outcome {
         lines.into_iter().for_each(|line| ctx.runtime().print(line));
     }
     Ok(Value::Bool(is_equal))
+}
+
+const ASSERT_ERROR: &str = "public static synchronized tlc2.value.impl.Value tlc2.module.TLCExt.assertError(tlc2.tool.impl.Tool,tla2sany.semantic.ExprOrOpArgNode[],tlc2.util.Context,tlc2.tool.TLCState,tlc2.tool.TLCState,int,tlc2.tool.coverage.CostModel)";
+
+/// `AssertError(err, exp)`: whether evaluating `exp` fails with the message `err`.
+fn assert_error(ctx: &mut Ctx<'_>, args: &[Arg]) -> Outcome {
+    let Value::Str(expected) = forced(ctx, args, 0)? else {
+        let message = "In computing AssertError, a non-string expression was used as the err of an AssertError(err, exp).";
+        return Err(Failure::Eval(java_error(ASSERT_ERROR, message)));
+    };
+    Ok(Value::Bool(match forced(ctx, args, 1) {
+        Ok(_) => false,
+        Err(failure) => failure.into_error().0 == expected.as_str(),
+    }))
 }
 
 fn tlc_get_or_default(ctx: &mut Ctx<'_>, args: &[Arg]) -> Outcome {
