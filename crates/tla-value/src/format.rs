@@ -139,9 +139,7 @@ impl fmt::Display for Value {
                     .all(|key| matches!(key, Value::Str(name) if is_field_name(name.as_str())));
                 if is_record {
                     formatter.write_str("[")?;
-                    for (index, (key, value)) in
-                        func.keys.iter().zip(func.values.iter()).enumerate()
-                    {
+                    for (index, (key, value)) in func.written_entries().enumerate() {
                         let Value::Str(name) = key else { unreachable!() };
                         let separator = if index > 0 { ", " } else { "" };
                         write!(formatter, "{separator}{name} |-> {value}")?;

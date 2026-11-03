@@ -181,6 +181,12 @@ fn compare_elements(left: &[Value], right: &[Value]) -> Result<Ordering> {
 
 /// Compares two functions: by domain size, then keys, then values.
 fn compare_functions(left: &Value, right: &Value, verb: &str) -> Result<Ordering> {
+    // TLC sorts a function it compares.
+    for function in [left, right] {
+        if let Value::Func(func) = function {
+            func.normalize();
+        }
+    }
     match (left, right) {
         (Value::Tuple(left), Value::Tuple(right)) => compare_elements(left, right),
         (Value::LazyFunc(_), _) => compare_functions(&left.materialize()?, right, verb),

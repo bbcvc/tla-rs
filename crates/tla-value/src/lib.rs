@@ -71,10 +71,16 @@ pub enum Value {
 
 /// A finite function other than a tuple: keys sorted by [`Value::compare`], with the value of
 /// each key at the same index.
+///
+/// A record, or a function with string keys that `@@` builds, also remembers the order the spec
+/// wrote its keys in when that isn't the sorted order. TLC prints that order until it normalizes
+/// the value, which it does to compare or fingerprint it. Equality, ordering, and fingerprints
+/// never depend on it.
 #[derive(Clone)]
 pub struct Func {
     pub keys: Box<[Value]>,
     pub values: Box<[Value]>,
+    pub(crate) written: Option<Box<func::WrittenOrder>>,
 }
 
 #[derive(Clone)]

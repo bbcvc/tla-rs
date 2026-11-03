@@ -39,6 +39,7 @@ impl Value {
                 }
             }
             Value::Func(func) => {
+                func.normalize();
                 4u8.hash(state);
                 func.keys.len().hash(state);
                 for (key, value) in func.keys.iter().zip(func.values.iter()) {
