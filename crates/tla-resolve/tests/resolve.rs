@@ -286,6 +286,7 @@ Step == x < 3
 ====
 I == INSTANCE Inner WITH x <- y
 ASSUME Positive == 1 > 0
+AXIOM Granted == 2 > 1
 THEOREM Trivial == TRUE
 RECURSIVE f
 f[n \in Nat] == IF n = 0 THEN 0 ELSE f[n - 1]
@@ -298,7 +299,9 @@ Z == 1
 "#,
         &[],
     );
+    // TLC checks the ASSUME but not the AXIOM, though both define their names.
     assert_eq!(spec.assumptions.len(), 1);
+    assert_eq!(def(&spec, "Granted").params.len(), 0);
     assert!(matches!(def(&spec, "f").body, DefBody::Function { .. }));
     let ExprKind::And(conjuncts) = body_of(&spec, "Check") else { panic!() };
     assert_eq!(call_name(&spec, &conjuncts[0]), "Positive");

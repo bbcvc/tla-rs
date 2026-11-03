@@ -518,7 +518,9 @@ impl Resolver<'_> {
             }
             Unit::Assume(assume) => {
                 let def = self.statement(elab, assume.name, &assume.expr)?;
-                self.spec.assumptions.push(def);
+                if !assume.is_axiom {
+                    self.spec.assumptions.push(def);
+                }
                 if let Some(name) = assume.name {
                     elab.add(name, self.operator_entry(elab.module, name, 0, def, false), source)?;
                 }

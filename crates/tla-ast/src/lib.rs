@@ -121,6 +121,8 @@ pub struct ModuleDef {
 pub struct Assume {
     pub name: Option<Name>,
     pub expr: Expr,
+    /// Written `AXIOM` rather than `ASSUME` or `ASSUMPTION`. TLC doesn't check axioms.
+    pub is_axiom: bool,
 }
 
 /// A theorem. TLC doesn't check theorems, so the proof isn't kept. A named theorem defines its

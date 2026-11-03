@@ -225,6 +225,7 @@ impl<'a> Lower<'a> {
                 Unit::Assume(Assume {
                     name: name.map(|name| self.name(name)).transpose()?,
                     expr: self.expr(expr)?,
+                    is_axiom: node.child(0).is_some_and(|keyword| keyword.kind() == "AXIOM"),
                 })
             }
             "theorem" => Unit::Theorem(Theorem {
