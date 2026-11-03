@@ -22,10 +22,7 @@ pub struct Span {
 
 impl Span {
     pub fn new(start: usize, end: usize) -> Self {
-        Self {
-            start: start as u32,
-            end: end as u32,
-        }
+        Self { start: start as u32, end: end as u32 }
     }
 
     /// The 1-based line and column of the start of the span. Columns count characters.
