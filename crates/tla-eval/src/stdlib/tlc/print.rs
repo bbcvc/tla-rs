@@ -2,7 +2,9 @@
 //! strict mode.
 //!
 //! These operators enumerate a lazy set that TLC prints element by element even when that
-//! fails, where an error message prints such a set symbolically instead.
+//! fails, where an error message prints such a set symbolically instead. `ToString` prints a
+//! record in the order its fields are written, and `Print` and `PrintT` print it normalized,
+//! with its fields sorted.
 
 use std::fmt::Write;
 
@@ -15,19 +17,31 @@ const MAXIMUM_EXPANDED_SUBSET_BASE: i32 = 6;
 /// TLC prints a set of functions, records, or tuples element by element up to this size.
 const MAXIMUM_EXPANDED_PRODUCT: f64 = 1999.0;
 
-/// The text TLC prints for a value in `Print`, `PrintT`, and `ToString`.
+/// The text TLC prints for a value in `ToString`.
 pub(crate) fn strict_text(value: &Value) -> Result<String> {
     let mut text = String::new();
-    write_value(&mut text, value)?;
+    write_value(&mut text, value, false)?;
     Ok(text)
 }
 
-fn write_list(text: &mut String, items: &[Value], separator: &str) -> Result<()> {
+/// The text TLC prints for a value in `Print` and `PrintT`, which normalize it first.
+pub(crate) fn normalized_text(value: &Value) -> Result<String> {
+    let mut text = String::new();
+    write_value(&mut text, value, true)?;
+    Ok(text)
+}
+
+fn write_list(
+    text: &mut String,
+    items: &[Value],
+    separator: &str,
+    is_normalized: bool,
+) -> Result<()> {
     for (index, item) in items.iter().enumerate() {
         if index > 0 {
             text.push_str(separator);
         }
-        write_value(text, item)?;
+        write_value(text, item, is_normalized)?;
     }
     Ok(())
 }
@@ -39,17 +53,17 @@ fn is_field_name(name: &str) -> bool {
         && !(name.len() >= 4 && (name.starts_with("WF_") || name.starts_with("SF_")))
 }
 
-fn write_value(text: &mut String, value: &Value) -> Result<()> {
+fn write_value(text: &mut String, value: &Value, is_normalized: bool) -> Result<()> {
     match value {
         Value::Set(elements) => {
             text.push('{');
-            write_list(text, elements, ", ")?;
+            write_list(text, elements, ", ", is_normalized)?;
             text.push('}');
         }
-        Value::MixedSet(_) => write_value(text, &Value::Set(value.elements()?))?,
+        Value::MixedSet(_) => write_value(text, &Value::Set(value.elements()?), is_normalized)?,
         Value::Tuple(items) => {
             text.push_str("<<");
-            write_list(text, items, ", ")?;
+            write_list(text, items, ", ", is_normalized)?;
             text.push_str(">>");
         }
         Value::Func(func) => {
@@ -59,28 +73,36 @@ fn write_value(text: &mut String, value: &Value) -> Result<()> {
                 .all(|key| matches!(key, Value::Str(name) if is_field_name(name.as_str())));
             let (open, separator, divider, close) =
                 if is_record { ("[", ", ", " |-> ", "]") } else { ("(", " @@ ", " :> ", ")") };
+            let sorted = func.keys.iter().zip(func.values.iter());
+            let entries: Box<dyn Iterator<Item = (&Value, &Value)>> = if is_record && !is_normalized
+            {
+                Box::new(func.written_entries())
+            } else {
+                Box::new(sorted)
+            };
             text.push_str(open);
-            for (index, (key, value)) in func.keys.iter().zip(func.values.iter()).enumerate() {
+            for (index, (key, value)) in entries.enumerate() {
                 if index > 0 {
                     text.push_str(separator);
                 }
                 match key {
                     Value::Str(name) if is_record => text.push_str(name.as_str()),
-                    _ => write_value(text, key)?,
+                    _ => write_value(text, key, is_normalized)?,
                 }
                 text.push_str(divider);
-                write_value(text, value)?;
+                write_value(text, value, is_normalized)?;
             }
             text.push_str(close);
         }
-        // FcnLambdaValue#toString prints a function it fails to enumerate symbolically.
+        // FcnLambdaValue#toString prints a function it fails to enumerate symbolically. TLC
+        // normalizes its domain to print it, but evaluates its values afterward.
         Value::LazyFunc(_) => match value.materialize() {
-            Ok(function) => write_value(text, &function)?,
+            Ok(function) => write_value(text, &function, false)?,
             Err(_) => write!(text, "{value}").expect("writing to a string succeeds"),
         },
         Value::Lazy(set) => match expanded(value, set)? {
-            Some(elements) => write_value(text, &elements)?,
-            None => write_lazy(text, set)?,
+            Some(elements) => write_value(text, &elements, is_normalized)?,
+            None => write_lazy(text, set, is_normalized)?,
         },
         _ => write!(text, "{value}").expect("writing to a string succeeds"),
     }
@@ -129,23 +151,23 @@ fn product_size<'a>(sets: impl Iterator<Item = &'a Value>) -> Result<f64> {
     Ok(size)
 }
 
-fn write_lazy(text: &mut String, set: &LazySet) -> Result<()> {
+fn write_lazy(text: &mut String, set: &LazySet, is_normalized: bool) -> Result<()> {
     match set {
         LazySet::Subset(base) => {
             if matches!(base, Value::Interval(..)) {
                 text.push_str("SUBSET (");
-                write_value(text, base)?;
+                write_value(text, base, is_normalized)?;
                 text.push(')');
             } else {
                 text.push_str("SUBSET ");
-                write_value(text, base)?;
+                write_value(text, base, is_normalized)?;
             }
         }
         LazySet::FuncSet { domain, range } => {
             text.push('[');
-            write_value(text, domain)?;
+            write_value(text, domain, is_normalized)?;
             text.push_str(" -> ");
-            write_value(text, range)?;
+            write_value(text, range, is_normalized)?;
             text.push(']');
         }
         LazySet::RecordSet(fields) => {
@@ -156,18 +178,18 @@ fn write_lazy(text: &mut String, set: &LazySet) -> Result<()> {
                 }
                 text.push_str(name.as_str());
                 text.push_str(": ");
-                write_value(text, set)?;
+                write_value(text, set, is_normalized)?;
             }
             text.push(']');
         }
         LazySet::Product(factors) => {
             text.push('(');
-            write_list(text, factors, " \\X ")?;
+            write_list(text, factors, " \\X ", is_normalized)?;
             text.push(')');
         }
         LazySet::Seq(base) => {
             text.push_str("Seq(");
-            write_value(text, base)?;
+            write_value(text, base, is_normalized)?;
             text.push(')');
         }
         _ => write!(text, "{}", Value::lazy(set.clone())).expect("writing to a string succeeds"),
@@ -179,7 +201,7 @@ fn write_lazy(text: &mut String, set: &LazySet) -> Result<()> {
 mod tests {
     use tla_value::{LazySet, Symbol, Value};
 
-    use super::strict_text;
+    use super::{normalized_text, strict_text};
     use crate::stdlib::testing::ints;
 
     fn lazy(set: LazySet) -> Value {
@@ -227,5 +249,20 @@ mod tests {
         let functions = lazy(LazySet::FuncSet { domain: lazy(LazySet::Nat), range: ints(&[1]) });
         assert!(strict_text(&functions).is_err());
         assert!(strict_text(&Value::set(vec![Value::Int(1), Value::str("a")]).unwrap()).is_err());
+    }
+
+    /// tla-ts's NormalizationCases: `ToString` prints a record in the order its fields are
+    /// written, and `Print` normalizes it first, sorting its fields as TLC interned their names.
+    #[test]
+    fn prints_records_as_written_or_normalized() {
+        let later = Symbol::intern("print_order_later");
+        let earlier = Symbol::intern("print_order_earlier");
+        let record = Value::record(vec![(earlier, Value::Int(1)), (later, Value::Int(2))]);
+        let nested = Value::tuple(vec![record.clone()]);
+        assert_eq!(text(&nested), "<<[print_order_earlier |-> 1, print_order_later |-> 2]>>");
+        assert_eq!(
+            normalized_text(&nested).unwrap(),
+            "<<[print_order_later |-> 2, print_order_earlier |-> 1]>>"
+        );
     }
 }
