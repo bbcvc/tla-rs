@@ -211,6 +211,7 @@ pub fn check<S: Successors>(
     runtime.allow_exec(options.allow_exec);
     runtime.set_warnings(!options.nowarning);
     runtime.set_seed(options.seed);
+    runtime.set_variable_order(tlc_order.clone());
     // TLC creates its model checker, whose options TLCGet("config") reads, and computes the
     // constant definitions before it checks the assumptions.
     if let Err(error) = check_substitutions(&evaluator, &substitutions) {

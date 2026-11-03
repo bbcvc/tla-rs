@@ -127,6 +127,9 @@ struct Randomness {
     seed: i64,
     startup: JavaRandom,
     workers: HashMap<ThreadId, Worker>,
+    /// The variables in TLC's order, by their index in the state, which TLC's fingerprint of a
+    /// state follows, if not the order they are declared in.
+    variable_order: Option<Vec<usize>>,
 }
 
 #[derive(Default)]
@@ -153,6 +156,7 @@ impl Default for Runtime {
                 seed: 0,
                 startup: JavaRandom::new(0),
                 workers: HashMap::new(),
+                variable_order: None,
             }),
             started_at: SystemTime::now(),
             cache: Mutex::default(),
@@ -331,6 +335,13 @@ impl Runtime {
         random.workers.values_mut().for_each(|worker| worker.seeded = None);
     }
 
+    /// Gives TLC's order of the variables, by their index in the state, which the fingerprint of
+    /// a state that seeds a random generator follows.
+    pub fn set_variable_order(&self, order: Vec<usize>) {
+        let is_declared = order.iter().enumerate().all(|(position, &index)| position == index);
+        self.random.lock().unwrap().variable_order = (!is_declared).then_some(order);
+    }
+
     pub fn seed(&self) -> i64 {
         self.random.lock().unwrap().seed
     }
@@ -391,7 +402,18 @@ impl Runtime {
         };
         let mut generator = match seeded {
             Some(generator) => generator,
-            None => JavaRandom::new((tlc_fingerprint(&state)? ^ seed as u64) as i64),
+            None => {
+                let order = self.random.lock().unwrap().variable_order.clone();
+                let fingerprint = match order {
+                    Some(order) => {
+                        let values: Vec<Value> =
+                            order.iter().map(|&index| state[index].clone()).collect();
+                        tlc_fingerprint(&values)?
+                    }
+                    None => tlc_fingerprint(&state)?,
+                };
+                JavaRandom::new((fingerprint ^ seed as u64) as i64)
+            }
         };
         let result = choose(&mut generator);
         let mut random = self.random.lock().unwrap();
@@ -459,6 +481,18 @@ mod tests {
         assert_eq!(draw(&runtime), JavaRandom::new(seed).next_int(1000));
         let in_startup = runtime.at_startup(|| draw(&runtime));
         assert_eq!(in_startup, JavaRandom::new(3).next_int(1000));
+    }
+
+    /// TLC fingerprints the state that seeds a generator with its variables in TLC's order.
+    #[test]
+    fn seeds_with_the_state_in_tlcs_variable_order() {
+        let runtime = Runtime::default();
+        runtime.set_seed(3);
+        runtime.set_variable_order(vec![1, 0]);
+        let reversed = [Value::Int(2), Value::Int(1)];
+        let seed = (tlc_fingerprint(&reversed).unwrap() ^ 3) as i64;
+        runtime.set_expanding(Some(Arc::from(vec![Value::Int(1), Value::Int(2)])));
+        assert_eq!(draw(&runtime), JavaRandom::new(seed).next_int(1000));
     }
 
     #[test]
