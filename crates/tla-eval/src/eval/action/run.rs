@@ -7,7 +7,7 @@ use tla_resolve::{DefBody, DefId, Expr, VarId};
 use tla_value::{Symbol, Value};
 
 use super::{Action, Rest, Site};
-use crate::env::{Env, Frame, StateRef};
+use crate::env::{Env, Frame, StateRef, Version};
 use crate::{EvalError, Evaluator, Incomplete, Result, State};
 
 /// What TLC computes when it walks a predicate.
@@ -37,6 +37,10 @@ pub(crate) struct Run<'r> {
     /// assign its variables in place and undo them when they return.
     pub assigned: Vec<Option<Value>>,
     pub unassigned: usize,
+    /// Which values `assigned` holds, so that a thunk caches its value for as long as they last.
+    version: Version,
+    /// The number of versions made so far.
+    versions: u64,
     pub is_stopped: bool,
     /// The definition being enumerated, where an incomplete state is reported.
     def: DefId,
@@ -44,7 +48,7 @@ pub(crate) struct Run<'r> {
 }
 
 impl<'r> Run<'r> {
-    fn new(
+    pub(super) fn new(
         evaluator: &Evaluator,
         computation: Computation,
         current: Option<&'r State>,
@@ -57,6 +61,8 @@ impl<'r> Run<'r> {
             current,
             assigned: vec![None; variables],
             unassigned: variables,
+            version: Version::first(),
+            versions: 0,
             is_stopped: false,
             def,
             found,
@@ -66,7 +72,7 @@ impl<'r> Run<'r> {
     /// The states expressions read: an initial predicate reads the state it assigns, and an
     /// action reads the current state and the next state it assigns.
     pub fn views(&self) -> (Option<StateRef<'_>>, Option<StateRef<'_>>) {
-        let assigned = StateRef::Partial(&self.assigned);
+        let assigned = StateRef::Partial(&self.assigned, self.version);
         match self.computation {
             Computation::Init => (Some(assigned), None),
             Computation::Next | Computation::Enabled => {
@@ -88,9 +94,13 @@ impl<'r> Run<'r> {
     ) -> Result<()> {
         self.assigned[var] = Some(value);
         self.unassigned -= 1;
+        self.versions += 1;
+        let version = self.version;
+        self.version = version.at(self.versions);
         let result = then(self);
         self.assigned[var] = None;
         self.unassigned += 1;
+        self.version = version;
         result
     }
 }
@@ -150,40 +160,47 @@ impl Evaluator {
         action: Action,
         rest: &Rest<'_>,
     ) -> Result<()> {
+        if let Some(error) = self.zero_arity_problem(def) {
+            return Err(error);
+        }
+        // The walk enters the definition the configuration replaces `def` with, as TLC does.
+        if let Some(target) = self.walked(def, 0) {
+            let info = self.spec.def(target);
+            let site = Site {
+                frame: Arc::new(Frame::new(Vec::new(), info.frame_size, None)),
+                module: info.module,
+            };
+            let DefBody::Expr(body) = &info.body else { unreachable!("a walked definition") };
+            return self.act(body, &site, run, action.called(info.name), rest);
+        }
         let info = self.spec.def(def);
-        let problem = if info.depth > 0 {
-            Some(format!("{} is defined inside another definition.", info.name))
-        } else if !info.params.is_empty() {
-            Some(format!("The operator {} requires {} arguments.", info.name, info.params.len()))
-        } else {
-            None
-        };
-        if let Some(message) = problem {
-            return Err(EvalError::at(&self.spec, info.module, info.span, message));
-        }
-        let site = Site {
-            frame: Arc::new(Frame::new(Vec::new(), info.frame_size, None)),
-            module: info.module,
-        };
         let action = action.called(info.name);
-        match &info.body {
-            DefBody::Expr(body) if self.is_walked(def) => self.act(body, &site, run, action, rest),
-            _ => {
-                let (state, next) = run.views();
-                let value = self.call_def(def, None, Vec::new(), state, next)?;
-                if value.as_bool().ok_or_else(|| {
-                    let message = format!(
-                        "In computing {}, TLC expected a boolean expression,\nbut instead found {value}.",
-                        run.computation.name()
-                    );
-                    EvalError::at(&self.spec, info.module, info.span, message)
-                })? {
-                    self.resume(run, action, rest)
-                } else {
-                    Ok(())
-                }
-            }
+        let (state, next) = run.views();
+        let value = self.call_def(def, None, Vec::new(), state, next)?;
+        if value.as_bool().ok_or_else(|| {
+            let message = format!(
+                "In computing {}, TLC expected a boolean expression,\nbut instead found {value}.",
+                run.computation.name()
+            );
+            EvalError::at(&self.spec, info.module, info.span, message)
+        })? {
+            self.resume(run, action, rest)
+        } else {
+            Ok(())
         }
+    }
+
+    /// Why `def` can't be an initial predicate or a next-state relation, if it can't.
+    pub(super) fn zero_arity_problem(&self, def: DefId) -> Option<EvalError> {
+        let info = self.spec.def(def);
+        let message = if info.depth > 0 {
+            format!("{} is defined inside another definition.", info.name)
+        } else if !info.params.is_empty() {
+            format!("The operator {} requires {} arguments.", info.name, info.params.len())
+        } else {
+            return None;
+        };
+        Some(EvalError::at(&self.spec, info.module, info.span, message))
     }
 
     /// Reports the state the walk assigned, which must be complete unless it computes ENABLED.
@@ -214,12 +231,13 @@ impl Evaluator {
         let message = match run.computation {
             Computation::Init => "current state is not a legal state".to_owned(),
             _ => {
-                let next = self.spec.def(run.def).name;
-                let subject = match action {
-                    Some(name) if name != next => {
-                        format!("action {name} of the next-state relation")
-                    }
-                    _ => "the next-state action".to_owned(),
+                // TLC names the action only when it splits the relation into several.
+                let is_split = self.split_next(run.def).is_ok_and(|actions| actions.len() > 1);
+                let subject = if is_split {
+                    let name = action.unwrap_or(self.spec.def(run.def).name);
+                    format!("action {name} of the next-state relation")
+                } else {
+                    "the next-state action".to_owned()
                 };
                 let (noun, verb) =
                     if names.len() > 1 { ("variables", "are") } else { ("variable", "is") };

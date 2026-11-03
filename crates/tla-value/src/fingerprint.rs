@@ -27,8 +27,12 @@ impl Value {
                 name.hash(state);
             }
             Value::Set(elements) => hash_set(elements, state)?,
-            Value::MixedSet(_) | Value::Interval(..) | Value::Lazy(_) => {
-                hash_set(&self.elements()?, state)?
+            Value::MixedSet(_) | Value::Interval(..) => hash_set(&self.elements()?, state)?,
+            Value::Lazy(_) => {
+                let elements = self.elements()?;
+                // TLC's `fingerPrint` of a lazy set caches its elements.
+                self.cache_elements();
+                hash_set(&elements, state)?
             }
             Value::Tuple(items) => {
                 4u8.hash(state);

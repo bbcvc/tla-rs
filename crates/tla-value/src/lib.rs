@@ -15,8 +15,10 @@ mod format;
 mod func;
 mod order;
 mod set;
+mod stream;
 
 use std::fmt;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, OnceLock};
 
 pub use func::Key;
@@ -97,6 +99,10 @@ pub struct Func {
 pub struct LazyFunc {
     pub domain: Value,
     pub apply: Mapping,
+    /// What the function was built from, for an evaluator that reads it back, as TLC walks the
+    /// body of a function of actions that an action applies. `None` for a function the value
+    /// system builds itself.
+    pub source: Option<Arc<dyn std::any::Any + Send + Sync>>,
 }
 
 /// A shared lazy set, with its elements once enumerated, which TLC keeps, as tla-ts's
@@ -108,12 +114,26 @@ pub struct LazySetRef(Arc<LazySetCell>);
 struct LazySetCell {
     set: LazySet,
     elements: OnceLock<Arc<[Value]>>,
+    /// Whether TLC has cached the set's elements, after which it streams them in its order
+    /// rather than streaming the sets it combines. See [`Value::streamed_elements`].
+    cached: AtomicBool,
 }
 
 impl LazySetRef {
     /// The elements, once enumerated.
     pub(crate) fn elements(&self) -> &OnceLock<Arc<[Value]>> {
         &self.0.elements
+    }
+
+    /// Marks the set cached, as TLC caches it.
+    pub(crate) fn cache(&self) {
+        if !self.is_cached() {
+            self.0.cached.store(true, Ordering::Relaxed);
+        }
+    }
+
+    pub(crate) fn is_cached(&self) -> bool {
+        self.0.cached.load(Ordering::Relaxed)
     }
 }
 
@@ -179,7 +199,9 @@ impl Value {
     }
 
     pub fn lazy(set: LazySet) -> Self {
-        Self::Lazy(LazySetRef(Arc::new(LazySetCell { set, elements: OnceLock::new() })))
+        stream::note_lazy(&set);
+        let cell = LazySetCell { set, elements: OnceLock::new(), cached: AtomicBool::new(false) };
+        Self::Lazy(LazySetRef(Arc::new(cell)))
     }
 
     /// The model value `name`, typed if its name is `T_rest`.

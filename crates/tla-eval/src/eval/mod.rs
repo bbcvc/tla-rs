@@ -13,9 +13,10 @@ mod constants;
 mod function;
 
 use tla_ast::{Quantifier, Span};
-use tla_resolve::{DefId, Expr, ExprKind, Local, VarId};
+use tla_resolve::{DefId, Expr, ExprKind, Local, ModuleId, VarId};
 use tla_value::{LazySet, Symbol, Value};
 
+pub use self::action::NextAction;
 pub(crate) use self::analysis::{normalizing_evaluations, recursive_functions, tlc_eval};
 use self::builtin::describe;
 pub(crate) use self::constants::constant_definitions;
@@ -143,9 +144,14 @@ impl Evaluator {
     /// Where an expression is, as SANY describes a location in TLC's messages:
     /// `line 1, col 2 to line 3, col 4 of module M`, the end being the last character.
     pub(crate) fn range(&self, env: &Env<'_>, expr: &Expr) -> String {
-        let module = &self.spec.modules[env.module.index()];
-        let (line, column) = expr.span.line_column(&module.source);
-        let last = expr.span.end.saturating_sub(1).max(expr.span.start) as usize;
+        self.range_of(env.module, expr.span)
+    }
+
+    /// Where `span` of `module` is, as [`Evaluator::range`] describes it.
+    pub(crate) fn range_of(&self, module: ModuleId, span: Span) -> String {
+        let module = &self.spec.modules[module.index()];
+        let (line, column) = span.line_column(&module.source);
+        let last = span.end.saturating_sub(1).max(span.start) as usize;
         let (end_line, end_column) = Span::new(last, last + 1).line_column(&module.source);
         format!(
             "line {line}, col {column} to line {end_line}, col {end_column} of module {}",

@@ -192,7 +192,11 @@ pub(super) fn cardinality(value: &Value) -> Result<i32> {
                 Error(format!("Overflow when computing the number of elements in {value}"))
             })
         }
-        _ => Ok(value.elements()?.len() as i32),
+        _ => {
+            // TLC's `size` of any other lazy set caches its elements.
+            value.cache_elements();
+            Ok(value.elements()?.len() as i32)
+        }
     }
 }
 
