@@ -18,9 +18,9 @@ use tla_value::{LazySet, Symbol, Value};
 
 pub use self::action::NextAction;
 pub(crate) use self::analysis::{
-    InstanceEnabled, cached_lets, has_wide_string_literal, instance_enabled, is_wide, let_reads,
-    mentions_variables, normalizing_evaluations, recursive_constructions, recursive_functions,
-    tlc_eval,
+    InstanceEnabled, cached_lets, cached_state_definitions, has_wide_string_literal,
+    instance_enabled, is_wide, let_reads, mentions_variables, normalizing_evaluations,
+    reads_next_state, recursive_constructions, recursive_functions, tlc_eval,
 };
 use self::builtin::describe;
 pub(crate) use self::constants::constant_definitions;

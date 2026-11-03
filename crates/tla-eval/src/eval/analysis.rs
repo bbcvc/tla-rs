@@ -13,13 +13,34 @@ use tla_resolve::{
 /// which could, is evaluated at each reference, as is one that builds a set with `UNION` or
 /// `\cup`, which TLC builds anew each time (tla-ts `getReevaluatedDefinitions`).
 pub(crate) fn cached_lets(spec: &Spec, is_computed_once: &[bool]) -> Vec<bool> {
+    let purity = Purity { spec, is_computed_once, allows_streamed_sets: false };
     let mut is_pure: Vec<Option<bool>> = vec![None; spec.defs.len()];
     (0..spec.defs.len())
         .map(|index| {
             let def = spec.def(DefId(index as u32));
             def.depth > 0
                 && def.params.is_empty()
-                && is_pure_definition(spec, is_computed_once, DefId(index as u32), &mut is_pure)
+                && purity.is_pure(DefId(index as u32), &mut is_pure)
+        })
+        .collect()
+}
+
+/// Whether each definition is a module-level one without parameters, other than a constant TLC
+/// computes once, whose value the evaluator keeps for the states it reads, by [`DefId`]: one
+/// that a `LET` would keep, by the same rules, as evaluating it again in the same states gives
+/// the same value.
+pub(crate) fn cached_state_definitions(spec: &Spec, is_computed_once: &[bool]) -> Vec<bool> {
+    // A value that holds a set TLC streams isn't kept, so one built with `UNION` or `\cup` can be.
+    let purity = Purity { spec, is_computed_once, allows_streamed_sets: true };
+    let mut is_pure: Vec<Option<bool>> = vec![None; spec.defs.len()];
+    (0..spec.defs.len())
+        .map(|index| {
+            let id = DefId(index as u32);
+            let def = spec.def(id);
+            def.depth == 0
+                && def.params.is_empty()
+                && !is_computed_once[index]
+                && purity.is_pure(id, &mut is_pure)
         })
         .collect()
 }
@@ -89,51 +110,104 @@ fn definition_reads(
     reads
 }
 
-fn is_pure_definition(
-    spec: &Spec,
-    is_computed_once: &[bool],
-    id: DefId,
-    is_pure: &mut Vec<Option<bool>>,
-) -> bool {
-    if let Some(known) = is_pure[id.index()] {
-        return known;
-    }
-    // A definition that refers to itself counts as pure meanwhile.
-    is_pure[id.index()] = Some(true);
-    let def = spec.def(id);
-    let module = spec.modules[def.module.index()].name.as_str();
-    let pure = if crate::stdlib::is_impure(module, def.name.as_str()) {
-        false
-    } else {
-        let mut pending: Vec<&Expr> = match &def.body {
+/// Whether each definition may read the next state, itself or through a definition it applies,
+/// by [`DefId`]: one that primes an expression or holds an action. Unlike SANY's level, which
+/// skips the arguments an operator ignores, this counts every argument.
+pub(crate) fn reads_next_state(spec: &Spec) -> Vec<bool> {
+    fn reads(spec: &Spec, id: DefId, known: &mut Vec<Option<bool>>) -> bool {
+        if let Some(known) = known[id.index()] {
+            return known;
+        }
+        known[id.index()] = Some(false);
+        let mut pending: Vec<&Expr> = match &spec.def(id).body {
             DefBody::Expr(body) => vec![body],
             DefBody::Function { bounds, body } => {
                 bounds.iter().map(|bound| &bound.set).chain([body]).collect()
             }
         };
-        let mut pure = true;
+        let mut found = false;
         while let Some(expr) = pending.pop() {
-            match &expr.kind {
-                ExprKind::CallParam { .. }
-                | ExprKind::Builtin { op: Builtin::Union | Builtin::Cup, .. } => {
-                    pure = false;
-                    break;
+            found = match &expr.kind {
+                ExprKind::Builtin {
+                    op: Builtin::Prime | Builtin::Unchanged | Builtin::Cdot,
+                    ..
                 }
-                ExprKind::Call { def, .. } | ExprKind::OpArg(OpRef::Def { def, .. })
-                    if !is_computed_once[def.index()]
-                        && !is_pure_definition(spec, is_computed_once, *def, is_pure) =>
-                {
-                    pure = false;
-                    break;
+                | ExprKind::BoxAction { .. }
+                | ExprKind::AngleAction { .. } => true,
+                ExprKind::Call { def, .. } | ExprKind::OpArg(OpRef::Def { def, .. }) => {
+                    reads(spec, *def, known)
                 }
-                _ => {}
+                _ => false,
+            };
+            if found {
+                break;
             }
             for_each_child(expr, &mut |child| pending.push(child));
         }
+        known[id.index()] = Some(found);
+        found
+    }
+    let mut known = vec![None; spec.defs.len()];
+    (0..spec.defs.len()).map(|index| reads(spec, DefId(index as u32), &mut known)).collect()
+}
+
+/// What makes evaluating a definition again differ from keeping its value.
+struct Purity<'a> {
+    spec: &'a Spec,
+    is_computed_once: &'a [bool],
+    /// Whether building a set with `UNION` or `\cup` is allowed.
+    allows_streamed_sets: bool,
+}
+
+impl Purity<'_> {
+    /// Whether the definition, and those it applies, have no effects and make no random
+    /// choices: none calls such an operator or applies an operator parameter, which could.
+    fn is_pure(&self, id: DefId, is_pure: &mut Vec<Option<bool>>) -> bool {
+        if let Some(known) = is_pure[id.index()] {
+            return known;
+        }
+        // A definition that refers to itself counts as pure meanwhile.
+        is_pure[id.index()] = Some(true);
+        let spec = self.spec;
+        let def = spec.def(id);
+        let module = spec.modules[def.module.index()].name.as_str();
+        let pure = if crate::stdlib::is_impure(module, def.name.as_str()) {
+            false
+        } else {
+            let mut pending: Vec<&Expr> = match &def.body {
+                DefBody::Expr(body) => vec![body],
+                DefBody::Function { bounds, body } => {
+                    bounds.iter().map(|bound| &bound.set).chain([body]).collect()
+                }
+            };
+            let mut pure = true;
+            while let Some(expr) = pending.pop() {
+                match &expr.kind {
+                    ExprKind::CallParam { .. } => {
+                        pure = false;
+                        break;
+                    }
+                    ExprKind::Builtin { op: Builtin::Union | Builtin::Cup, .. }
+                        if !self.allows_streamed_sets =>
+                    {
+                        pure = false;
+                        break;
+                    }
+                    ExprKind::Call { def, .. } | ExprKind::OpArg(OpRef::Def { def, .. })
+                        if !self.is_computed_once[def.index()] && !self.is_pure(*def, is_pure) =>
+                    {
+                        pure = false;
+                        break;
+                    }
+                    _ => {}
+                }
+                for_each_child(expr, &mut |child| pending.push(child));
+            }
+            pure
+        };
+        is_pure[id.index()] = Some(pure);
         pure
-    };
-    is_pure[id.index()] = Some(pure);
-    pure
+    }
 }
 
 /// Whether `expr` reads a variable, itself or through a definition it applies.
