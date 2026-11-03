@@ -14,7 +14,7 @@ mod stdlib;
 
 use std::sync::Arc;
 
-pub use config::{Model, bind_model, config_value};
+pub use config::{Model, OperatorTable, bind_model, config_value};
 pub use native::{Arg, Ctx, Native, Operator};
 pub use runtime::{Registers, Runtime, Statistics};
 use tla_ast::{Span, Symbol};
@@ -55,6 +55,8 @@ pub enum ConstBinding {
     /// `N <- Def` in the configuration: the constant is replaced by a definition of the root
     /// module.
     Def(DefId),
+    /// `F(1) = 2  F(2) = 3` in the configuration: an operator defined by its values.
+    Table(Arc<OperatorTable>),
 }
 
 /// The variables of one state, by [`tla_resolve::VarId`].

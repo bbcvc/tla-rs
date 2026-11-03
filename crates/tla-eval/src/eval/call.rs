@@ -41,6 +41,9 @@ impl Evaluator {
             return match binding {
                 ConstBinding::Value(value) => Ok(value.clone()),
                 ConstBinding::Def(other) => self.call_def(*other, None, args, state, next),
+                ConstBinding::Table(table) => table
+                    .apply(&args)
+                    .map_err(|error| EvalError::at(&self.spec, info.module, info.span, error.0)),
             };
         }
         if let Some(native) = self.natives[def.index()] {
@@ -86,10 +89,7 @@ impl Evaluator {
         env: &mut Env<'_>,
     ) -> Result<Value> {
         if let Some(binding) = &self.overrides[def.index()] {
-            return match binding {
-                ConstBinding::Value(value) => Ok(value.clone()),
-                ConstBinding::Def(other) => self.call(*other, &Scope::Global, args, expr, env),
-            };
+            return self.call_binding(binding, args, expr, env);
         }
         let info = self.spec.def(def);
         if let Some(native) = self.natives[def.index()] {
@@ -190,15 +190,10 @@ impl Evaluator {
     /// A constant without parameters.
     #[inline(never)]
     pub(super) fn constant(&self, id: ConstId, expr: &Expr, env: &mut Env<'_>) -> Result<Value> {
-        match self.constants.get(id.index()) {
-            Some(ConstBinding::Value(value)) => Ok(value.clone()),
-            Some(ConstBinding::Def(def)) => self.call(*def, &Scope::Global, &[], expr, env),
-            None => Err(self.error(env, expr, self.unbound(id))),
-        }
+        self.call_const(id, &[], expr, env)
     }
 
-    /// `F(args)` for a constant operator `F`. The configuration replaces it by a definition, or
-    /// gives it a value, which TLC takes as the value of `F` applied to any arguments.
+    /// `F(args)` for a constant operator `F`.
     #[inline(never)]
     pub(super) fn call_const(
         &self,
@@ -208,9 +203,27 @@ impl Evaluator {
         env: &mut Env<'_>,
     ) -> Result<Value> {
         match self.constants.get(id.index()) {
-            Some(ConstBinding::Def(def)) => self.call(*def, &Scope::Global, args, expr, env),
-            Some(ConstBinding::Value(value)) => Ok(value.clone()),
+            Some(binding) => self.call_binding(binding, args, expr, env),
             None => Err(self.error(env, expr, self.unbound(id))),
+        }
+    }
+
+    /// Applies what the configuration binds a constant or definition to. TLC takes a value as
+    /// the value of the operator applied to any arguments.
+    fn call_binding(
+        &self,
+        binding: &ConstBinding,
+        args: &[Expr],
+        expr: &Expr,
+        env: &mut Env<'_>,
+    ) -> Result<Value> {
+        match binding {
+            ConstBinding::Value(value) => Ok(value.clone()),
+            ConstBinding::Def(def) => self.call(*def, &Scope::Global, args, expr, env),
+            ConstBinding::Table(table) => {
+                let values = self.eval_all(args, env)?;
+                table.apply(&values).at(self, env, expr)
+            }
         }
     }
 
@@ -300,6 +313,10 @@ impl Evaluator {
                 Some(ConstBinding::Value(value)) => {
                     let value = value.clone();
                     return Ok(Operator::closure(move |_, _| Ok(value.clone())));
+                }
+                Some(ConstBinding::Table(table)) => {
+                    let table = table.clone();
+                    return Ok(Operator::closure(move |_, args| table.apply(args)));
                 }
                 None => return Err(self.error(env, expr, self.unbound(*id))),
             },
