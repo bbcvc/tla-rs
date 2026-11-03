@@ -4,11 +4,12 @@
 //! as TLC's `SpecProcessor` does ([`plan`]), checks the assumptions, explores the states breadth
 //! first ([`search`]), and reports what TLC would: success with the states generated, the
 //! distinct states, and the depth of the search, or the violation and the behavior that leads to
-//! it. Liveness isn't checked yet: a model's temporal properties are left out, and its safety
-//! part is checked.
+//! it. It checks the temporal properties as TLC does with `-lncheck final`, once the search is
+//! done.
 
 mod fingerprint;
 mod level;
+mod liveness;
 pub mod plan;
 mod postcondition;
 pub mod search;
@@ -28,15 +29,30 @@ use tla_resolve::{ModuleId, Spec};
 pub use crate::plan::{Check, Plan};
 pub use crate::search::{Ending, Successors};
 
-/// A model TLC rejects before it explores any state, with TLC's wording.
+/// A model TLC rejects before it explores any state, with TLC's wording, or one that uses what
+/// the checker doesn't support.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Error {
     pub message: String,
+    pub is_unsupported: bool,
 }
 
 impl Error {
     pub fn config(message: impl Into<String>) -> Self {
-        Self { message: message.into() }
+        Self { message: message.into(), is_unsupported: false }
+    }
+
+    pub fn unsupported(message: impl Into<String>) -> Self {
+        Self { message: message.into(), is_unsupported: true }
+    }
+}
+
+impl From<Error> for Outcome {
+    fn from(error: Error) -> Self {
+        match error.is_unsupported {
+            true => Outcome::unsupported(error.message),
+            false => Outcome::error(error.message),
+        }
     }
 }
 
@@ -56,6 +72,8 @@ pub enum Status {
     /// such as `[][A]_v`, as a liveness violation.
     LivenessViolation,
     Deadlock,
+    /// A temporal property TLC finds violated as it builds the behavior graph.
+    PropertyViolation,
     /// A postcondition failed once the search ended, or a `_POSSIBLE` predicate was never
     /// witnessed. TLC exits as for a violated assumption.
     PostconditionViolation,
@@ -73,6 +91,7 @@ impl Status {
             Status::InvariantViolation => "invariant-violation",
             Status::LivenessViolation => "liveness-violation",
             Status::Deadlock => "deadlock",
+            Status::PropertyViolation => "property-violation",
             Status::PostconditionViolation => "postcondition-violation",
             Status::Error => "error",
             Status::Unsupported => "unsupported",
@@ -93,8 +112,6 @@ pub struct Outcome {
     pub depth: Option<u64>,
     /// The error, or what the model uses that isn't supported.
     pub message: Option<String>,
-    /// Whether the model has temporal properties the checker left out.
-    pub has_liveness: bool,
 }
 
 impl Outcome {
@@ -107,7 +124,6 @@ impl Outcome {
             distinct: None,
             depth: None,
             message: None,
-            has_liveness: false,
         }
     }
 
@@ -132,6 +148,9 @@ pub struct Options {
     /// The Java class files beside the spec, by the name of the module whose operators TLC
     /// overrides with their public static methods.
     pub classes: HashMap<String, Vec<u8>>,
+    /// TLC's order of the variables ([`tla_resolve::tlc_variable_order`]), which TLC's
+    /// fingerprint of a state follows. Without it, the order they are declared in.
+    pub variable_order: Option<Vec<String>>,
     /// TLC's `-nowarning`, which also changes how many states a disjunction in an action
     /// generates once every variable has a value. TLC records its expected results with it.
     pub nowarning: bool,
@@ -169,9 +188,10 @@ pub fn check<S: Successors>(
         .collect();
     let mut plan = match plan::plan(&mut spec, config, &overrides) {
         Ok(plan) => plan,
-        Err(error) => return Outcome::error(error.message),
+        Err(error) => return error.into(),
     };
     let has_variables = !spec.variables.is_empty();
+    let tlc_order = tlc_order(&spec, options.variable_order.as_deref());
     let assumptions = spec.assumptions.clone();
     let substitutions: Vec<_> = model
         .constants
@@ -206,23 +226,38 @@ pub fn check<S: Successors>(
             Ok(fingerprinter) => fingerprinter,
             Err(error) => return Outcome::error(error.message),
         };
+    // TLC builds the liveness checker, which translates the temporal formulas, before it
+    // checks the assumptions, and only for a spec with variables.
+    let liveness = match has_variables {
+        true => match liveness::checker::Checker::new(&evaluator, &plan.properties, &plan.fairness)
+        {
+            Ok(liveness) => liveness,
+            Err(message) => return Outcome::error(message),
+        },
+        false => None,
+    };
     if let Some(outcome) = check_assumptions(&evaluator, &assumptions) {
         return outcome;
     }
-    let has_liveness = !plan.liveness.is_empty() || plan.temporals > 0;
     if !has_variables {
-        let outcome = Outcome {
+        return Outcome {
             generated: Some(0),
             distinct: Some(0),
             depth: Some(0),
             ..Outcome::new(Status::Success)
         };
-        return Outcome { has_liveness, ..outcome };
     }
     let successors = successors(&evaluator);
-    let searched =
-        search::search(&successors, &evaluator, &plan, &fingerprinter, config.check_deadlock);
-    let mut outcome = match searched.ending {
+    let searched = search::search(
+        &successors,
+        &evaluator,
+        &plan,
+        &fingerprinter,
+        config.check_deadlock,
+        &tlc_order,
+        liveness,
+    );
+    match searched.ending {
         Ending::Success => postcondition::check(&evaluator, &plan).unwrap_or(Outcome {
             generated: Some(searched.generated),
             distinct: Some(searched.distinct),
@@ -242,10 +277,16 @@ pub fn check<S: Successors>(
         Ending::Deadlock => {
             Outcome { trace_length: Some(searched.trace_length), ..Outcome::new(Status::Deadlock) }
         }
+        Ending::LivenessViolation => Outcome {
+            trace_length: Some(searched.trace_length),
+            ..Outcome::new(Status::LivenessViolation)
+        },
+        Ending::TemporalViolation => Outcome {
+            trace_length: Some(searched.trace_length),
+            ..Outcome::new(Status::PropertyViolation)
+        },
         Ending::Error(message) => Outcome::error(message),
-    };
-    outcome.has_liveness = has_liveness;
-    outcome
+    }
 }
 
 /// TLC's check of the definitions the configuration substitutes for constants, as in `C <- Foo`,
@@ -270,6 +311,20 @@ fn check_substitutions(
         }
     }
     Ok(())
+}
+
+/// The index of each variable of `spec` in TLC's `order` of the variables, those it doesn't
+/// name last.
+fn tlc_order(spec: &Spec, order: Option<&[String]>) -> Vec<usize> {
+    let mut indices: Vec<usize> = (0..spec.variables.len()).collect();
+    if let Some(order) = order {
+        let position = |index: &usize| {
+            let name = spec.variables[*index].name.as_str();
+            order.iter().position(|known| known == name).unwrap_or(order.len())
+        };
+        indices.sort_by_key(position);
+    }
+    indices
 }
 
 /// TLC's checks of the constant-level parts of the spec and the configuration, as it processes

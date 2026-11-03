@@ -22,7 +22,7 @@ use std::collections::{HashMap, HashSet};
 use std::rc::Rc;
 
 pub use ir::*;
-pub use order::tlc_string_order;
+pub use order::{tlc_string_order, tlc_variable_order};
 use tla_ast::{Span, Symbol};
 
 use crate::expr::FrameScope;

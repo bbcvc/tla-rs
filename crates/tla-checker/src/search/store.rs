@@ -34,10 +34,16 @@ impl Store {
     }
 
     pub fn contains(&self, fingerprint: u128) -> bool {
+        self.find(fingerprint).is_some()
+    }
+
+    /// The index of the state with `fingerprint`.
+    pub fn find(&self, fingerprint: u128) -> Option<usize> {
         let fingerprints = &self.fingerprints;
-        self.table
-            .find(fingerprint as u64, |&index| fingerprints[index as usize] == fingerprint)
-            .is_some()
+        let found = self
+            .table
+            .find(fingerprint as u64, |&index| fingerprints[index as usize] == fingerprint);
+        found.map(|&index| index as usize)
     }
 
     /// Adds a state not found before, and returns its index.

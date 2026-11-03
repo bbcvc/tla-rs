@@ -21,10 +21,14 @@ pub use eval::NextAction;
 pub use java::{JavaOverrideError, java_overrides};
 pub use native::{Arg, Ctx, Native, Operator};
 pub use runtime::{CheckerOptions, Registers, Runtime, Statistics};
-pub use stdlib::tlc::tlc_fingerprint;
 use tla_ast::{Span, Symbol};
 use tla_resolve::{DefId, ModuleId, Spec, VarId};
 pub use tla_value::{self as value, Value};
+
+/// TLC's fingerprint of a state (`TLCStateMut#fingerPrint`), of its values in order.
+pub fn tlc_fingerprint(values: &[Value]) -> std::result::Result<u64, String> {
+    stdlib::tlc::tlc_fingerprint(values).map_err(|error| error.0)
+}
 
 /// An evaluation error at a place in a module.
 #[derive(Clone, Debug, PartialEq, Eq, thiserror::Error)]
@@ -253,6 +257,19 @@ impl Evaluator {
     /// as a constant expression when there is no state.
     pub fn eval_def(&self, def: DefId, state: Option<&State>) -> Result<Value> {
         self.eval_zero_arity(def, state, None)
+    }
+
+    /// Evaluates a module-level definition without parameters with some slots of its frame
+    /// bound to values, as the variables of a quantifier the model checker unrolls over a
+    /// constant set, in `state` and on the step to `next` when they are given.
+    pub fn eval_bound(
+        &self,
+        def: DefId,
+        bound: &[(usize, Value)],
+        state: Option<&State>,
+        next: Option<&State>,
+    ) -> Result<Value> {
+        self.eval_with_slots(def, bound, state, next)
     }
 
     /// Evaluates a definition without parameters, such as an action or an action property, on
