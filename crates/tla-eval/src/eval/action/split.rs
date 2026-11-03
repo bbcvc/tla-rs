@@ -1,0 +1,278 @@
+//! TLC's split of a next-state relation into the actions it names in a behavior, in
+//! `TLCGet("action")`, and in coverage: `Tool.getActions`, ported from tla-ts's `getActions` in
+//! `spec-description.ts`.
+//!
+//! The split follows the relation through disjunctions, through `\E` over sets it can compute
+//! as constants, one action for each witness, and into the definitions it calls with constant
+//! arguments. Anything else is an action, named after the definition it is in, with the values
+//! of that definition's parameters.
+
+use std::sync::Arc;
+
+use tla_ast::{Quantifier, Span};
+use tla_resolve::{Builtin, DefBody, DefId, Expr, ExprKind, Scope};
+use tla_value::{Symbol, Value};
+
+use super::run::{Computation, Run};
+use super::{Action, Rest, Site};
+use crate::env::{Env, Frame, Slot, SpecRef};
+use crate::eval::analysis::is_constant;
+use crate::{Evaluator, Result, State};
+
+/// One of the actions TLC splits a next-state relation into.
+///
+/// TLC keeps a call of a definition of a module instantiated with substitutions whole, names it
+/// as SANY does, `I!Op`, and places it at the `INSTANCE`. The resolved spec keeps neither the
+/// instance's name nor where the `INSTANCE` is, so such an action is named after the definition
+/// and placed at the call.
+#[derive(Clone)]
+pub struct NextAction {
+    /// The definition TLC names the action after: the one whose body holds it.
+    pub name: Symbol,
+    /// The values of the parameters of that definition, which TLC prints after the name.
+    pub parameters: Vec<Value>,
+    /// Where the action is: its expression, or the call TLC doesn't split further.
+    pub module: tla_resolve::ModuleId,
+    pub span: Span,
+    /// The relation split.
+    pub(crate) next: DefId,
+    pub(crate) body: Body,
+}
+
+#[derive(Clone)]
+pub(crate) enum Body {
+    /// The relation's definition, which TLC evaluates rather than walks.
+    Definition,
+    Expr {
+        expr: SpecRef<Expr>,
+        site: Site,
+    },
+}
+
+impl NextAction {
+    /// TLC's `Action.getInvocationSignature`: the name and the values of the parameters, as in
+    /// `Send(1,2)`.
+    pub fn signature(&self) -> String {
+        if self.parameters.is_empty() {
+            return self.name.to_string();
+        }
+        let values: Vec<String> = self.parameters.iter().map(Value::to_string).collect();
+        format!("{}({})", self.name, values.join(","))
+    }
+}
+
+/// The definition whose body the split is in.
+struct Closure {
+    name: Symbol,
+    params: usize,
+}
+
+impl Evaluator {
+    /// TLC's split of the zero-arity action definition `next` into the actions it names, in
+    /// TLC's order. TLC computes it once, when it starts, so the evaluator keeps it.
+    pub(crate) fn split_next(&self, next: DefId) -> Result<Arc<[NextAction]>> {
+        if let Some(actions) = self.lock_actions().get(&next) {
+            return Ok(actions.clone());
+        }
+        let actions: Arc<[NextAction]> = self.split_definition(next)?.into();
+        Ok(self.lock_actions().entry(next).or_insert(actions).clone())
+    }
+
+    fn lock_actions(
+        &self,
+    ) -> std::sync::MutexGuard<'_, std::collections::HashMap<DefId, Arc<[NextAction]>>> {
+        self.next_actions.lock().unwrap_or_else(std::sync::PoisonError::into_inner)
+    }
+
+    fn split_definition(&self, next: DefId) -> Result<Vec<NextAction>> {
+        if let Some(error) = self.zero_arity_problem(next) {
+            return Err(error);
+        }
+        let info = self.spec.def(next);
+        let site = Site {
+            frame: Arc::new(Frame::new(Vec::new(), info.frame_size, None)),
+            module: info.module,
+        };
+        let (DefBody::Expr(body), true) = (&info.body, self.is_walked(next)) else {
+            let action = NextAction {
+                name: info.name,
+                parameters: Vec::new(),
+                module: info.module,
+                span: info.span,
+                next,
+                body: Body::Definition,
+            };
+            return Ok(vec![action]);
+        };
+        let mut actions = Vec::new();
+        let closure = Closure { name: info.name, params: 0 };
+        self.split(body, &site, &closure, next, &mut actions);
+        Ok(actions)
+    }
+
+    fn split(
+        &self,
+        expr: &Expr,
+        site: &Site,
+        closure: &Closure,
+        next: DefId,
+        actions: &mut Vec<NextAction>,
+    ) {
+        match &expr.kind {
+            ExprKind::Or(items) | ExprKind::Builtin { op: Builtin::Or, args: items } => {
+                for item in items {
+                    self.split(item, site, closure, next, actions);
+                }
+            }
+            ExprKind::Quant { quantifier: Quantifier::Exists, bounds, body } => {
+                let start = actions.len();
+                let result =
+                    self.variables(bounds, &mut constant_env(site)).and_then(|variables| {
+                        self.for_each_bound_site(&variables, site, |bound| {
+                            self.split(body, bound, closure, next, actions);
+                            Ok(true)
+                        })
+                    });
+                // TLC takes an `\E` it can't enumerate as a constant, or one without witnesses,
+                // for a single action.
+                if result.is_err() || actions.len() == start {
+                    actions.truncate(start);
+                    actions.push(self.split_action(expr, site, closure, next));
+                }
+            }
+            ExprKind::Call { def, scope, args } => {
+                self.split_call(*def, scope, args, expr, site, closure, next, actions);
+            }
+            _ => actions.push(self.split_action(expr, site, closure, next)),
+        }
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn split_call(
+        &self,
+        def: DefId,
+        scope: &Scope,
+        args: &[Expr],
+        expr: &Expr,
+        site: &Site,
+        closure: &Closure,
+        next: DefId,
+        actions: &mut Vec<NextAction>,
+    ) {
+        let info = self.spec.def(def);
+        if !self.is_walked(def) || args.len() != info.params.len() {
+            actions.push(self.split_action(expr, site, closure, next));
+            return;
+        }
+        let call = |parameters: Vec<Value>| NextAction {
+            name: info.name,
+            parameters,
+            module: site.module,
+            span: expr.span,
+            next,
+            body: Body::Expr { expr: self.spec_ref(expr), site: site.clone() },
+        };
+        let are_constant = args.iter().all(|arg| is_constant(&self.spec, arg));
+        // TLC keeps an action of a module instantiated with substitutions whole, with the values
+        // of constant arguments.
+        if info.is_instantiated {
+            let values = if are_constant { self.constant_values(args, site) } else { None };
+            actions.push(call(values.unwrap_or_default()));
+            return;
+        }
+        if !are_constant || self.is_constant_definition(def) {
+            actions.push(call(Vec::new()));
+            return;
+        }
+        let Some(values) = self.constant_values(args, site) else {
+            actions.push(call(Vec::new()));
+            return;
+        };
+        let Ok(parent) = self.scope_frame(scope, &constant_env(site)) else {
+            actions.push(call(Vec::new()));
+            return;
+        };
+        let DefBody::Expr(body) = &info.body else { unreachable!("a walked definition") };
+        let slots = values.into_iter().map(Slot::Value).collect();
+        let callee = Site {
+            frame: Arc::new(Frame::new(slots, info.frame_size, parent)),
+            module: info.module,
+        };
+        let closure = Closure { name: info.name, params: info.params.len() };
+        self.split(body, &callee, &closure, next, actions);
+    }
+
+    /// The values of `args`, if TLC computes them as constants.
+    fn constant_values(&self, args: &[Expr], site: &Site) -> Option<Vec<Value>> {
+        let mut env = constant_env(site);
+        args.iter().map(|arg| self.eval(arg, &mut env).ok()).collect()
+    }
+
+    /// Whether `def` is a definition TLC computes as a constant when it starts, which it
+    /// doesn't split.
+    fn is_constant_definition(&self, def: DefId) -> bool {
+        let info = self.spec.def(def);
+        info.depth == 0
+            && info.params.is_empty()
+            && matches!(&info.body, DefBody::Expr(body)
+                if !matches!(body.kind, ExprKind::Int(_) | ExprKind::Str(_)))
+            && self.spec.level(def) == tla_resolve::Level::Constant
+            && self.call_def(def, None, Vec::new(), None, None).is_ok()
+    }
+
+    /// The action `expr` of `site` in `closure`, named after the closure.
+    fn split_action(&self, expr: &Expr, site: &Site, closure: &Closure, next: DefId) -> NextAction {
+        let parameters = site.frame.slots[..closure.params]
+            .iter()
+            .filter_map(|slot| match slot {
+                Slot::Value(value) => Some(value.clone()),
+                _ => None,
+            })
+            .collect();
+        NextAction {
+            name: closure.name,
+            parameters,
+            module: site.module,
+            span: expr.span,
+            next,
+            body: Body::Expr { expr: self.spec_ref(expr), site: site.clone() },
+        }
+    }
+
+    fn spec_ref(&self, expr: &Expr) -> SpecRef<Expr> {
+        // SAFETY: the split walks expressions of this evaluator's spec.
+        unsafe { SpecRef::new(&self.spec, expr) }
+    }
+
+    /// The successors of `state` under `action` alone, in TLC's order, repeats included.
+    pub(crate) fn enumerate_action(
+        &self,
+        action: &NextAction,
+        state: &State,
+        found: &mut dyn FnMut(State) -> Result<bool>,
+    ) -> Result<()> {
+        let Body::Expr { expr, site } = &action.body else {
+            return self.enumerate_next(action.next, state, found);
+        };
+        let mut run = Run::new(self, Computation::Next, Some(state), action.next, Some(found));
+        let named = Action::default().called(action.name);
+        self.act(expr.get(), site, &mut run, named, &Rest::Done)
+    }
+
+    /// TLC's `Action.getLocation`: the signature and the range of the action.
+    pub(crate) fn label_action(&self, action: &NextAction) -> String {
+        format!("{} {}", action.signature(), self.range_of(action.module, action.span))
+    }
+}
+
+/// The context TLC splits the relation in: without states, so that an expression that reads a
+/// variable fails.
+fn constant_env(site: &Site) -> Env<'static> {
+    Env {
+        frame: site.frame.clone(),
+        module: site.module,
+        state: None,
+        next: None,
+        keep_lazy: false,
+    }
+}

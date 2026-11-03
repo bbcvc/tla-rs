@@ -48,7 +48,7 @@ pub(crate) struct Run<'r> {
 }
 
 impl<'r> Run<'r> {
-    fn new(
+    pub(super) fn new(
         evaluator: &Evaluator,
         computation: Computation,
         current: Option<&'r State>,
@@ -160,17 +160,10 @@ impl Evaluator {
         action: Action,
         rest: &Rest<'_>,
     ) -> Result<()> {
-        let info = self.spec.def(def);
-        let problem = if info.depth > 0 {
-            Some(format!("{} is defined inside another definition.", info.name))
-        } else if !info.params.is_empty() {
-            Some(format!("The operator {} requires {} arguments.", info.name, info.params.len()))
-        } else {
-            None
-        };
-        if let Some(message) = problem {
-            return Err(EvalError::at(&self.spec, info.module, info.span, message));
+        if let Some(error) = self.zero_arity_problem(def) {
+            return Err(error);
         }
+        let info = self.spec.def(def);
         let site = Site {
             frame: Arc::new(Frame::new(Vec::new(), info.frame_size, None)),
             module: info.module,
@@ -194,6 +187,19 @@ impl Evaluator {
                 }
             }
         }
+    }
+
+    /// Why `def` can't be an initial predicate or a next-state relation, if it can't.
+    pub(super) fn zero_arity_problem(&self, def: DefId) -> Option<EvalError> {
+        let info = self.spec.def(def);
+        let message = if info.depth > 0 {
+            format!("{} is defined inside another definition.", info.name)
+        } else if !info.params.is_empty() {
+            format!("The operator {} requires {} arguments.", info.name, info.params.len())
+        } else {
+            return None;
+        };
+        Some(EvalError::at(&self.spec, info.module, info.span, message))
     }
 
     /// Reports the state the walk assigned, which must be complete unless it computes ENABLED.
@@ -224,12 +230,13 @@ impl Evaluator {
         let message = match run.computation {
             Computation::Init => "current state is not a legal state".to_owned(),
             _ => {
-                let next = self.spec.def(run.def).name;
-                let subject = match action {
-                    Some(name) if name != next => {
-                        format!("action {name} of the next-state relation")
-                    }
-                    _ => "the next-state action".to_owned(),
+                // TLC names the action only when it splits the relation into several.
+                let is_split = self.split_next(run.def).is_ok_and(|actions| actions.len() > 1);
+                let subject = if is_split {
+                    let name = action.unwrap_or(self.spec.def(run.def).name);
+                    format!("action {name} of the next-state relation")
+                } else {
+                    "the next-state action".to_owned()
                 };
                 let (noun, verb) =
                     if names.len() > 1 { ("variables", "are") } else { ("variable", "is") };

@@ -566,3 +566,147 @@ fn streams_a_union_until_tlc_caches_it() {
     assert_eq!(counts("UNION {UNION (SUBSET {{1}, {1, 2}}), {1}}"), (8, 3));
     assert_eq!(counts("UNION {{1}, UNION (SUBSET {{1}, {1, 2}})}"), (6, 3));
 }
+
+fn labels(source: &str) -> Vec<String> {
+    let evaluator = evaluator(source);
+    let actions = evaluator.next_actions(def(&evaluator, "Next")).unwrap();
+    actions.iter().map(|action| evaluator.action_label(action)).collect()
+}
+
+const SPLIT: &str = r#"---- MODULE M ----
+EXTENDS Naturals
+VARIABLES x, y
+Init == x = 0 /\ y = 0
+A(i) == x' = i /\ y' = y
+B == \/ x' = x + 1 /\ y' = y
+     \/ y' = 2 /\ x' = x
+Next == \/ \E i \in 1..2 : A(i)
+        \/ B
+        \/ \E j \in {x} : x' = j /\ y' = y
+        \/ \E k \in {} : x' = k /\ y' = y
+====
+"#;
+
+#[test]
+fn splits_the_next_state_relation_as_tlc_does() {
+    assert_eq!(
+        labels(SPLIT),
+        [
+            "A(1) line 5, col 9 to line 5, col 24 of module M",
+            "A(2) line 5, col 9 to line 5, col 24 of module M",
+            "B line 6, col 9 to line 6, col 28 of module M",
+            "B line 7, col 9 to line 7, col 24 of module M",
+            "Next line 10, col 12 to line 10, col 42 of module M",
+            "Next line 11, col 12 to line 11, col 41 of module M",
+        ]
+    );
+    let calls = r#"---- MODULE M ----
+EXTENDS Naturals
+VARIABLES x, y
+Init == x = 0 /\ y = 0
+C == 3
+T == TRUE
+A(i, j) == LET L(k) == x' = k \/ x' = j IN L(i) /\ y' = y
+Next == \/ A(1, 2)
+        \/ A(x, 2)
+        \/ T
+        \/ C = 3 /\ UNCHANGED <<x, y>>
+====
+"#;
+    assert_eq!(
+        labels(calls),
+        [
+            "A(1,2) line 7, col 44 to line 7, col 57 of module M",
+            "A line 9, col 12 to line 9, col 18 of module M",
+            "T line 10, col 12 to line 10, col 12 of module M",
+            "Next line 11, col 12 to line 11, col 38 of module M",
+        ]
+    );
+    let single = "---- MODULE M ----\nVARIABLES x\nInit == x = 0\nNext == x' = 1\n====\n";
+    assert_eq!(labels(single), ["Next line 4, col 9 to line 4, col 14 of module M"]);
+}
+
+#[test]
+fn shares_the_split_across_threads() {
+    fn is_send_sync<T: Send + Sync>() {}
+    is_send_sync::<crate::NextAction>();
+}
+
+#[test]
+fn generates_the_successors_of_each_action_of_the_split() {
+    let evaluator = evaluator(SPLIT);
+    let current = state(vec![Value::Int(0), Value::Int(0)]);
+    let actions = evaluator.next_actions(def(&evaluator, "Next")).unwrap();
+    let mut each = Vec::new();
+    for action in actions.iter() {
+        evaluator
+            .action_states(action, &current, &mut |state| {
+                each.push(format!("{}: {}", action.signature(), printed(&state)));
+                Ok(true)
+            })
+            .unwrap();
+    }
+    assert_eq!(each, ["A(1): 1, 0", "A(2): 2, 0", "B: 1, 0", "B: 0, 2", "Next: 0, 0"]);
+    let all = next_states(&evaluator, "Next", &current).unwrap();
+    assert_eq!(all, ["1, 0", "2, 0", "1, 0", "0, 2", "0, 0"]);
+}
+
+#[test]
+fn names_the_action_of_an_incomplete_successor_when_the_relation_has_several() {
+    let source = |next: &str| {
+        format!(
+            "---- MODULE M ----\nVARIABLES x, y, z\nInit == x = 0 /\\ y = 0 /\\ z = 0\nA1 == x' = 1\nA2 == x' = 2 /\\ y' = 2 /\\ z' = 2\nNext == {next}\n====\n"
+        )
+    };
+    let message = |next: &str| {
+        let evaluator = evaluator(&source(next));
+        let current = state(vec![Value::Int(0), Value::Int(0), Value::Int(0)]);
+        next_states(&evaluator, "Next", &current).unwrap_err().message
+    };
+    assert_eq!(
+        message("x' = 1 /\\ y' = 1"),
+        "Successor state is not completely specified by the next-state action. The following variable is not defined: z."
+    );
+    assert_eq!(
+        message("A1"),
+        "Successor state is not completely specified by the next-state action. The following variables are not defined: y, z."
+    );
+    assert_eq!(
+        message("A1 \\/ A2"),
+        "Successor state is not completely specified by action A1 of the next-state relation. The following variables are not defined: y, z."
+    );
+    let evaluator = evaluator(&source("A1 \\/ A2"));
+    let actions = evaluator.next_actions(def(&evaluator, "Next")).unwrap();
+    let label = evaluator.action_label(&actions[0]);
+    assert_eq!(label, "A1 line 4, col 7 to line 4, col 12 of module M");
+}
+
+#[test]
+fn keeps_an_action_of_an_instance_whole() {
+    let inner = "---- MODULE Counter ----\nEXTENDS Naturals\nVARIABLE v\nInc == v' = v + 1\nDec(n) == v' = v - n\nBoth == Inc \\/ Dec(2)\n====\n";
+    let source = "---- MODULE M ----\nEXTENDS Naturals\nVARIABLE x\nI == INSTANCE Counter WITH v <- x\nInit == x = 0\nNext == I!Inc \\/ I!Dec(1) \\/ I!Dec(x) \\/ I!Both\n====\n";
+    let spec = tla_resolve::resolve(source, &mut |name: &str| {
+        (name == "Counter").then(|| inner.to_owned())
+    })
+    .unwrap();
+    let evaluator = Evaluator::new(Arc::new(spec), Vec::new());
+    let actions = evaluator.next_actions(def(&evaluator, "Next")).unwrap();
+    // TLC names these I!Inc, I!Dec(1), I!Dec, and I!Both, at the INSTANCE but for I!Dec(x).
+    let signatures: Vec<String> = actions.iter().map(|action| action.signature()).collect();
+    assert_eq!(signatures, ["Inc", "Dec(1)", "Dec", "Both"]);
+    assert_eq!(
+        evaluator.action_label(&actions[2]),
+        "Dec line 6, col 30 to line 6, col 37 of module M"
+    );
+    let current = state(vec![Value::Int(5)]);
+    let mut successors = Vec::new();
+    for action in actions.iter() {
+        evaluator
+            .action_states(action, &current, &mut |state| {
+                successors.push(printed(&state));
+                Ok(true)
+            })
+            .unwrap();
+    }
+    assert_eq!(successors, ["6", "4", "0", "6", "3"]);
+}

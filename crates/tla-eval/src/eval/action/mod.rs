@@ -11,6 +11,7 @@
 mod apply;
 mod assign;
 mod run;
+mod split;
 
 use std::sync::Arc;
 
@@ -20,6 +21,7 @@ use tla_value::{Symbol, Value};
 
 pub(crate) use self::run::Computation;
 use self::run::{Run, env};
+pub use self::split::NextAction;
 use super::bound::{Variable, bind_frame};
 use super::describe;
 use crate::env::{Frame, Slot};
@@ -29,7 +31,7 @@ use crate::{ConstBinding, EvalError, Evaluator, Result};
 /// Where an action expression is: the frame it reads its parameters and bound variables from,
 /// and the module whose text holds it.
 #[derive(Clone)]
-pub(super) struct Site {
+pub(crate) struct Site {
     pub frame: Arc<Frame>,
     pub module: ModuleId,
 }
@@ -355,13 +357,30 @@ impl Evaluator {
     }
 
     /// Binds the variables to each combination of their elements in a copy of the frame of
-    /// `site`, the first variable varying fastest, and visits each.
+    /// `site`, the first variable varying fastest, and visits each until the run stops.
     fn for_each_site(
         &self,
         variables: &[Variable<'_>],
         site: &Site,
         run: &mut Run<'_>,
         mut visit: impl FnMut(&Self, &mut Run<'_>, &Site) -> Result<()>,
+    ) -> Result<()> {
+        self.for_each_bound_site(variables, site, |bound| {
+            if run.is_stopped {
+                return Ok(false);
+            }
+            visit(self, run, bound)?;
+            Ok(true)
+        })
+    }
+
+    /// Binds the variables to each combination of their elements in a copy of the frame of
+    /// `site`, the first variable varying fastest, and visits each until `visit` returns false.
+    fn for_each_bound_site(
+        &self,
+        variables: &[Variable<'_>],
+        site: &Site,
+        mut visit: impl FnMut(&Site) -> Result<bool>,
     ) -> Result<()> {
         if variables.iter().any(|variable| variable.elements.len() == 0) {
             return Ok(());
@@ -376,10 +395,9 @@ impl Evaluator {
             bind(&mut bound, variable, 0)?;
         }
         loop {
-            if run.is_stopped {
+            if !visit(&bound)? {
                 return Ok(());
             }
-            visit(self, run, &bound)?;
             let mut position = 0;
             loop {
                 let Some(variable) = variables.get(position) else { return Ok(()) };

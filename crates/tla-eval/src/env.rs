@@ -237,6 +237,12 @@ pub(crate) struct SpecRef<T: ?Sized> {
 unsafe impl<T: Sync + ?Sized> Send for SpecRef<T> {}
 unsafe impl<T: Sync + ?Sized> Sync for SpecRef<T> {}
 
+impl<T: ?Sized> Clone for SpecRef<T> {
+    fn clone(&self) -> Self {
+        Self { spec: self.spec.clone(), item: self.item }
+    }
+}
+
 impl<T: ?Sized> SpecRef<T> {
     /// # Safety
     ///

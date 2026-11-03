@@ -12,10 +12,11 @@ mod native;
 mod runtime;
 mod stdlib;
 
-use std::collections::HashSet;
-use std::sync::Arc;
+use std::collections::{HashMap, HashSet};
+use std::sync::{Arc, Mutex};
 
 pub use config::{Model, OperatorTable, bind_model, config_value};
+pub use eval::NextAction;
 pub use native::{Arg, Ctx, Native, Operator};
 pub use runtime::{CheckerOptions, Registers, Runtime, Statistics};
 use tla_ast::{Span, Symbol};
@@ -97,6 +98,8 @@ pub struct Evaluator {
     /// TLC's `TLCEval`, and the applications of it whose argument TLC normalizes, by address.
     pub(crate) tlc_eval: Option<DefId>,
     pub(crate) normalizing_evaluations: Arc<HashSet<usize>>,
+    /// TLC's split of each next-state relation split so far into actions.
+    pub(crate) next_actions: Arc<Mutex<HashMap<DefId, Arc<[NextAction]>>>>,
 }
 
 impl Evaluator {
@@ -137,6 +140,7 @@ impl Evaluator {
             is_recursive,
             tlc_eval,
             normalizing_evaluations,
+            next_actions: Arc::default(),
         }
     }
 
@@ -207,5 +211,34 @@ impl Evaluator {
         found: &mut dyn FnMut(State) -> Result<bool>,
     ) -> Result<()> {
         self.enumerate_next(next, state, found)
+    }
+
+    /// TLC's split of the zero-arity action definition `next` into the actions it names in a
+    /// behavior (`Tool.getActions`), in TLC's order: the disjuncts of the relation, one action
+    /// for each witness of an `\E` over a set TLC computes as a constant, and the bodies of the
+    /// definitions it calls with constant arguments. TLC computes the split once, when it
+    /// starts, and so does the evaluator, which keeps it for later calls.
+    ///
+    /// A report of a successor the relation leaves incomplete names the action when there are
+    /// several: [`Incomplete::action`] is the [`NextAction::name`] of the one that left it.
+    pub fn next_actions(&self, next: DefId) -> Result<Arc<[NextAction]>> {
+        self.split_next(next)
+    }
+
+    /// Each successor of `state` under one action of a split of the next-state relation, in
+    /// TLC's order, repeats included.
+    pub fn action_states(
+        &self,
+        action: &NextAction,
+        state: &State,
+        found: &mut dyn FnMut(State) -> Result<bool>,
+    ) -> Result<()> {
+        self.enumerate_action(action, state, found)
+    }
+
+    /// Where TLC says an action is, as it labels a step of a behavior (`Action.getLocation`):
+    /// `A(1) line 4, col 7 to line 4, col 12 of module M`.
+    pub fn action_label(&self, action: &NextAction) -> String {
+        self.label_action(action)
     }
 }
