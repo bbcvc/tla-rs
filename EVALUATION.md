@@ -50,6 +50,8 @@ Normalization still shows in what TLC prints, so `tla-value` tracks it where it 
 
 **R4. Successor generation uses continuations.** The `Vec<PartialNextState>` sketch materializes every branch and clones the environment for each one. It also has no case for `\E` and treats non-Boolean guards as `FALSE`. The evaluator instead passes a continuation and assigns primed slots in place with undo, which is the shape of TLC's `getNextStates`. Non-Boolean guards and incompletely specified successors are errors, as in TLC.
 
+`Evaluator::init_states` and `Evaluator::next_states` implement this, ported from tla-ts `successors.ts`. The walk carries the state being assigned as a vector of optional values, and expressions read it through a view in which an unassigned variable is undefined. What remains to walk after a conjunct is a continuation built on the stack, so `\/`, `\E`, and `x' \in S` assign a variable, run the continuation, and undo the assignment. The walk enters calls of definitions, arguments that are actions, and instances. Once every variable has a value, the conjuncts left are predicates, as in TLC, which decides how many states a later disjunction generates. `ENABLED` runs the same walk and stops at the first successor.
+
 **R5. Liveness is part of done.** 66 recorded results are liveness or property violations, and successful runs of specs with `PROPERTY` need the checker too. Liveness becomes its own phase instead of an optional extra.
 
 **R6. Syntax errors need SANY's strictness.** tree-sitter recovers from errors and accepts some modules that SANY rejects. Any `ERROR` or `MISSING` node is a syntax error. SANY's level checking (tla-ts `levels.ts`) is ported later for the `error` cases.

@@ -4,6 +4,7 @@
 //! and the current and next states. Errors are worded as TLC words them, following tla-ts, and
 //! located at the innermost expression that failed.
 
+mod action;
 mod analysis;
 mod bound;
 mod builtin;
@@ -16,7 +17,7 @@ use tla_value::{LazySet, Symbol, Value};
 
 pub(crate) use self::analysis::{normalizing_evaluations, recursive_functions, tlc_eval};
 use self::builtin::describe;
-use crate::env::{Env, Slot};
+use crate::env::{Env, Slot, StateRef};
 use crate::{EvalError, Evaluator, Result, State};
 
 /// Converts the error of a value operation into an [`EvalError`] at the expression that failed.
@@ -51,7 +52,13 @@ impl Evaluator {
         if let Some(message) = problem {
             return Err(EvalError::at(&self.spec, info.module, info.span, message));
         }
-        self.call_def(def, None, Vec::new(), state, next)
+        self.call_def(
+            def,
+            None,
+            Vec::new(),
+            state.map(StateRef::Complete),
+            next.map(StateRef::Complete),
+        )
     }
 
     pub(crate) fn error(

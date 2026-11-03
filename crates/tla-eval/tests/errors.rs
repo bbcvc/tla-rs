@@ -197,7 +197,7 @@ fn rejects_what_tlc_cannot_evaluate_in_a_state() {
         message("TRUE ~> TRUE"),
         "TLC cannot evaluate a temporal formula such as ~> in a state"
     );
-    assert_eq!(message("ENABLED TRUE"), "ENABLED is not supported yet");
+    assert_eq!(message("ENABLED TRUE"), "ENABLED needs a complete state at line 2, column 9");
     assert_eq!(
         message("2147483648"),
         "TLC can't handle a number this big: 2147483648 at line 2, column 9"

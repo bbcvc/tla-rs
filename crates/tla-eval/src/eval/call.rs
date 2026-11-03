@@ -12,9 +12,9 @@ use tla_resolve::{ConstId, DefBody, DefId, Expr, ExprKind, Local, OpRef, Scope};
 use tla_value::{Error, Value};
 
 use super::At;
-use crate::env::{Env, Frame, Slot, SpecRef, Thunk};
+use crate::env::{Env, Frame, Slot, SpecRef, StateRef, Thunk};
 use crate::native::OperatorKind;
-use crate::{Arg, ConstBinding, Ctx, EvalError, Evaluator, Native, Operator, Result, State};
+use crate::{Arg, ConstBinding, Ctx, EvalError, Evaluator, Native, Operator, Result};
 
 impl Evaluator {
     /// Calls `def` with `args`, in a new frame whose parent is `parent`, unless the configuration
@@ -24,8 +24,8 @@ impl Evaluator {
         def: DefId,
         parent: Option<Arc<Frame>>,
         args: Vec<Value>,
-        state: Option<&State>,
-        next: Option<&State>,
+        state: Option<StateRef<'_>>,
+        next: Option<StateRef<'_>>,
     ) -> Result<Value> {
         let info = self.spec.def(def);
         if args.len() != info.params.len() {
@@ -71,8 +71,8 @@ impl Evaluator {
         def: DefId,
         parent: Option<Arc<Frame>>,
         slots: Vec<Slot>,
-        state: Option<&State>,
-        next: Option<&State>,
+        state: Option<StateRef<'_>>,
+        next: Option<StateRef<'_>>,
         keep_lazy: bool,
     ) -> Result<Value> {
         let info = self.spec.def(def);
@@ -203,8 +203,8 @@ impl Evaluator {
         &self,
         op: &Operator,
         args: &[Value],
-        state: Option<&State>,
-        next: Option<&State>,
+        state: Option<StateRef<'_>>,
+        next: Option<StateRef<'_>>,
     ) -> tla_value::Result<Value> {
         match &op.0 {
             OperatorKind::Def { def, parent } => self
@@ -265,7 +265,7 @@ impl Evaluator {
     }
 
     /// The frame a definition called with `scope` captures.
-    fn scope_frame(&self, scope: &Scope, env: &Env<'_>) -> Result<Option<Arc<Frame>>> {
+    pub(super) fn scope_frame(&self, scope: &Scope, env: &Env<'_>) -> Result<Option<Arc<Frame>>> {
         Ok(match scope {
             Scope::Global => None,
             Scope::Up(hops) => Some(env.frame.up(*hops).clone()),
@@ -280,7 +280,7 @@ impl Evaluator {
 
     /// What the parameter an argument is passed to holds: the operator it stands for, the value
     /// of a literal or of a slot already evaluated, or else a thunk.
-    fn arg_slot(&self, arg: &Expr, env: &Env<'_>) -> Result<Slot> {
+    pub(super) fn arg_slot(&self, arg: &Expr, env: &Env<'_>) -> Result<Slot> {
         Ok(match &arg.kind {
             ExprKind::OpArg(op) => Slot::Op(self.operator(op, arg, env)?),
             ExprKind::Bool(value) => Slot::Value(Value::Bool(*value)),
@@ -299,7 +299,7 @@ impl Evaluator {
         Slot::Thunk(Arc::new(Thunk {
             // SAFETY: every expression this evaluator evaluates is part of its spec.
             expr: unsafe { SpecRef::new(&self.spec, arg) },
-            captured: env.capture(),
+            captured: env.capture_scope(),
             value: OnceLock::new(),
         }))
     }
