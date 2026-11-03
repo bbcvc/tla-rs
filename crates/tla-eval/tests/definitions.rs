@@ -180,3 +180,99 @@ fn fails_on_arguments_only_when_used() {
         "Attempted to compute the value of an expression of form\nCHOOSE x \\in S: P, but no element of S satisfied P."
     );
 }
+
+/// tla-ts's `Capture` and `Binders` fixtures: a substitution keeps referring to the names it
+/// was written among, whatever the instantiated module binds.
+#[test]
+fn substitutes_without_capturing_names() {
+    let capture = r#"
+---- MODULE CaptureInner ----
+CONSTANT C
+Has(S) == \E p \in S : p = C
+====
+"#;
+    let binders = r#"
+---- MODULE BindersInner ----
+CONSTANT c, Combine(_, _)
+Combined == \E i \in {0, 1} : Combine(i, c) = <<1, c, c>>
+Named == \E Lambda \in {0, 1} : Combine(Lambda, c) = <<1, c, c>>
+====
+"#;
+    let evaluator = evaluator_with(
+        r#"
+I(p) == INSTANCE CaptureInner WITH C <- p
+P(i) == INSTANCE BindersInner WITH c <- i, Combine <- LAMBDA a, b : <<a, b, i>>
+Captured == <<I(3)!Has({1, 3}), I(3)!Has({1, 2})>>
+Bound == <<P(5)!Combined, P(5)!Named, \A i \in {6, 7} : P(i)!Named>>
+"#,
+        &[("CaptureInner", capture), ("BindersInner", binders)],
+        Vec::new(),
+    );
+    assert_eq!(eval(&evaluator, "Captured").unwrap().to_string(), "<<TRUE, FALSE>>");
+    assert_eq!(eval(&evaluator, "Bound").unwrap().to_string(), "<<TRUE, TRUE, TRUE>>");
+}
+
+/// tla-ts's `Symbols` fixture, with set operators for arithmetic: built-in operators substituted
+/// for constant operators, applied directly and passed on.
+#[test]
+fn substitutes_built_in_operators() {
+    let inner = r#"
+---- MODULE SymbolsInner ----
+CONSTANT Op(_, _), Neg(_)
+Twice(F(_, _), a) == F(a, a)
+Applied == Op({1, 2}, {2, 3})
+Passed == Twice(Op, {4})
+Negated == Neg(<<5>>)
+PassedNeg == LET G(H(_)) == H(<<1, 1>>) IN G(Neg)
+====
+"#;
+    let evaluator = evaluator_with(
+        r#"
+Union == INSTANCE SymbolsInner WITH Neg <- DOMAIN, Op <- \cup
+Difference(a) == INSTANCE SymbolsInner WITH Neg <- DOMAIN, Op <- \
+INSTANCE SymbolsInner WITH Neg <- SUBSET, Op <- \cap
+Unioned == <<Union!Applied, Union!Passed, Union!Negated, Union!PassedNeg>>
+Differed == <<Difference(1)!Applied, Difference(1)!Passed>>
+Direct == <<Applied, Negated>>
+InLet == LET Sum == INSTANCE SymbolsInner WITH Neg <- DOMAIN, Op <- \cup IN Sum!Passed
+"#,
+        &[("SymbolsInner", inner)],
+        Vec::new(),
+    );
+    let printed: Vec<String> = ["Unioned", "Differed", "Direct", "InLet"]
+        .iter()
+        .map(|name| eval(&evaluator, name).unwrap().to_string())
+        .collect();
+    assert_eq!(
+        printed,
+        ["<<{1, 2, 3}, {4}, 1..1, 1..2>>", "<<{1}, {}>>", "<<{2}, SUBSET <<5>>>>", "{4}"]
+    );
+}
+
+/// tla-ts's `Scoping` fixture: recursive operators and functions of an instantiated module.
+#[test]
+fn recurses_inside_instances() {
+    let counter = r#"
+---- MODULE ScopingCounter ----
+CONSTANT Limit
+RECURSIVE Chain(_)
+Chain(S) == IF S = {} THEN {} ELSE LET rest == Chain(S \ {CHOOSE x \in S : TRUE}) IN rest \cup {S}
+Table[S \in SUBSET Limit] == IF S = {} THEN <<>> ELSE <<Table[S \ {CHOOSE x \in S : TRUE}]>>
+====
+"#;
+    let evaluator = evaluator_with(
+        r#"
+Bounded == INSTANCE ScopingCounter WITH Limit <- {1, 2}
+B(l) == INSTANCE ScopingCounter WITH Limit <- l
+Named == <<Bounded!Chain({1, 2}), Bounded!Table[{1, 2}]>>
+Parameterized == <<B({1, 2, 3})!Table[{3}], B({4})!Table>>
+"#,
+        &[("ScopingCounter", counter)],
+        Vec::new(),
+    );
+    assert_eq!(eval(&evaluator, "Named").unwrap().to_string(), "<<{{2}, {1, 2}}, <<<<<<>>>>>>>>");
+    assert_eq!(
+        eval(&evaluator, "Parameterized").unwrap().to_string(),
+        "<<<<<<>>>>, ({} :> <<>> @@ {4} :> <<<<>>>>)>>"
+    );
+}
