@@ -14,7 +14,7 @@ use tla_ast::{Quantifier, Span};
 use tla_resolve::{DefId, Expr, ExprKind, Local, VarId};
 use tla_value::{LazySet, Symbol, Value};
 
-pub(crate) use self::analysis::recursive_functions;
+pub(crate) use self::analysis::{normalizing_evaluations, recursive_functions, tlc_eval};
 use self::builtin::describe;
 use crate::env::{Env, Slot};
 use crate::{EvalError, Evaluator, Result, State};
