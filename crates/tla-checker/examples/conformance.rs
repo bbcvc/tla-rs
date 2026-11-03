@@ -235,8 +235,12 @@ fn compare(expected: &Expected, actual: &Reported) -> (Verdict, Option<String>) 
             status => (Verdict::Mismatch, Some(format!("expected an error, got {status}"))),
         };
     }
-    let is_liveness_left_out = expected.status == "liveness-violation"
-        && actual.status == Status::Success.name()
+    // TLC's liveness checker reports a violated temporal property as either, and TLC checks
+    // the temporal properties before the postconditions.
+    let is_liveness_left_out = ["liveness-violation", "property-violation"]
+        .contains(&expected.status.as_str())
+        && [Status::Success.name(), Status::PostconditionViolation.name()]
+            .contains(&actual.status.as_str())
         && actual.has_liveness;
     if is_liveness_left_out {
         return (Verdict::Unsupported, Some("liveness checking".into()));

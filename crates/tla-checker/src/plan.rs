@@ -49,6 +49,12 @@ pub struct Plan {
     pub action_constraints: Vec<Check>,
     /// The `VIEW`, whose value tells states apart instead of their variables.
     pub view: Option<DefId>,
+    /// The `_POSSIBLE` state predicates, each of which some state of the model must satisfy.
+    pub possible: Vec<Check>,
+    /// The `_POSSIBLE` actions, each of which some step of the model must satisfy.
+    pub action_possible: Vec<Check>,
+    /// The `POSTCONDITION`s, checked once the search ends.
+    pub postconditions: Vec<Postcondition>,
     /// Constant-level parts whose value decides whether they are checked, which the model
     /// checker evaluates before it starts.
     pub constants: Vec<Constant>,
@@ -61,6 +67,16 @@ impl Plan {
             || !self.action_properties.is_empty()
             || !self.liveness.is_empty()
     }
+}
+
+/// A postcondition the configuration names.
+#[derive(Clone, Debug)]
+pub struct Postcondition {
+    pub name: String,
+    /// The zero-arity definition the name refers to, if any.
+    pub def: Option<DefId>,
+    /// Whether TLC computes the definition when it starts, so that it rejects it.
+    pub is_constant: bool,
 }
 
 /// A constant-level part of the configuration or a formula, which TLC evaluates as it processes
@@ -124,9 +140,11 @@ pub fn plan(
             planner.operator(kind, name)?;
         }
     }
+    planner.possible(&config.possible)?;
     if let Some(view) = config.view {
         planner.plan.view = Some(planner.operator("view function", view)?);
     }
+    planner.postconditions(&config.postconditions);
     Ok(planner.plan)
 }
 
@@ -189,6 +207,46 @@ impl Planner<'_> {
             self.plan.invariants.push(check);
         }
         Ok(())
+    }
+
+    /// The `_POSSIBLE` predicates, sorted into those of states and those of steps.
+    fn possible(&mut self, names: &[Symbol]) -> Result<(), Error> {
+        for (index, &name) in names.iter().enumerate() {
+            if names[..index].contains(&name) {
+                return Err(Error::config(format!("_POSSIBLE lists {name} more than once")));
+            }
+            let def = self.operator("possible", name)?;
+            self.constant_operator("possible", name, def);
+            let check = Check { name: name.to_string(), def };
+            match self.def_level(def) {
+                Level::Temporal => {
+                    return Err(Error::config(format!(
+                        "The possible of {name} is equal to a temporal formula; only state- and action-level predicates are supported"
+                    )));
+                }
+                Level::Action => self.plan.action_possible.push(check),
+                _ => self.plan.possible.push(check),
+            }
+        }
+        Ok(())
+    }
+
+    /// The postconditions, which TLC looks up only once the search ends.
+    fn postconditions(&mut self, names: &[Symbol]) {
+        for &name in names {
+            let def = match self.spec.lookup(name.as_str()) {
+                Some(RootName::Def(def)) if self.spec.def(def).params.is_empty() => Some(def),
+                _ => None,
+            };
+            let is_constant = def.is_some_and(|def| {
+                self.spec.def(def).depth == 0 && self.def_level(def) == Level::Constant
+            });
+            self.plan.postconditions.push(Postcondition {
+                name: name.to_string(),
+                def,
+                is_constant,
+            });
+        }
     }
 
     fn def_level(&self, def: DefId) -> Level {
@@ -494,106 +552,4 @@ fn is_temporal_quantifier(expr: &Expr) -> bool {
 }
 
 #[cfg(test)]
-mod tests {
-    use std::collections::HashMap;
-
-    use tla_resolve::{DefBody, Spec};
-
-    use super::{Plan, Usage, plan};
-    use crate::testing::spec;
-
-    fn planned(body: &str, config: &str) -> Result<(Spec, Plan), String> {
-        let mut spec = spec(body);
-        let config = tla_parser::parse_config(config).unwrap();
-        plan(&mut spec, &config, &HashMap::new())
-            .map(|plan| (spec, plan))
-            .map_err(|error| error.message)
-    }
-
-    fn name(spec: &Spec, def: tla_resolve::DefId) -> &str {
-        spec.def(def).name.as_str()
-    }
-
-    const SPEC: &str = "vars == <<x>>\nInit == x = 0\nNext == x' = x + 1\nLive == WF_vars(Next)\nSpec == Init /\\ [][Next]_vars /\\ Live";
-
-    #[test]
-    fn splits_a_specification_into_init_next_and_fairness() {
-        let (spec, plan) = planned(SPEC, "SPECIFICATION Spec").unwrap();
-        let init: Vec<&str> = plan.init.iter().map(|&def| name(&spec, def)).collect();
-        assert_eq!((init, plan.next.map(|def| name(&spec, def))), (vec!["Init"], Some("Next")));
-        assert_eq!(plan.temporals, 1);
-
-        // Parts that aren't definitions get definitions of their own.
-        let (spec, plan) = planned(
-            "Spec == x = 0 /\\ x \\in Nat /\\ [][x' = x + 1 \\/ x' = 0]_x",
-            "SPECIFICATION Spec",
-        )
-        .unwrap();
-        assert_eq!(plan.init.len(), 2);
-        let next = spec.def(plan.next.unwrap());
-        assert!(next.params.is_empty() && matches!(next.body, DefBody::Expr(_)));
-        assert_eq!(spec.levels.len(), spec.defs.len());
-    }
-
-    #[test]
-    fn sorts_the_parts_of_properties() {
-        let body = format!(
-            "{SPEC}\nTypeOK == x \\in Nat\nInv == []TypeOK\nUp == [][x' > x]_x\nStart == x = 0\nEventually == <>(x = 3)\nAll == Inv /\\ Up /\\ Start /\\ Eventually"
-        );
-        let (_, plan) = planned(&body, "SPECIFICATION Spec\nPROPERTY All").unwrap();
-        let names = |checks: &[super::Check]| {
-            checks.iter().map(|check| check.name.clone()).collect::<Vec<_>>()
-        };
-        assert_eq!(names(&plan.invariants), ["TypeOK"]);
-        assert_eq!(names(&plan.action_properties), ["Up"]);
-        assert_eq!(names(&plan.initial_predicates), ["Start"]);
-        assert_eq!(plan.liveness, ["All"]);
-    }
-
-    #[test]
-    fn defers_constant_parts_to_evaluation() {
-        let body = format!("{SPEC}\nN == 3\nTrue == TRUE\nBig == N > 2");
-        let (_, plan) = planned(&body, "SPECIFICATION Spec\nINVARIANT True\nPROPERTY Big").unwrap();
-        let usages: Vec<&Usage> = plan.constants.iter().map(|constant| &constant.usage).collect();
-        assert!(matches!(usages[0], Usage::Predicate { kind: "invariant", .. }));
-        assert!(matches!(usages[1], Usage::Predicate { kind: "property", .. }));
-    }
-
-    #[test]
-    fn rejects_what_tlc_rejects() {
-        let body = format!(
-            "{SPEC}\nAct == x' = x\nOp(a) == a\nTwice == [][Next]_x /\\ [][Next]_x /\\ Init"
-        );
-        for (config, message) in [
-            (
-                "SPECIFICATION Nope",
-                "The name Nope specified in the configuration file\nis not defined in the specification.",
-            ),
-            (
-                "INIT Init\nNEXT Next\nSPECIFICATION Spec",
-                "The configuration file cannot specify both INIT/NEXT and SPECIFICATION fields.",
-            ),
-            ("SPECIFICATION Op", "TLC requires Op not to take any argument."),
-            (
-                "INIT Op\nNEXT Next",
-                "TLC requires initial predicate not to take any argument, but one was given: Op",
-            ),
-            (
-                "SPECIFICATION Spec\nINVARIANT Act",
-                "The invariant Act is not a state predicate (one with no primes or temporal operators).",
-            ),
-            (
-                "SPECIFICATION Twice",
-                "The specification Twice must contain at most one [][Next]_vars",
-            ),
-            ("SPECIFICATION Spec\nPROPERTY Act", "The property Act is an action-level formula"),
-            ("NEXT Next", "The configuration file did not specify the initial state predicate."),
-            (
-                "INIT Init\nINVARIANT Init",
-                "The configuration file did not specify the next state predicate.",
-            ),
-        ] {
-            assert_eq!(planned(&body, config).unwrap_err(), message, "{config}");
-        }
-    }
-}
+mod tests;

@@ -10,6 +10,7 @@
 mod fingerprint;
 mod level;
 pub mod plan;
+mod postcondition;
 pub mod search;
 #[cfg(test)]
 mod testing;
@@ -53,6 +54,9 @@ pub enum Status {
     /// such as `[][A]_v`, as a liveness violation.
     LivenessViolation,
     Deadlock,
+    /// A postcondition failed once the search ended, or a `_POSSIBLE` predicate was never
+    /// witnessed. TLC exits as for a violated assumption.
+    PostconditionViolation,
     Error,
     /// The model uses something the checker doesn't do yet.
     Unsupported,
@@ -67,6 +71,7 @@ impl Status {
             Status::InvariantViolation => "invariant-violation",
             Status::LivenessViolation => "liveness-violation",
             Status::Deadlock => "deadlock",
+            Status::PostconditionViolation => "postcondition-violation",
             Status::Error => "error",
             Status::Unsupported => "unsupported",
         }
@@ -188,12 +193,12 @@ pub fn check<S: Successors>(
     let searched =
         search::search(&successors, &evaluator, &plan, &fingerprinter, config.check_deadlock);
     let mut outcome = match searched.ending {
-        Ending::Success => Outcome {
+        Ending::Success => postcondition::check(&evaluator, &plan).unwrap_or(Outcome {
             generated: Some(searched.generated),
             distinct: Some(searched.distinct),
             depth: Some(searched.depth),
             ..Outcome::new(Status::Success)
-        },
+        }),
         Ending::InvariantViolation(name) => Outcome {
             violation: Some(name),
             trace_length: Some(searched.trace.len()),
