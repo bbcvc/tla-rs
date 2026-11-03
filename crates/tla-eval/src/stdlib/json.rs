@@ -10,7 +10,7 @@ use tla_value::{Symbol, Value};
 
 use super::{
     Failure, Outcome, arg, argument_error, function_pairs, is_overridden_set, java_class,
-    java_error, sequence_elements,
+    java_error, os_message, sequence_elements,
 };
 use crate::{Arg, Ctx, Native};
 
@@ -183,9 +183,13 @@ fn path<'a>(value: &'a Value, method: &str) -> Outcome<&'a str> {
     }
 }
 
+/// Writes a file as TLC's `FileWriter` does, after creating its parent directories.
 fn write_file(path: &str, content: &str, method: &str) -> Outcome<()> {
+    if let Some(parent) = std::path::Path::new(path).parent() {
+        let _ = std::fs::create_dir_all(parent);
+    }
     std::fs::write(path, content)
-        .map_err(|error| java_failure(method, &format!("{path} ({error})")))
+        .map_err(|error| java_failure(method, &format!("{path} ({})", os_message(&error))))
 }
 
 fn read_file(path: &str, method: &str) -> Outcome<String> {

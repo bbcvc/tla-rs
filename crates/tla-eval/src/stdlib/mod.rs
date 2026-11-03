@@ -265,6 +265,15 @@ fn sorted_set(elements: Vec<Value>) -> Outcome {
     Ok(set)
 }
 
+/// The text Java gives an operating system error: the error without Rust's error number.
+fn os_message(error: &std::io::Error) -> String {
+    let text = error.to_string();
+    match text.rfind(" (os error ") {
+        Some(end) => text[..end].to_owned(),
+        None => text,
+    }
+}
+
 /// The kind of a value as some of TLC's errors name it, which calls every function a function.
 fn kind_name(value: &Value) -> &'static str {
     match value {
