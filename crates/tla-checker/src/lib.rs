@@ -148,6 +148,9 @@ pub struct Options {
     pub community_modules: bool,
     /// Let IOUtils run commands.
     pub allow_exec: bool,
+    /// TLC's order of the variables ([`tla_resolve::tlc_variable_order`]), which TLC's
+    /// fingerprint of a state follows. Without it, the order they are declared in.
+    pub variable_order: Option<Vec<String>>,
 }
 
 /// Checks `spec` under `config`, with `successors` computing the states of the evaluator it is
@@ -176,6 +179,7 @@ pub fn check<S: Successors>(
         Err(error) => return error.into(),
     };
     let has_variables = !spec.variables.is_empty();
+    let tlc_order = tlc_order(&spec, options.variable_order.as_deref());
     let assumptions = spec.assumptions.clone();
     let substitutions: Vec<_> = model
         .constants
@@ -237,6 +241,7 @@ pub fn check<S: Successors>(
         &plan,
         &fingerprinter,
         config.check_deadlock,
+        &tlc_order,
         liveness,
     );
     match searched.ending {
@@ -293,6 +298,20 @@ fn check_substitutions(
         }
     }
     Ok(())
+}
+
+/// The index of each variable of `spec` in TLC's `order` of the variables, those it doesn't
+/// name last.
+fn tlc_order(spec: &Spec, order: Option<&[String]>) -> Vec<usize> {
+    let mut indices: Vec<usize> = (0..spec.variables.len()).collect();
+    if let Some(order) = order {
+        let position = |index: &usize| {
+            let name = spec.variables[*index].name.as_str();
+            order.iter().position(|known| known == name).unwrap_or(order.len())
+        };
+        indices.sort_by_key(position);
+    }
+    indices
 }
 
 /// TLC's checks of the constant-level parts of the spec and the configuration, as it processes

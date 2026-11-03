@@ -61,6 +61,7 @@ fn check(spec_path: &Path, config_path: &Path, library: &HashMap<String, PathBuf
     if let Ok(order) = tla_resolve::tlc_string_order(&source, &config, &mut loader) {
         tla_eval::value::set_order(order.iter().map(String::as_str));
     }
+    let variable_order = tla_resolve::tlc_variable_order(&source, &mut loader).ok();
     let spec = match tla_resolve::resolve(&source, &mut loader) {
         Ok(spec) => spec,
         Err(error) => return Outcome::error(error.to_string()),
@@ -73,7 +74,7 @@ fn check(spec_path: &Path, config_path: &Path, library: &HashMap<String, PathBuf
             spec.modules[0].name
         ));
     }
-    let options = Options { seed: TLC_SEED, ..Options::default() };
+    let options = Options { seed: TLC_SEED, variable_order, ..Options::default() };
     tla_checker::check(spec, &config, &options, |evaluator| evaluator.clone())
 }
 

@@ -139,6 +139,8 @@ struct Explorer<'a, S: Successors + ?Sized> {
     plan: &'a Plan,
     fingerprinter: &'a Fingerprinter,
     check_deadlock: bool,
+    /// The index of each variable in a state, in TLC's order of the variables.
+    tlc_order: &'a [usize],
     store: Arc<Mutex<Store>>,
     /// The states to expand, in the order they were found.
     queue: VecDeque<State>,
@@ -166,6 +168,7 @@ pub fn search<S: Successors + ?Sized>(
     plan: &Plan,
     fingerprinter: &Fingerprinter,
     check_deadlock: bool,
+    tlc_order: &[usize],
     liveness: Option<Checker<'_>>,
 ) -> Search {
     // Only `TLCExt!Trace` reads the behavior to a state while the search runs.
@@ -196,6 +199,7 @@ pub fn search<S: Successors + ?Sized>(
         plan,
         fingerprinter,
         check_deadlock,
+        tlc_order,
         store,
         queue: VecDeque::new(),
         cursor,

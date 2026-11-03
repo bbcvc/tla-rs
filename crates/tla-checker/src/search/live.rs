@@ -77,7 +77,11 @@ impl<S: Successors + ?Sized> Explore for Explorer<'_, S> {
                     .map_err(|error| error.to_string())?;
                 tla_eval::tlc_fingerprint(std::slice::from_ref(&value))
             }
-            None => tla_eval::tlc_fingerprint(state),
+            None => {
+                let values: Vec<tla_eval::Value> =
+                    self.tlc_order.iter().map(|&index| state[index].clone()).collect();
+                tla_eval::tlc_fingerprint(&values)
+            }
         }
     }
 
