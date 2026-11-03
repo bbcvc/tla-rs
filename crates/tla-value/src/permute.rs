@@ -172,7 +172,7 @@ impl Value {
     }
 
     /// Whether the permutation moves a model value the value holds.
-    fn moves(&self, image: &impl Fn(Symbol) -> Option<Value>) -> bool {
+    pub(crate) fn moves(&self, image: &impl Fn(Symbol) -> Option<Value>) -> bool {
         match self {
             Value::Model(name) => image(*name).is_some(),
             Value::Bool(_) | Value::Int(_) | Value::Str(_) | Value::Interval(..) => false,
@@ -412,6 +412,34 @@ mod tests {
                     }
                 }
             }
+        }
+    }
+
+    /// Fingerprinting a value as permuted feeds what fingerprinting the permuted value does.
+    #[test]
+    fn fingerprints_permuted_values_as_the_permuted_values() {
+        use std::hash::{DefaultHasher, Hasher};
+        let (a, b, c) = (model("a"), model("b"), model("c"));
+        let function = |pairs: Vec<(Value, Value)>| Value::function(pairs).unwrap();
+        let values = vec![
+            a.clone(),
+            Value::tuple(vec![a.clone(), Value::Int(1), b.clone()]),
+            function(vec![(a.clone(), b.clone()), (b.clone(), c.clone()), (c.clone(), a.clone())]),
+            function(vec![(a.clone(), Value::Int(1)), (c.clone(), Value::Int(2))]),
+            function(vec![(Value::tuple(vec![a.clone()]), b.clone())]),
+            Value::record(vec![
+                (Symbol::intern("x"), a.clone()),
+                (Symbol::intern("y"), Value::Int(2)),
+            ]),
+            Value::set(vec![a.clone(), c.clone()]).unwrap(),
+            Value::set(vec![Value::tuple(vec![b.clone()]), Value::tuple(vec![c.clone()])]).unwrap(),
+        ];
+        for value in &values {
+            let mut direct = DefaultHasher::new();
+            value.permute(&swap).unwrap().fingerprint(&mut direct).unwrap();
+            let mut permuted = DefaultHasher::new();
+            value.fingerprint_permuted(&swap, &mut permuted).unwrap();
+            assert_eq!(direct.finish(), permuted.finish(), "{value}");
         }
     }
 

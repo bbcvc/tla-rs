@@ -41,6 +41,27 @@ fn preimage(permutation: &Permutation) -> impl Fn(Symbol) -> Option<Symbol> + '_
     }
 }
 
+/// The smallest permutation of some values, and those of its values built so far.
+struct Smallest<'a> {
+    permutation: &'a Permutation,
+    least: Vec<Option<Value>>,
+}
+
+impl Smallest<'_> {
+    /// The permuted values.
+    fn build(self, values: &[Value]) -> Result<Vec<Value>, String> {
+        let permutation = self.permutation;
+        self.least
+            .into_iter()
+            .zip(values)
+            .map(|(least, value)| match least {
+                Some(least) => Ok(least),
+                None => value.permute(&image(permutation)).map_err(error_text),
+            })
+            .collect()
+    }
+}
+
 pub struct Fingerprinter {
     view: Option<DefId>,
     /// Whether to fingerprint as TLC does, which a spec with strings above U+00FF needs: TLC's
@@ -91,6 +112,7 @@ impl Fingerprinter {
         let Some(smallest) = self.smallest_permutation(&ordered)? else {
             return Ok(state.clone());
         };
+        let smallest = smallest.build(&ordered)?;
         let representative = match &self.order {
             Some(order) => {
                 let mut values = state.to_vec();
@@ -135,7 +157,21 @@ impl Fingerprinter {
             return Ok(smallest);
         }
         match self.smallest_permutation(values)? {
-            Some(smallest) => self.fingerprint_values(&smallest),
+            // TLC's own fingerprint of the smallest permutation needs it built.
+            Some(smallest) if self.is_tlc => self.fingerprint_values(&smallest.build(values)?),
+            Some(smallest) => {
+                let mut hasher = Wide::new();
+                for (value, least) in values.iter().zip(&smallest.least) {
+                    match least {
+                        Some(least) => least.fingerprint(&mut hasher),
+                        None => {
+                            value.fingerprint_permuted(&image(smallest.permutation), &mut hasher)
+                        }
+                    }
+                    .map_err(error_text)?;
+                }
+                Ok(hasher.finish_wide())
+            }
             None => self.fingerprint_values(values),
         }
     }
@@ -143,7 +179,7 @@ impl Fingerprinter {
     /// The smallest of the permutations of `values`, compared value by value, if smaller than
     /// `values`. Comparing a permutation with the smallest so far builds only what the comparison
     /// needs, of either.
-    fn smallest_permutation(&self, values: &[Value]) -> Result<Option<Vec<Value>>, String> {
+    fn smallest_permutation(&self, values: &[Value]) -> Result<Option<Smallest<'_>>, String> {
         let mut smallest: Option<&Permutation> = None;
         let mut least: Vec<Option<Value>> = vec![None; values.len()];
         for permutation in &self.permutations {
@@ -173,16 +209,7 @@ impl Fingerprinter {
                 least[position..].fill(None);
             }
         }
-        let Some(smallest) = smallest else { return Ok(None) };
-        let smallest = least
-            .into_iter()
-            .zip(values)
-            .map(|(value, original)| match value {
-                Some(value) => Ok(value),
-                None => original.permute(&image(smallest)).map_err(error_text),
-            })
-            .collect::<Result<Vec<_>, _>>()?;
-        Ok(Some(smallest))
+        Ok(smallest.map(|permutation| Smallest { permutation, least }))
     }
 
     fn fingerprint_values(&self, values: &[Value]) -> Result<u128, String> {
