@@ -283,3 +283,13 @@ fn ignores_plus_cal_it_cannot_read_inside_comments() {
     let source = "---- MODULE Comment ----\n(* --algorithm A { fair { while (TRUE) { skip } } } *)\nX == 1\n====\n";
     assert!(matches!(body(&parse(source), "X"), ExprKind::Int(1)));
 }
+
+#[test]
+fn parses_every_module_in_a_file() {
+    let source = "---- MODULE A ----\nX == 1\n====\n---- MODULE B ----\nTHEOREM T == TRUE\n====\n";
+    let modules = tla_parser::parse_modules(source).unwrap();
+    let names: Vec<_> = modules.iter().map(|module| module.name.symbol.as_str()).collect();
+    assert_eq!(names, ["A", "B"]);
+    assert!(matches!(&modules[1].units[0],
+        Unit::Theorem(theorem) if theorem.statement.as_ref().unwrap().kind == ExprKind::Bool(true)));
+}

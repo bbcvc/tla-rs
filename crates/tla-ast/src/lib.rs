@@ -123,10 +123,13 @@ pub struct Assume {
     pub expr: Expr,
 }
 
-/// A theorem. TLC doesn't check theorems, so the statement and proof aren't kept.
+/// A theorem. TLC doesn't check theorems, so the proof isn't kept. A named theorem defines its
+/// name as its statement.
 #[derive(Clone, Debug, PartialEq)]
 pub struct Theorem {
     pub name: Option<Name>,
+    /// The statement, unless it is an `ASSUME ... PROVE`.
+    pub statement: Option<Expr>,
     pub span: Span,
 }
 

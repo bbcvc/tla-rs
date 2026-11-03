@@ -33,6 +33,12 @@ impl ParseError {
 /// Parses the first module in `source`. Text before and after the module is ignored, as SANY
 /// ignores it.
 pub fn parse_module(source: &str) -> Result<Module, ParseError> {
+    parse_modules(source).map(|modules| modules.into_iter().next().expect("at least one module"))
+}
+
+/// Parses every top-level module in `source`, in order. A file can hold several, and SANY finds
+/// a module in the file of an earlier one.
+pub fn parse_modules(source: &str) -> Result<Vec<Module>, ParseError> {
     let mut parser = Parser::new();
     parser
         .set_language(&tree_sitter_tlaplus::LANGUAGE.into())
@@ -45,20 +51,26 @@ pub fn parse_module(source: &str) -> Result<Module, ParseError> {
     let lower = Lower { source, tabs: expanded.as_ref().map_or(&[], |(_, tabs)| tabs.as_slice()) };
     let root = tree.root_node();
     let mut cursor = root.walk();
-    let module = root.named_children(&mut cursor).find(|child| child.kind() == "module");
-    let module = module.ok_or_else(|| {
+    let modules: Vec<_> =
+        root.named_children(&mut cursor).filter(|child| child.kind() == "module").collect();
+    if modules.is_empty() {
         let message = if root.is_error() { "syntax error" } else { "no module found" };
-        ParseError::new(source, lower.span(root), message)
-    })?;
-    if let Some(error) = first_error(module) {
-        let message = if error.is_missing() {
-            format!("missing {}", error.kind())
-        } else {
-            "syntax error".to_owned()
-        };
-        return Err(ParseError::new(source, lower.span(error), message));
+        return Err(ParseError::new(source, lower.span(root), message));
     }
-    lower.module(module)
+    modules
+        .into_iter()
+        .map(|module| {
+            if let Some(error) = first_error(module) {
+                let message = if error.is_missing() {
+                    format!("missing {}", error.kind())
+                } else {
+                    "syntax error".to_owned()
+                };
+                return Err(ParseError::new(source, lower.span(error), message));
+            }
+            lower.module(module)
+        })
+        .collect()
 }
 
 fn first_error(node: Node) -> Option<Node> {

@@ -229,6 +229,11 @@ impl<'a> Lower<'a> {
             }
             "theorem" => Unit::Theorem(Theorem {
                 name: node.child_by_field_name("name").map(|name| self.name(name)).transpose()?,
+                // TLC doesn't check theorems, so a statement that can't be lowered, such as an
+                // ASSUME/PROVE, is dropped rather than reported.
+                statement: node
+                    .child_by_field_name("statement")
+                    .and_then(|statement| self.expr(statement).ok()),
                 span: self.span(node),
             }),
             "module" => Unit::Module(self.module(node)?),

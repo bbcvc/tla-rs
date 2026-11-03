@@ -11,6 +11,8 @@ macro_rules! operators {
         }
 
         impl Op {
+            pub const ALL: &'static [Self] = &[$(Self::$variant,)*];
+
             /// Maps a tree-sitter-tlaplus node kind, such as `"cup"`, to its operator.
             pub fn from_syntax_kind(kind: &str) -> Option<Self> {
                 match kind {
