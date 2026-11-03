@@ -36,7 +36,9 @@ None of them targets full TLC conformance with an interpreter, so starting fresh
 
 ## Design revisions
 
-**R1. Value ordering can't be derived.** TLC orders strings and model values by when it first interned their text: configuration values first, then TLC's startup strings, then each module's tokens in the order SANY parses them. It orders sets by size and then element by element, functions by domain size and then keys and values, and intervals by size and then lower bound. `CHOOSE` returns the first element in this order, so a derived `Ord` changes what `CHOOSE` returns and therefore the state count. `Value` gets a hand-written comparison ported from `compareValues` in `values.ts`, and the string order is ported from `getTlcStringOrder` in `tlc/order.ts`. Comparing values of different kinds is an error in TLC, not an ordering.
+**R1. Value ordering can't be derived.** TLC orders strings and model values by when it first interned their text: configuration values first, then TLC's startup strings, then each module's tokens in the order SANY parses them. It orders sets by size and then element by element, functions by domain size and then keys and values, and intervals by size and then lower bound. `CHOOSE` returns the first element in this order, so a derived `Ord` changes what `CHOOSE` returns and therefore the state count. `Value` gets a hand-written comparison ported from `compareValues` in `values.ts`. Comparing values of different kinds is an error in TLC, not an ordering.
+
+The string order is ported from `getTlcStringOrder` in `tlc/order.ts`. `tla_resolve::tlc_string_order` lists the texts TLC interns before it checks a spec, from the source text with a port of tla-ts's lexer. It agrees with tla-ts on all 920 models of the corpus. `set_order` publishes them once per spec as a table of sort keys indexed by intern number, which `Symbol::cmp` reads. Other symbols follow in this process's intern order, as strings TLC creates at runtime follow its startup strings. Comparing two strings costs one more table lookup: sorting 200,000 strings takes 9.2 ms instead of 7.6 ms, and 200,000 records 86 ms instead of 81 ms. The order is process-wide, so a process checks one spec at a time, and sets the order before it builds the spec's values.
 
 **R2. Integers are 32-bit.** TLC's integers are Java `int`s (tla-ts: `MAXIMUM_INTEGER = 2147483647`), and overflow is an error. `Value` stores small integers with TLC's overflow checks and drops `num-bigint`. This is also a large speed win.
 
@@ -141,6 +143,7 @@ What the pass leaves out:
 
 - Definition arguments are lazy, as in TLC, so `p'` primes the argument passed for `p`.
 - Recursive and `LET` functions are lazy.
+- Constant definitions are computed once, with TLC's startup random generator, as TLC computes them when it starts, and a lazy set keeps its elements once enumerated.
 - The model configuration binds constants, overrides definitions, and defines operator tables.
 - Native implementations replace the definitions TLC overrides in Java. These are Naturals, Integers, Sequences, FiniteSets, TLC, TLCExt, Bags, Json, Randomization and `_Possible`, plus IOUtils' `Serialize` for NDJSON, which TLC's own Json class writes.
 - `Evaluator::with_community_modules` adds the community module IOUtils, as TLC has it when `CommunityModules-deps.jar` is on its class path. That covers `IOEnv`, `atoi`, the `IOExec` family, and plain text `Serialize` and `Deserialize`. Without the jar, TLC evaluates IOUtils' TLA+ placeholders. The commands only run once `Runtime::allow_exec` allows them. Java's object serialization (`IOSerialize`, `IODeserialize`) isn't ported and fails with an error.
@@ -183,8 +186,8 @@ Still missing from evaluation:
 | --- | --- |
 | `ENABLED` | Needs successor generation, which comes with the model checker. |
 | Natives for the other community modules TLC overrides in Java, such as CSV, and `TLCGet("config").install` | Only matter with `--community-modules`; CSV's writers stay `TRUE`, and `SmokeEWD998_SC`'s command has no jar to run. |
-| Caching constant definitions and lazy sets' enumerations | Values are the same, but chains of lazy sets re-enumerate, and impure natives such as `RandomElement` can differ from TLC. Add it with the checker. |
-| TLC's string order | Strings are ordered by when this process interns them, not as TLC interns them, so `CHOOSE` and printing over strings can differ from TLC. |
+| TLC's order of computing constant definitions at startup | `Evaluator::evaluate_constant_definitions` goes through the definitions in the resolver's order. TLC goes through the modules in the order SANY finishes them, through each module's definitions in the order of SANY's symbol table (tla-ts `createTlcDefinitionOrder`), and skips the modules an `INSTANCE` gives parameters to. Values are the same; impure natives in several constant definitions, such as `Print` or `RandomElement`, can run in another order. |
+| Streaming the elements of a lazy set before TLC caches them | TLC enumerates a `UNION` or `\cup` it hasn't cached by streaming the sets it combines, duplicates and all (tla-ts `getStreamedElements`). This matters for how many successors TLC generates. |
+| `CHOOSE` over a large set of functions | The evaluator enumerates `[S -> T]` before choosing, where TLC streams it. `EWD998ChanID_export` and `_shiviz` time out on a constant definition that chooses from 7^7 functions. |
 | A graceful error on deep recursion | Each recursion level uses about 2.6 KB of stack in release builds. The checker should evaluate on threads with large stacks. |
 | `PickSuccessor`, `TLCCache`'s caching, and `AssertError`'s check that its message is a string literal | Small; they matter only for the specs that use them. |
-| The intern number of a model value in TLC's FP64 fingerprint | Random choices seeded per state differ from TLC for states containing model values. |
