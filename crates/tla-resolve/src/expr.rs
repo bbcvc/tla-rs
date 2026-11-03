@@ -813,6 +813,7 @@ fn body_span(unit: &Unit) -> tla_ast::Span {
         Unit::Assume(assume) => assume.expr.span,
         Unit::Theorem(theorem) => theorem.span,
         Unit::Module(module) => module.span,
+        Unit::Hide(hide) => hide.span,
         Unit::Variables(names) => names.first().map(|name| name.span).unwrap_or_default(),
         Unit::Constants(decls) => decls.first().map(|decl| decl.name.span).unwrap_or_default(),
         _ => tla_ast::Span::default(),

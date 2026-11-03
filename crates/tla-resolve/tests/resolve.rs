@@ -342,3 +342,19 @@ ASSUME RootFact == TRUE
     names.sort_unstable();
     assert_eq!(names, ["BaseFact", "DeeperFact", "RootFact"]);
 }
+
+#[test]
+fn hides_only_theorems_assumptions_and_steps() {
+    let module = |body: &str| format!("---- MODULE M ----\nCONSTANT C\nF == 1\n{body}\n====\n");
+    let message = "The only expression allowed as a fact in a HIDE is \nthe name of a theorem, assumption, or step.";
+    // USE takes any fact, and HIDE the names of theorems and assumptions.
+    let allowed = "THEOREM T == TRUE\nASSUME A == TRUE\nUSE T, TRUE, F\nHIDE T, A, T!1\n\
+        THEOREM U == TRUE\n<1>1. HIDE T\n<1>2. QED";
+    spec(&module(allowed), &[]);
+    for hide in ["HIDE TRUE", "HIDE F", "HIDE C", "HIDE <<1, 2>>"] {
+        assert_eq!(error(&module(hide), &[]), message, "{hide}");
+    }
+    // In a proof too.
+    let proof = "THEOREM T == TRUE\n<1>1. HIDE F\n<1>2. QED";
+    assert_eq!(error(&module(proof), &[]), message);
+}

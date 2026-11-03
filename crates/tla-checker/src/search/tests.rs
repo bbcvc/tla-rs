@@ -1,5 +1,8 @@
 use crate::Status;
-use crate::testing::{System, run};
+use crate::search::Ending;
+use tla_eval::{State, Value};
+
+use crate::testing::{System, explore, run, spec, spec_extending};
 
 const SPEC: &str = "Init == x = 0\nNext == x' = x + 1\nSpec == Init /\\ [][Next]_x";
 
@@ -99,4 +102,38 @@ fn answers_tlcget_like_tlc() {
     let config = "SPECIFICATION Spec\nINVARIANT Stop\nCHECK_DEADLOCK FALSE";
     let outcome = run(&body, config, System { init: vec![0], next: counter });
     assert_eq!(counts(&outcome), (Status::Success, Some(2), Some(2), Some(2)));
+}
+
+#[test]
+fn rebuilds_the_behavior_to_a_violation() {
+    let body = format!("{SPEC}\nSmall == x < 2");
+    let config = "SPECIFICATION Spec\nINVARIANT Small";
+    let searched = explore(spec(&body), config, System { init: vec![0], next: counter });
+    assert_eq!(searched.trace_length, 3);
+    assert_eq!(xs(&searched.trace), vec![0, 1, 2]);
+    // A deadlock ends in the state without successors.
+    let searched =
+        explore(spec(SPEC), "SPECIFICATION Spec", System { init: vec![0], next: counter });
+    assert_eq!((searched.trace_length, searched.trace.len()), (4, 4));
+}
+
+#[test]
+fn keeps_states_for_trace() {
+    let body = format!("{SPEC}\nShort == Len(Trace) < 3");
+    let config = "SPECIFICATION Spec\nINVARIANT Short";
+    let spec = spec_extending("Naturals, Sequences, TLC, TLCExt", &body);
+    let searched = explore(spec, config, System { init: vec![0], next: counter });
+    assert_eq!(searched.ending, Ending::InvariantViolation("Short".into()));
+    assert_eq!(xs(&searched.trace), vec![0, 1, 2]);
+}
+
+/// The values of `x` along a behavior.
+fn xs(behavior: &[State]) -> Vec<i32> {
+    behavior
+        .iter()
+        .map(|state| match state[0] {
+            Value::Int(x) => x,
+            _ => panic!("x is an integer"),
+        })
+        .collect()
 }

@@ -6,6 +6,8 @@ edition.workspace = true
 license.workspace = true
 
 [dependencies]
+foldhash.workspace = true
+hashbrown.workspace = true
 tla-ast.workspace = true
 tla-eval.workspace = true
 tla-parser.workspace = true

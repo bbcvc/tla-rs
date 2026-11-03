@@ -2,8 +2,13 @@
 //! a set of the fingerprints of the states found, a FIFO queue of those to expand, and a link
 //! from each state to the one it was found from, for traces. It counts the states generated,
 //! repeats and initial states included, and the distinct states, as TLC does.
+//!
+//! Like TLC, it keeps no state once it has expanded it ([`store`]), and rebuilds the behavior to
+//! a violation from the initial states by the fingerprints along it.
 
-use std::collections::HashSet;
+mod store;
+
+use std::collections::VecDeque;
 use std::sync::{Arc, Mutex};
 
 use tla_eval::{EvalError, Evaluator, Result, State, Statistics};
@@ -12,6 +17,7 @@ use tla_value::{Symbol, Value};
 
 use crate::fingerprint::Fingerprinter;
 use crate::plan::{Check, Plan};
+use store::Store;
 
 /// The states of a model, which the model checker explores: TLC's order of the initial states
 /// and of the successors of a state, repeats included.
@@ -71,16 +77,20 @@ pub enum Ending {
 #[derive(Clone, Debug)]
 pub struct Search {
     pub ending: Ending,
+    /// The number of states in the behavior that ends in the violation.
+    pub trace_length: usize,
+    /// That behavior, rebuilt from the initial states, as far as it could be.
     pub trace: Vec<State>,
     pub generated: u64,
     pub distinct: u64,
     pub depth: u64,
 }
 
-/// What `TLCGet("level")` reads: the state the model checker expands and the one it checks.
+/// What `TLCGet("level")` reads: the state the model checker expands, with its index, and the
+/// one it checks.
 #[derive(Default)]
 struct Cursor {
-    expanding: Option<(State, i32)>,
+    expanding: Option<(State, i32, usize)>,
     candidate: Option<(State, i32)>,
 }
 
@@ -92,37 +102,18 @@ impl Cursor {
             return *level;
         }
         match &self.expanding {
-            Some((expanding, level)) if Arc::ptr_eq(expanding, state) => *level,
-            Some((_, level)) => level + 1,
+            Some((expanding, level, _)) if Arc::ptr_eq(expanding, state) => *level,
+            Some((_, level, _)) => level + 1,
             None => 0,
         }
     }
 }
 
-/// The states found, with how each was reached, which `TLCExt!Trace` reads.
-#[derive(Default)]
-struct Graph {
-    states: Vec<State>,
-    /// The index of the state each was found from, `None` for an initial state.
-    parents: Vec<Option<u32>>,
-    depths: Vec<u32>,
-}
-
-impl Graph {
-    fn path(&self, index: usize) -> Vec<State> {
-        let mut path = Vec::new();
-        let mut current = Some(index as u32);
-        while let Some(index) = current {
-            path.push(self.states[index as usize].clone());
-            current = self.parents[index as usize];
-        }
-        path.reverse();
-        path
-    }
-
-    fn find(&self, state: &State) -> Option<usize> {
-        self.states.iter().position(|found| Arc::ptr_eq(found, state))
-    }
+/// The end of the behavior to a violation: the stored state it goes through last, if any, and
+/// the state after it that wasn't stored.
+struct Trail {
+    stored: Option<usize>,
+    last: Option<State>,
 }
 
 struct Explorer<'a, S: Successors + ?Sized> {
@@ -131,8 +122,9 @@ struct Explorer<'a, S: Successors + ?Sized> {
     plan: &'a Plan,
     fingerprinter: &'a Fingerprinter,
     check_deadlock: bool,
-    seen: HashSet<u128>,
-    graph: Arc<Mutex<Graph>>,
+    store: Arc<Mutex<Store>>,
+    /// The states to expand, in the order they were found.
+    queue: VecDeque<State>,
     cursor: Arc<Mutex<Cursor>>,
     generated: u64,
     initial: u64,
@@ -144,7 +136,7 @@ struct Explorer<'a, S: Successors + ?Sized> {
 /// What a visit to a state found.
 enum Visit {
     Continue,
-    Stop(Ending, Vec<State>),
+    Stop(Ending, Trail),
 }
 
 /// Explores the states of `plan` breadth first.
@@ -155,45 +147,56 @@ pub fn search<S: Successors + ?Sized>(
     fingerprinter: &Fingerprinter,
     check_deadlock: bool,
 ) -> Search {
-    let graph = Arc::new(Mutex::new(Graph::default()));
+    // Only `TLCExt!Trace` reads the behavior to a state while the search runs.
+    let reads_behaviors =
+        evaluator.spec().modules.iter().any(|module| module.name.as_str() == "TLCExt");
+    let store = Arc::new(Mutex::new(Store::new(reads_behaviors)));
     let cursor = Arc::new(Mutex::new(Cursor::default()));
     let runtime = evaluator.runtime();
     let level = cursor.clone();
     runtime.on_level(move |state| level.lock().unwrap().level(state));
-    let behavior = graph.clone();
-    let behavior_cursor = cursor.clone();
-    runtime.on_behavior(move |state| {
-        let graph = behavior.lock().unwrap();
-        if let Some(index) = graph.find(state) {
-            return graph.path(index);
-        }
-        // A state being checked follows the one being expanded.
-        let expanding = behavior_cursor.lock().unwrap().expanding.clone();
-        let mut path = match expanding.and_then(|(expanding, _)| graph.find(&expanding)) {
-            Some(index) => graph.path(index),
-            None => Vec::new(),
-        };
-        path.push(state.clone());
-        path
-    });
+    if reads_behaviors {
+        let behavior_store = store.clone();
+        let behavior_cursor = cursor.clone();
+        runtime.on_behavior(move |state| {
+            // A state being checked follows the one being expanded.
+            let expanding = behavior_cursor.lock().unwrap().expanding.clone();
+            let Some((expanding, _, index)) = expanding else { return vec![state.clone()] };
+            let mut path = behavior_store.lock().unwrap().path(index).unwrap_or_default();
+            if !Arc::ptr_eq(&expanding, state) {
+                path.push(state.clone());
+            }
+            path
+        });
+    }
     let mut explorer = Explorer {
         successors,
         evaluator,
         plan,
         fingerprinter,
         check_deadlock,
-        seen: HashSet::new(),
-        graph,
+        store,
+        queue: VecDeque::new(),
         cursor,
         generated: 0,
         initial: 0,
         depth: 0,
         expanding: None,
     };
-    let (ending, trace) = explorer.run();
-    let distinct = explorer.graph.lock().unwrap().states.len() as u64;
+    let (ending, trail) = explorer.run();
+    let trace_length = match &trail {
+        Some(trail) => {
+            let stored =
+                trail.stored.map_or(0, |index| explorer.store.lock().unwrap().depth(index));
+            stored as usize + usize::from(trail.last.is_some())
+        }
+        None => 0,
+    };
+    let trace = trail.map(|trail| explorer.behavior(trail)).unwrap_or_default();
+    let distinct = explorer.store.lock().unwrap().len() as u64;
     Search {
         ending,
+        trace_length,
         trace,
         generated: explorer.generated,
         distinct,
@@ -202,43 +205,38 @@ pub fn search<S: Successors + ?Sized>(
 }
 
 impl<S: Successors + ?Sized> Explorer<'_, S> {
-    fn run(&mut self) -> (Ending, Vec<State>) {
+    fn run(&mut self) -> (Ending, Option<Trail>) {
         let mut stopped = None;
         let (successors, init) = (self.successors, &self.plan.init);
         let result = successors.init_states(init, &mut |state| match self.visit_initial(state)? {
             Visit::Continue => Ok(true),
-            Visit::Stop(ending, trace) => {
-                stopped = Some((ending, trace));
+            Visit::Stop(ending, trail) => {
+                stopped = Some((ending, Some(trail)));
                 Ok(false)
             }
         });
         self.cursor.lock().unwrap().candidate = None;
         if let Err(error) = result {
-            return (Ending::Error(error.to_string()), Vec::new());
+            return (Ending::Error(error.to_string()), None);
         }
         if let Some(stopped) = stopped {
             return stopped;
         }
         let Some(next) = self.plan.next else {
-            if self.graph.lock().unwrap().states.is_empty() {
-                return (Ending::Success, Vec::new());
+            if self.queue.is_empty() {
+                return (Ending::Success, None);
             }
             let message = "No next state actions defined to generate successor states from.";
-            return (Ending::Error(message.into()), Vec::new());
+            return (Ending::Error(message.into()), None);
         };
         let mut index = 0;
         loop {
             if self.evaluator.runtime().is_stopped.load(std::sync::atomic::Ordering::Relaxed) {
                 break;
             }
-            let (state, depth) = {
-                let graph = self.graph.lock().unwrap();
-                match graph.states.get(index) {
-                    Some(state) => (state.clone(), graph.depths[index]),
-                    None => break,
-                }
-            };
-            self.cursor.lock().unwrap().expanding = Some((state.clone(), depth as i32));
+            let Some(state) = self.queue.pop_front() else { break };
+            let depth = self.store.lock().unwrap().depth(index);
+            self.cursor.lock().unwrap().expanding = Some((state.clone(), depth as i32, index));
             self.expanding = Some(index);
             self.update_statistics(None);
             // TLC seeds a worker's random choices with the fingerprint of the state it expands.
@@ -250,8 +248,8 @@ impl<S: Successors + ?Sized> Explorer<'_, S> {
                 count += 1;
                 match self.visit_successor(index, &state, depth, successor)? {
                     Visit::Continue => Ok(true),
-                    Visit::Stop(ending, trace) => {
-                        stopped = Some((ending, trace));
+                    Visit::Stop(ending, trail) => {
+                        stopped = Some((ending, Some(trail)));
                         Ok(false)
                     }
                 }
@@ -262,28 +260,88 @@ impl<S: Successors + ?Sized> Explorer<'_, S> {
                 cursor.candidate = None;
                 cursor.expanding = None;
             }
+            let at_state = || Some(Trail { stored: Some(index), last: None });
             if let Err(error) = result {
-                return (Ending::Error(error.to_string()), self.graph.lock().unwrap().path(index));
+                return (Ending::Error(error.to_string()), at_state());
             }
             if let Some(stopped) = stopped {
                 return stopped;
             }
             if count == 0 && self.check_deadlock {
-                return (Ending::Deadlock, self.graph.lock().unwrap().path(index));
+                return (Ending::Deadlock, at_state());
             }
             index += 1;
         }
         // The postconditions read the counts of the whole search.
-        self.expanding = Some(self.graph.lock().unwrap().states.len());
+        self.expanding = Some(self.store.lock().unwrap().len());
         self.update_statistics(None);
-        (Ending::Success, Vec::new())
+        (Ending::Success, None)
+    }
+
+    /// The behavior that ends in `trail`, rebuilt as TLC rebuilds it: from the initial states,
+    /// each step to the successor with the fingerprint stored for the next state along it.
+    fn behavior(&self, trail: Trail) -> Vec<State> {
+        let mut behavior = Vec::new();
+        if let Some(stored) = trail.stored {
+            let store = self.store.lock().unwrap();
+            behavior = match store.path(stored) {
+                Some(path) => path,
+                None => {
+                    let fingerprints: Vec<u128> = store
+                        .lineage(stored)
+                        .into_iter()
+                        .map(|index| store.fingerprint(index))
+                        .collect();
+                    drop(store);
+                    self.replay(&fingerprints)
+                }
+            };
+        }
+        behavior.extend(trail.last);
+        behavior
+    }
+
+    /// The states with these fingerprints, each a successor of the one before, as far as they
+    /// can be found again.
+    fn replay(&self, fingerprints: &[u128]) -> Vec<State> {
+        let mut behavior: Vec<State> = Vec::new();
+        for &fingerprint in fingerprints {
+            match self.find_again(behavior.last(), fingerprint) {
+                Some(state) => behavior.push(state),
+                None => break,
+            }
+        }
+        behavior
+    }
+
+    /// The initial state, or the successor of `previous`, with the fingerprint `wanted`.
+    fn find_again(&self, previous: Option<&State>, wanted: u128) -> Option<State> {
+        let mut found = None;
+        let mut matches = |state: State| {
+            if self.fingerprint(&state).is_ok_and(|fingerprint| fingerprint == wanted) {
+                found = Some(state);
+                return Ok(false);
+            }
+            Ok(true)
+        };
+        let result = match previous {
+            None => self.successors.init_states(&self.plan.init, &mut matches),
+            Some(state) => {
+                let next = self.plan.next?;
+                self.evaluator.runtime().set_expanding(Some(state.clone()));
+                let result = self.successors.next_states(next, state, &mut matches);
+                self.evaluator.runtime().set_expanding(None);
+                result
+            }
+        };
+        result.ok().and(found)
     }
 
     /// Publishes the counts `TLCGet` reads, as TLC keeps them while it explores: a state is
     /// generated as soon as it is found, and distinct once it is found new, before its
     /// invariants are checked. `pending` is the depth of a new state not stored yet.
     fn update_statistics(&self, pending: Option<u32>) {
-        let stored = self.graph.lock().unwrap().states.len() as i64;
+        let stored = self.store.lock().unwrap().len() as i64;
         let distinct = stored + i64::from(pending.is_some());
         let queue = match self.expanding {
             Some(expanding) => (stored - expanding as i64 - 1).max(0),
@@ -374,12 +432,13 @@ impl<S: Successors + ?Sized> Explorer<'_, S> {
     }
 
     fn store(&mut self, fingerprint: u128, state: State, parent: Option<usize>, depth: u32) {
-        self.seen.insert(fingerprint);
         self.depth = self.depth.max(depth);
-        let mut graph = self.graph.lock().unwrap();
-        graph.states.push(state);
-        graph.parents.push(parent.map(|parent| parent as u32));
-        graph.depths.push(depth);
+        self.store.lock().unwrap().insert(fingerprint, &state, parent, depth);
+        self.queue.push_back(state);
+    }
+
+    fn is_found(&self, fingerprint: u128) -> bool {
+        self.store.lock().unwrap().contains(fingerprint)
     }
 
     /// TLC's `ModelChecker.checkInitialState` with one worker.
@@ -393,19 +452,20 @@ impl<S: Successors + ?Sized> Explorer<'_, S> {
         if is_in_model {
             self.track_possible(&self.plan.possible, &state, None)?;
         }
-        if is_in_model && self.seen.contains(&fingerprint) {
+        if is_in_model && self.is_found(fingerprint) {
             return Ok(Visit::Continue);
         }
         if is_in_model {
             self.update_statistics(Some(1));
         }
+        let trail = |state: &State| Trail { stored: None, last: Some(state.clone()) };
         if let Some(check) = self.first_failing(&self.plan.invariants, &state, None)? {
             let ending = Ending::InvariantViolation(check.name.clone());
-            return Ok(Visit::Stop(ending, vec![state]));
+            return Ok(Visit::Stop(ending, trail(&state)));
         }
         if let Some(check) = self.first_failing(&self.plan.initial_predicates, &state, None)? {
             let ending = Ending::PropertyViolation(check.name.clone());
-            return Ok(Visit::Stop(ending, vec![state]));
+            return Ok(Visit::Stop(ending, trail(&state)));
         }
         if is_in_model {
             self.store(fingerprint, state, None, 1);
@@ -425,7 +485,7 @@ impl<S: Successors + ?Sized> Explorer<'_, S> {
         self.update_statistics(None);
         self.cursor.lock().unwrap().candidate = Some((successor.clone(), depth as i32 + 1));
         let fingerprint = self.fingerprint(&successor)?;
-        let is_found = self.seen.contains(&fingerprint);
+        let is_found = self.is_found(fingerprint);
         let is_state_in_model = self.all_hold(&self.plan.constraints, &successor, None)?;
         if is_state_in_model {
             self.track_possible(&self.plan.possible, &successor, None)?;
@@ -439,11 +499,7 @@ impl<S: Successors + ?Sized> Explorer<'_, S> {
         if is_new {
             self.update_statistics(Some(depth + 1));
         }
-        let trace = || {
-            let mut trace = self.graph.lock().unwrap().path(parent);
-            trace.push(successor.clone());
-            trace
-        };
+        let trace = || Trail { stored: Some(parent), last: Some(successor.clone()) };
         // TLC checks the invariants of a state it hasn't stored, one the constraints exclude
         // included.
         if !(is_in_model && is_found)

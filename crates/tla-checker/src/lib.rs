@@ -227,16 +227,16 @@ pub fn check<S: Successors>(
         }),
         Ending::InvariantViolation(name) => Outcome {
             violation: Some(name),
-            trace_length: Some(searched.trace.len()),
+            trace_length: Some(searched.trace_length),
             ..Outcome::new(Status::InvariantViolation)
         },
         Ending::PropertyViolation(name) => Outcome {
             violation: Some(name),
-            trace_length: Some(searched.trace.len()),
+            trace_length: Some(searched.trace_length),
             ..Outcome::new(Status::LivenessViolation)
         },
         Ending::Deadlock => {
-            Outcome { trace_length: Some(searched.trace.len()), ..Outcome::new(Status::Deadlock) }
+            Outcome { trace_length: Some(searched.trace_length), ..Outcome::new(Status::Deadlock) }
         }
         Ending::Error(message) => Outcome::error(message),
     };
