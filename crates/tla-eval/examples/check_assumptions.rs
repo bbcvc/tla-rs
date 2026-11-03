@@ -137,6 +137,8 @@ fn check(spec_path: &Path, library: &HashMap<String, PathBuf>, options: Options)
     // TLC creates its model checker, whose options TLCGet("config") reads, before it checks the
     // assumptions. The options TLC takes from its command line keep their defaults.
     evaluator.runtime().start(CheckerOptions::for_config(&config));
+    // TLC computes the constant definitions as it starts, before it checks the assumptions.
+    evaluator.evaluate_constant_definitions();
     for def in assumptions {
         match evaluator.eval_def(def, None) {
             Ok(value) if value.as_bool() == Some(true) => {}
