@@ -1,0 +1,105 @@
+//! Evaluates the expressions of a resolved specification.
+//!
+//! An [`Evaluator`] holds a [`Spec`], the values the model configuration gives its constants,
+//! and the native implementations that replace the placeholder definitions of TLC's standard
+//! modules, as TLC's Java overrides replace them. Expressions are evaluated in a chain of
+//! frames (see [`tla_resolve::Scope`]), with an optional current state and next state.
+
+mod config;
+mod env;
+mod eval;
+mod native;
+mod runtime;
+mod stdlib;
+
+use std::sync::Arc;
+
+pub use config::bind_constants;
+pub use native::{Arg, Ctx, Native, Operator};
+pub use runtime::Runtime;
+use tla_ast::{Span, Symbol};
+use tla_resolve::{DefId, ModuleId, Spec};
+pub use tla_value::{self as value, Value};
+
+/// An evaluation error at a place in a module.
+#[derive(Clone, Debug, PartialEq, Eq, thiserror::Error)]
+#[error("{message}\nline {line}, column {column} of module {module}")]
+pub struct EvalError {
+    pub message: String,
+    pub module: Symbol,
+    pub span: Span,
+    pub line: usize,
+    pub column: usize,
+}
+
+impl EvalError {
+    pub(crate) fn at(
+        spec: &Spec,
+        module: ModuleId,
+        span: Span,
+        message: impl Into<String>,
+    ) -> Self {
+        let info = &spec.modules[module.index()];
+        let (line, column) = span.line_column(&info.source);
+        Self { message: message.into(), module: info.name, span, line, column }
+    }
+}
+
+pub type Result<T> = std::result::Result<T, EvalError>;
+
+/// What a declared constant stands for in a model.
+#[derive(Clone)]
+pub enum ConstBinding {
+    /// `N = 3` in the configuration.
+    Value(Value),
+    /// `N <- Def` in the configuration: the constant is replaced by a definition of the root
+    /// module.
+    Def(DefId),
+}
+
+/// The variables of one state, by [`tla_resolve::VarId`].
+pub type State = Arc<[Value]>;
+
+pub struct Evaluator {
+    pub(crate) spec: Arc<Spec>,
+    /// By [`tla_resolve::ConstId`].
+    pub(crate) constants: Vec<ConstBinding>,
+    /// The native implementation of each definition TLC overrides, by [`DefId`].
+    pub(crate) natives: Vec<Option<Native>>,
+    pub(crate) runtime: Runtime,
+}
+
+impl Evaluator {
+    pub fn new(spec: Arc<Spec>, constants: Vec<ConstBinding>) -> Self {
+        let uses_integers = spec
+            .modules
+            .iter()
+            .any(|module| module.is_standard && module.name.as_str() == "Integers");
+        let natives = spec
+            .defs
+            .iter()
+            .map(|def| {
+                let module = &spec.modules[def.module.index()];
+                let is_overridable = tla_resolve::is_standard_module(module.name.as_str());
+                is_overridable
+                    .then(|| stdlib::lookup(module.name.as_str(), def.name.as_str(), uses_integers))
+                    .flatten()
+            })
+            .collect();
+        Self { spec, constants, natives, runtime: Runtime::default() }
+    }
+
+    pub fn spec(&self) -> &Spec {
+        &self.spec
+    }
+
+    pub fn runtime(&self) -> &Runtime {
+        &self.runtime
+    }
+
+    /// Evaluates a definition without parameters, such as an `ASSUME` or `Init`, in `state`, or
+    /// as a constant expression when there is no state.
+    pub fn eval_def(&self, def: DefId, state: Option<&State>) -> Result<Value> {
+        self.eval_zero_arity(def, state)
+    }
+}

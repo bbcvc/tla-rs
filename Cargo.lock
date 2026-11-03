@@ -345,6 +345,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "tla-eval"
+version = "0.1.0"
+dependencies = [
+ "thiserror",
+ "tla-ast",
+ "tla-parser",
+ "tla-resolve",
+ "tla-value",
+]
+
+[[package]]
 name = "tla-intern"
 version = "0.1.0"
 dependencies = [
