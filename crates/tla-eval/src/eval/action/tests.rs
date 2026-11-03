@@ -298,3 +298,178 @@ fn explores_dining_philosophers_as_tlc_does() {
     let enabled = evaluator.eval_def(def(&evaluator, "NoDeadlock"), Some(&initial[0])).unwrap();
     assert_eq!(enabled.to_string(), "TRUE");
 }
+
+const ACTIONS: &str = r#"
+---- MODULE Actions ----
+EXTENDS Naturals
+VARIABLES x, y
+Inc(c) == c' = c + 1
+Both(A, B) == A /\ B
+Parameterized == Inc(x) /\ UNCHANGED y
+Arguments == Both(x' = 1, y' = x' + 1)
+Branching == x' = 1 /\ (TRUE \/ TRUE) /\ y' = 2
+Settled == x' = 1 /\ y' = 2 /\ (TRUE \/ TRUE)
+Box == [x' = x + 1 /\ y' = y]_<<x, y>>
+Angle == <<x' = 5>>_x /\ y' = y
+Ordered == \E v \in {3, 1, 2} : x' = v /\ y' = y
+Members == x' \in {3, 1} /\ y' \in {7, 6}
+Subsets == x' \subseteq {1, 2} /\ y' = y
+PrimedExpression == x' = 1 /\ y' = 2 /\ (x + y)' = 3
+Let == LET z == x + 10 IN x' = z /\ y' = y
+If == IF x = 0 THEN x' = 1 /\ y' = y ELSE UNCHANGED <<x, y>>
+Case == CASE x = 0 -> x' = 5 /\ y' = y [] OTHER -> UNCHANGED <<x, y>>
+Forall == \A v \in {4} : x' = v /\ y' = v
+Conflicting == \A v \in {1, 2} : x' = v /\ y' = y
+Implication == (x = 0 => x' = 9) /\ x' \in {9, 8} /\ y' = y
+InitFiltered == x \in {1, 2, 3} /\ y = x + 1 /\ x # 2
+InitExists == \E v \in {1, 2} : x = v /\ y = v * 10
+====
+"#;
+
+fn successors(name: &str, x: i32, y: i32) -> Vec<String> {
+    next_states(&evaluator(ACTIONS), name, &state(vec![Value::Int(x), Value::Int(y)])).unwrap()
+}
+
+#[test]
+fn walks_into_definitions_and_their_arguments() {
+    assert_eq!(successors("Parameterized", 0, 7), ["1, 7"]);
+    assert_eq!(successors("Arguments", 0, 0), ["1, 2"]);
+    assert_eq!(successors("Let", 1, 2), ["11, 2"]);
+    assert_eq!(successors("If", 0, 2), ["1, 2"]);
+    assert_eq!(successors("If", 3, 2), ["3, 2"]);
+    assert_eq!(successors("Case", 0, 2), ["5, 2"]);
+    assert_eq!(successors("Case", 1, 2), ["1, 2"]);
+    assert_eq!(successors("Implication", 0, 0), ["9, 0"]);
+    assert_eq!(successors("Implication", 1, 0), ["8, 0", "9, 0"]);
+}
+
+/// Once every variable has a value, TLC evaluates the conjuncts left as predicates, so only a
+/// disjunction met before that yields a successor for each disjunct.
+#[test]
+fn branches_until_every_variable_has_a_value() {
+    assert_eq!(successors("Branching", 0, 0), ["1, 2", "1, 2"]);
+    assert_eq!(successors("Settled", 0, 0), ["1, 2"]);
+    assert_eq!(successors("PrimedExpression", 0, 0), ["1, 2"]);
+}
+
+#[test]
+fn enumerates_choices_in_tlc_order() {
+    assert_eq!(successors("Ordered", 0, 0), ["1, 0", "2, 0", "3, 0"]);
+    assert_eq!(successors("Members", 0, 0), ["1, 6", "1, 7", "3, 6", "3, 7"]);
+    assert_eq!(successors("Subsets", 0, 5), ["{}, 5", "{1}, 5", "{2}, 5", "{1, 2}, 5"]);
+    assert_eq!(successors("Forall", 0, 0), ["4, 4"]);
+    assert!(successors("Conflicting", 0, 0).is_empty());
+}
+
+#[test]
+fn walks_subscripted_actions() {
+    assert_eq!(successors("Box", 1, 2), ["2, 2", "1, 2"]);
+    assert_eq!(successors("Angle", 1, 2), ["5, 2"]);
+    assert!(successors("Angle", 5, 2).is_empty());
+}
+
+#[test]
+fn filters_initial_states_by_later_conjuncts() {
+    let evaluator = evaluator(ACTIONS);
+    assert_eq!(init_states(&evaluator, "InitFiltered").unwrap(), ["1, 2", "3, 4"]);
+    assert_eq!(init_states(&evaluator, "InitExists").unwrap(), ["1, 10", "2, 20"]);
+}
+
+const INNER: &str = r#"
+---- MODULE Inner ----
+EXTENDS Naturals
+VARIABLE v
+Step == v' = v + 1
+====
+"#;
+
+#[test]
+fn walks_actions_of_instances() {
+    let source = r#"
+---- MODULE Outer ----
+VARIABLES x, y
+I == INSTANCE Inner WITH v <- x
+P(w) == INSTANCE Inner WITH v <- w
+Named == I!Step /\ UNCHANGED y
+Parameterized == P(y)!Step /\ UNCHANGED x
+====
+"#;
+    let spec =
+        tla_resolve::resolve(source, &mut |name: &str| (name == "Inner").then(|| INNER.to_owned()))
+            .unwrap();
+    let evaluator = Evaluator::new(Arc::new(spec), Vec::new());
+    let current = state(vec![Value::Int(1), Value::Int(5)]);
+    assert_eq!(next_states(&evaluator, "Named", &current).unwrap(), ["2, 5"]);
+    assert_eq!(next_states(&evaluator, "Parameterized", &current).unwrap(), ["1, 6"]);
+}
+
+const ERRORS: &str = r#"
+---- MODULE Errors ----
+EXTENDS Naturals
+VARIABLES x, y
+A == x' = 1
+Next == A \/ (x' = 2 /\ y' = 3)
+Partial == x' = 1
+InitPartial == x = 1
+Literal == 3 /\ x' = 1 /\ y' = 1
+Late == x' = 1 /\ y' = 1 /\ 3
+If == IF 1 THEN x' = 1 ELSE x' = 2
+Infinite == x' \in Nat /\ y' = y
+InitUnchanged == UNCHANGED x
+Early == y' = x' /\ x' = 1
+====
+"#;
+
+fn error(name: &str) -> EvalError {
+    let evaluator = evaluator(ERRORS);
+    next_states(&evaluator, name, &state(vec![Value::Int(0), Value::Int(0)])).unwrap_err()
+}
+
+/// tla-ts's successors.ts: TLC's errors for the states it can't complete.
+#[test]
+fn reports_incomplete_states_with_the_partial_state() {
+    let next = error("Next");
+    assert_eq!(
+        next.message,
+        "Successor state is not completely specified by action A of the next-state relation. The following variable is not defined: y."
+    );
+    let incomplete = next.incomplete.unwrap();
+    assert_eq!(incomplete.action.map(|name| name.as_str()), Some("A"));
+    assert_eq!(incomplete.missing.len(), 1);
+    assert_eq!(incomplete.state, [Some("1".to_owned()), None]);
+    assert!(
+        error("Partial")
+            .message
+            .starts_with("Successor state is not completely specified by the next-state action.")
+    );
+    let evaluator = evaluator(ERRORS);
+    let init = init_states(&evaluator, "InitPartial").unwrap_err();
+    assert_eq!(init.message, "current state is not a legal state");
+    assert_eq!(init.incomplete.unwrap().state, [Some("1".to_owned()), None]);
+}
+
+#[test]
+fn words_errors_as_tlc_does() {
+    assert_eq!(error("Literal").message, "The next state relation is not a boolean expression.\n3");
+    assert_eq!(
+        error("Late").message,
+        "In computing next states, TLC expected a boolean expression,\nbut instead found 3.\n3"
+    );
+    assert_eq!(
+        error("If").message,
+        "In computing next states, a non-boolean expression (an integer) was used as the condition of an IF.line 11, col 7 to line 11, col 34 of module Errors"
+    );
+    assert_eq!(
+        error("Infinite").message,
+        "In computing next states, the right side of \\IN is not enumerable.\nline 12, col 13 to line 12, col 22 of module Errors"
+    );
+    assert_eq!(
+        error("Early").message,
+        "In evaluation, the identifier x is either undefined or not an operator.\nline 14, col 15 to line 14, col 15 of module Errors"
+    );
+    let evaluator = evaluator(ERRORS);
+    assert_eq!(
+        init_states(&evaluator, "InitUnchanged").unwrap_err().message,
+        "UNCHANGED appears in an initial predicate at line 13, column 18"
+    );
+}
