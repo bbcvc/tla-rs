@@ -148,9 +148,20 @@ impl Evaluator {
     /// `ENABLED action`: whether the action, evaluated where `env` is, has a successor of the
     /// state `env` reads. TLC stops at the first successor, and doesn't require it complete.
     pub(crate) fn is_enabled(&self, action: &Expr, expr: &Expr, env: &Env<'_>) -> Result<bool> {
-        let Some(state) = env.state.and_then(StateRef::complete) else {
-            let message = format!("ENABLED needs a complete state at {}", self.location(env, expr));
-            return Err(self.error(env, expr, message));
+        // A state being assigned will do once every variable has a value, as where an initial
+        // predicate conjoins ENABLED after its assignments.
+        let assigned: State;
+        let state = match env.state {
+            Some(StateRef::Complete(state)) => state,
+            Some(StateRef::Partial(values, _)) if values.iter().all(Option::is_some) => {
+                assigned = values.iter().map(|value| value.clone().expect("assigned")).collect();
+                &assigned
+            }
+            _ => {
+                let message =
+                    format!("ENABLED needs a complete state at {}", self.location(env, expr));
+                return Err(self.error(env, expr, message));
+            }
         };
         let def = DefId(0);
         let mut run = Run::new(self, Computation::Enabled, Some(state), def, None);

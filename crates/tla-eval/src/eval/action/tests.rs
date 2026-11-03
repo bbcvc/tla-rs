@@ -797,3 +797,12 @@ fn walks_a_definition_substituted_in_an_instantiated_module() {
     let scoped = configured(source, &[("Inner", inner)], "CONSTANTS Step <- [Inner] Fast");
     assert_eq!(next_states(&scoped, "Next", &current).unwrap(), ["101, 101"]);
 }
+
+#[test]
+fn computes_enabled_in_an_initial_state_once_assigned() {
+    let source = "---- MODULE M ----\nEXTENDS Naturals\nVARIABLE x\nInit == x \\in {0, 1} /\\ ENABLED (x < 1 /\\ x' = x + 1)\nEarly == ENABLED (x' = 1) /\\ x = 0\n====\n";
+    let evaluator = evaluator(source);
+    assert_eq!(init_states(&evaluator, "Init").unwrap(), ["0"]);
+    let error = init_states(&evaluator, "Early").unwrap_err();
+    assert_eq!(error.message, "ENABLED needs a complete state at line 5, column 10");
+}
