@@ -232,11 +232,9 @@ pub fn check<S: Successors>(
     let liveness = match has_variables {
         true => match liveness::checker::Checker::new(
             &evaluator,
-            &plan.properties,
-            &plan.fairness,
+            &plan,
             &overrides,
-            &plan.enabled,
-            plan.next,
+            plan.view.is_some() || config.symmetry.is_some(),
         ) {
             Ok(liveness) => liveness,
             Err(message) => return Outcome::error(message),

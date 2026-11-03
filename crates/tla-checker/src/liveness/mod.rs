@@ -58,6 +58,26 @@ pub(crate) mod tests {
     }
 
     #[test]
+    fn expands_recursive_operators_with_the_values_of_their_arguments() {
+        // tla-ts gives the same outcomes.
+        let body = format!(
+            "{SPEC}\nRECURSIVE Steps(_)\nSteps(n) == IF n = 0 THEN <>(x = 3) ELSE <>(x = n) /\\ Steps(n - 1)\nAll == Steps(3)"
+        );
+        let outcome = run(
+            &body,
+            "SPECIFICATION Fair\nPROPERTY All\nCHECK_DEADLOCK FALSE",
+            System { init: vec![0], next: counter },
+        );
+        assert_eq!(outcome.status, Status::Success);
+        let outcome = run(
+            &body,
+            "SPECIFICATION Spec\nPROPERTY All\nCHECK_DEADLOCK FALSE",
+            System { init: vec![0], next: counter },
+        );
+        assert_eq!((outcome.status, outcome.trace_length), (Status::LivenessViolation, Some(4)));
+    }
+
+    #[test]
     fn rejects_tautologies() {
         let body = format!("{SPEC}\nTaut == <>(x = 1) \\/ TRUE");
         let config = "SPECIFICATION Spec\nPROPERTY Taut\nCHECK_DEADLOCK FALSE";

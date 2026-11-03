@@ -4,7 +4,6 @@
 
 use std::collections::HashMap;
 
-use tla_ast::Span;
 use tla_eval::{Evaluator, State};
 use tla_resolve::{DefId, Expr};
 
@@ -13,6 +12,7 @@ use super::graph::{Graph, remove_repeats};
 use super::lasso::{self, Lasso};
 use super::live::{AtomKind, Eval, Live};
 use super::tableau::{self, Solution};
+use crate::plan::Plan;
 
 /// A successor of a state in the model, with its index in the search if it was stored.
 #[derive(Clone)]
@@ -51,6 +51,9 @@ struct Cache {
     known: Vec<u8>,
     /// The number of state predicates.
     width: usize,
+    /// Whether the index of a state stands for the state alone, so that results by index can
+    /// be shared.
+    is_shared: bool,
 }
 
 impl Cache {
@@ -64,6 +67,9 @@ impl Cache {
 
     /// Notes the index of a state of this addition.
     fn index(&mut self, state: &State, index: u32) {
+        if !self.is_shared {
+            return;
+        }
         self.indices.insert(key(state), index);
         self.alive.push(state.clone());
     }
@@ -103,25 +109,24 @@ fn key(state: &State) -> *const tla_eval::Value {
 }
 
 impl<'e> Checker<'e> {
-    /// The checker of the temporal `properties` of a spec with `fairness`, each a module-level
-    /// definition spec processing made, or `None` without properties. `overrides` are the
-    /// definitions the configuration replaces, and `enabled` the definitions `ENABLED <<A>>_v`
-    /// of the fairness conditions.
+    /// The checker of the temporal properties of `plan`, or `None` without them. `overrides`
+    /// are the definitions the configuration replaces. With a `VIEW` or a `SYMMETRY`, the
+    /// states the search takes for one differ, so `is_reduced` keeps the results of the state
+    /// predicates from being shared between them.
     pub fn new(
         evaluator: &'e Evaluator,
-        properties: &[(String, DefId)],
-        fairness: &[DefId],
+        plan: &'e Plan,
         overrides: &'e HashMap<DefId, DefId>,
-        enabled: &'e HashMap<(DefId, Span), DefId>,
-        next: Option<DefId>,
+        is_reduced: bool,
     ) -> Result<Option<Self>, String> {
-        if properties.is_empty() {
+        if plan.properties.is_empty() {
             return Ok(None);
         }
-        let mut translation = Translation::new(evaluator, overrides, enabled, next);
+        let mut translation = Translation::new(evaluator, overrides, &plan.enabled, plan.next);
         let fairness: Vec<Live> =
-            fairness.iter().map(|&def| translation.formula(def)).collect::<Result<_, _>>()?;
-        let mut negations: Vec<Live> = properties
+            plan.fairness.iter().map(|&def| translation.formula(def)).collect::<Result<_, _>>()?;
+        let mut negations: Vec<Live> = plan
+            .properties
             .iter()
             .map(|(_, def)| Ok(Live::not(translation.formula(*def)?)))
             .collect::<Result<_, String>>()?;
@@ -160,7 +165,7 @@ impl<'e> Checker<'e> {
             graphs,
             action_ids: ids.len(),
             capacity: 1,
-            cache: Cache { width, ..Cache::default() },
+            cache: Cache { width, is_shared: !is_reduced, ..Cache::default() },
         }))
     }
 
