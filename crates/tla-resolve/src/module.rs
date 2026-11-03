@@ -648,6 +648,7 @@ impl Resolver<'_> {
         layout.frame = Some(frame.id);
         layout.lets = frame.lets;
         layout.let_bodies = frame.let_bodies;
+        layout.label_bodies = frame.label_bodies;
         self.pending.remove(&def);
     }
 

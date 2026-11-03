@@ -20,7 +20,7 @@ impl Analyzer<'_> {
         is_non_leibniz: bool,
         names: &mut BTreeSet<Param>,
     ) {
-        if !body.is_application(expr.span) {
+        if body.is_let_body(expr.span) {
             return;
         }
         let flag = is_non_leibniz;

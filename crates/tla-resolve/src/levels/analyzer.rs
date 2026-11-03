@@ -51,12 +51,18 @@ pub(crate) struct Body<'a> {
     /// The frames from the definition's own outward.
     pub chain: Vec<FrameId>,
     pub let_bodies: &'a [Span],
+    pub label_bodies: &'a [Span],
 }
 
 impl<'a> Body<'a> {
     /// The body of a definition, or a value outside any definition when `def` is `None`.
-    pub fn new(def: Option<DefId>, chain: Vec<FrameId>, let_bodies: &'a [Span]) -> Self {
-        Self { def, chain, let_bodies }
+    pub fn new(
+        def: Option<DefId>,
+        chain: Vec<FrameId>,
+        let_bodies: &'a [Span],
+        label_bodies: &'a [Span],
+    ) -> Self {
+        Self { def, chain, let_bodies, label_bodies }
     }
 
     pub fn param(&self, local: Local) -> Param {
@@ -70,7 +76,11 @@ impl<'a> Body<'a> {
 
     /// Whether SANY sees an operator application here, rather than a `LET`.
     pub fn is_application(&self, span: Span) -> bool {
-        !self.let_bodies.contains(&span)
+        !self.is_let_body(span) && !self.label_bodies.contains(&span)
+    }
+
+    pub fn is_let_body(&self, span: Span) -> bool {
+        self.let_bodies.contains(&span)
     }
 }
 
@@ -235,7 +245,7 @@ impl<'a> Analyzer<'a> {
     fn analyze(&mut self, def: DefId) -> DefInfo {
         let spec = self.spec;
         let layout = &self.layout.defs[def.index()];
-        let body = Body::new(Some(def), self.chain(def), &layout.let_bodies);
+        let body = Body::new(Some(def), self.chain(def), &layout.let_bodies, &layout.label_bodies);
         let mut non_leibniz = BTreeSet::new();
         let mut raw = match &spec.def(def).body {
             DefBody::Expr(expr) => {

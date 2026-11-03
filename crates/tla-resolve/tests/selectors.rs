@@ -3,7 +3,7 @@
 
 use std::collections::HashMap;
 
-use tla_resolve::{DefBody, ExprKind, ResolveError, RootName, Scope, Spec, resolve};
+use tla_resolve::{DefBody, ExprKind, Level, ResolveError, RootName, Scope, Spec, resolve};
 
 fn resolve_with(root: &str, modules: &[(&str, &str)]) -> Result<Spec, ResolveError> {
     let modules: HashMap<String, String> =
@@ -90,4 +90,19 @@ fn rejects_references_sany_rejects() {
 fn rejects_an_operator_argument_of_the_wrong_arity() {
     let found = error("F(G(_, _)) == G(1, 2)\nOp(a) == a + 1\nX == F(Op!:)");
     assert_eq!(found, "Expected an operator of 2 arguments here.");
+}
+
+#[test]
+fn levels_a_selection_and_hides_an_action_under_a_label() {
+    let spec = spec(
+        "VARIABLE x\nNext == /\\ x' = x + 1\n        /\\ x < 3\nGuard == Next!2\nStep == Next!1\nL == [](lab :: x')",
+    );
+    let level = |name: &str| {
+        let Some(RootName::Def(id)) = spec.lookup(name) else { panic!() };
+        spec.level(id)
+    };
+    assert_eq!(
+        [level("Guard"), level("Step"), level("L")],
+        [Level::State, Level::Action, Level::Temporal]
+    );
 }

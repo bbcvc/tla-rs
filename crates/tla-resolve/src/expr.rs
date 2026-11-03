@@ -23,6 +23,8 @@ pub(crate) struct FrameScope {
     pub lets: Vec<DefId>,
     /// The span of the body of each `LET` resolved in the frame.
     pub let_bodies: Vec<Span>,
+    /// The span of the body of each label resolved in the frame.
+    pub label_bodies: Vec<Span>,
 }
 
 /// The built-in operator an operator symbol stands for, if TLA+ defines it itself.
@@ -257,8 +259,13 @@ impl Resolver<'_> {
                 Reference::Expr(kind) => kind,
                 Reference::Operator(op) => ExprKind::OpArg(op),
             },
-            // A label only names its body for subexpression references.
-            A::Label { body, .. } => return self.expr(elab, body),
+            A::Label { body, .. } => {
+                let body = self.expr(elab, body)?;
+                if let Some(frame) = self.frames.last_mut() {
+                    frame.label_bodies.push(body.span);
+                }
+                return Ok(body);
+            }
             A::Lambda { .. } => {
                 return Err(self.error(
                     elab.module,

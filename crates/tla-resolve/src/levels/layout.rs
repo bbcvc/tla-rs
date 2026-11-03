@@ -38,6 +38,9 @@ pub(crate) struct DefLayout {
     /// The span of the body of each `LET` in the body. Resolution replaces a `LET` with its body,
     /// which SANY tells apart from an operator application.
     pub let_bodies: Vec<Span>,
+    /// The span of the body of each label in the body, which SANY also tells apart from an
+    /// operator application.
+    pub label_bodies: Vec<Span>,
     /// `I!J!` for a definition of the named instances `I` and `J`, which SANY names `I!J!Op`.
     pub qualifier: Option<Rc<str>>,
     /// Whether resolution made the definition elaborating a module under the substitutions of an
