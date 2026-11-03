@@ -1,6 +1,8 @@
 //! Functions: canonical construction, application, `DOMAIN`, and `EXCEPT`.
 
 use std::borrow::Cow;
+use std::cell::RefCell;
+use std::collections::HashMap;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 
@@ -69,6 +71,22 @@ pub enum Key {
     Field(Symbol),
 }
 
+/// The keys of records with the fields `names`, sorted and distinct: one allocation for each
+/// shape of record a thread builds, so that records of one shape share their keys.
+fn record_keys(names: &[Symbol]) -> Arc<[Value]> {
+    thread_local! {
+        static SHAPES: RefCell<HashMap<Box<[Symbol]>, Arc<[Value]>>> = RefCell::default();
+    }
+    SHAPES.with_borrow_mut(|shapes| {
+        if let Some(keys) = shapes.get(names) {
+            return keys.clone();
+        }
+        let keys: Arc<[Value]> = names.iter().map(|name| Value::Str(*name)).collect();
+        shapes.insert(names.into(), keys.clone());
+        keys
+    })
+}
+
 impl Value {
     /// The function mapping each key to its value. A function whose domain is `1..n` becomes a
     /// tuple. A repeated key keeps its first value.
@@ -113,24 +131,27 @@ impl Value {
 
     /// The record `[name |-> value, ...]`, which keeps the order its fields are written in.
     pub fn record(fields: Vec<(Symbol, Value)>) -> Value {
+        if fields.is_empty() {
+            return Value::empty_tuple();
+        }
         if fields.windows(2).all(|pair| pair[0].0 < pair[1].0) {
-            let (keys, values) =
-                fields.into_iter().map(|(name, value)| (Value::Str(name), value)).unzip();
-            return Self::from_sorted(keys, values);
+            let (names, values): (Vec<Symbol>, Vec<Value>) = fields.into_iter().unzip();
+            let keys = record_keys(&names);
+            return Value::Func(Arc::new(Func { keys, values: values.into(), written: None }));
         }
         let written: Vec<Value> = fields.iter().map(|(name, _)| Value::Str(*name)).collect();
         let mut fields = fields;
         fields.sort_by_key(|(name, _)| *name);
         fields.dedup_by_key(|(name, _)| *name);
-        let (keys, values): (Vec<Value>, Vec<Value>) =
-            fields.into_iter().map(|(name, value)| (Value::Str(name), value)).unzip();
+        let (names, values): (Vec<Symbol>, Vec<Value>) = fields.into_iter().unzip();
+        let keys = record_keys(&names);
         // A record with a repeated field is sorted, as TLC builds it.
         let written = if keys.len() == written.len() {
             WrittenOrder::of(&keys, &written).expect("field names compare")
         } else {
             None
         };
-        Value::Func(Arc::new(Func { keys: keys.into(), values: values.into(), written }))
+        Value::Func(Arc::new(Func { keys, values: values.into(), written }))
     }
 
     /// The function `@@` builds from `pairs`, which keeps the order of keys that are all
@@ -244,7 +265,7 @@ impl Value {
     pub fn domain(&self) -> Result<Value> {
         match self {
             Value::Tuple(items) => Ok(Value::Interval(1, items.len() as i32)),
-            Value::Func(func) => Ok(Value::Set(func.keys.to_vec().into())),
+            Value::Func(func) => Ok(Value::Set(func.keys.clone())),
             Value::LazyFunc(lazy) => Ok(lazy.domain.clone()),
             _ => fail!([self], "DOMAIN expects a function but received {self}"),
         }

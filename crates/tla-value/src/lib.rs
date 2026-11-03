@@ -93,7 +93,7 @@ pub enum Value {
 /// never depend on it.
 #[derive(Clone)]
 pub struct Func {
-    pub keys: Box<[Value]>,
+    pub keys: Arc<[Value]>,
     pub values: Box<[Value]>,
     pub(crate) written: Option<Box<func::WrittenOrder>>,
 }
