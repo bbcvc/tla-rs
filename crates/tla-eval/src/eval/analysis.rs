@@ -81,7 +81,7 @@ pub(crate) fn normalizing_evaluations(spec: &Spec, tlc_eval: DefId) -> HashSet<u
 }
 
 /// Whether an expression is constant, as SANY's levels decide it.
-fn is_constant(spec: &Spec, expr: &Expr) -> bool {
+pub(super) fn is_constant(spec: &Spec, expr: &Expr) -> bool {
     let mut pending = vec![expr];
     while let Some(expr) = pending.pop() {
         let is_constant = match &expr.kind {

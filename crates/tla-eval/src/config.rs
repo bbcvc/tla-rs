@@ -88,21 +88,28 @@ fn arity(spec: &Spec, name: RootName) -> usize {
 
 /// What an entry for `name`, scoped to `module` if it has one, replaces. TLC ignores an entry for
 /// a name the specification doesn't have, and a scoped entry for the root module or a declared
-/// constant.
-fn targets(spec: &Spec, name: Symbol, module: Option<Symbol>) -> Option<RootName> {
+/// constant. A scoped entry replaces the definition in every instance of the module, which
+/// resolution elaborates as a definition of its own.
+fn targets(spec: &Spec, name: Symbol, module: Option<Symbol>) -> Vec<RootName> {
     let Some(module) = module else {
-        return spec.lookup(name.as_str()).filter(|found| !matches!(found, RootName::Var(_)));
+        let found = spec.lookup(name.as_str());
+        return found.filter(|found| !matches!(found, RootName::Var(_))).into_iter().collect();
     };
     let is_declared = spec.constants.iter().any(|constant| constant.name == name);
     if module == spec.modules[0].name || is_declared {
-        return None;
+        return Vec::new();
     }
-    let module = spec.modules.iter().position(|info| info.name == module)?;
-    let index = spec
-        .defs
-        .iter()
-        .position(|def| def.name == name && def.module.index() == module && def.depth == 0)?;
-    Some(RootName::Def(DefId(index as u32)))
+    let Some(module) = spec.modules.iter().position(|info| info.name == module) else {
+        return Vec::new();
+    };
+    (0..spec.defs.len())
+        .map(|index| DefId(index as u32))
+        .filter(|&id| {
+            let def = spec.def(id);
+            def.name == name && def.module.index() == module && def.depth == 0
+        })
+        .map(RootName::Def)
+        .collect()
 }
 
 /// What `N <- target` replaces `N` with.
@@ -146,12 +153,16 @@ fn substitute(
 pub fn bind_model(spec: &Spec, config: &ModelConfig) -> Result<Model, ConfigError> {
     let mut constants: Vec<Option<ConstBinding>> = vec![None; spec.constants.len()];
     let mut overrides = Vec::new();
-    let mut bind = |target: Option<RootName>,
+    let mut bind = |targets: Vec<RootName>,
                     binding: ConstBinding,
-                    constants: &mut Vec<Option<ConstBinding>>| match target {
-        Some(RootName::Const(id)) => constants[id.index()] = Some(binding),
-        Some(RootName::Def(def)) => overrides.push((def, binding)),
-        Some(RootName::Var(_)) | None => {}
+                    constants: &mut Vec<Option<ConstBinding>>| {
+        for target in targets {
+            match target {
+                RootName::Const(id) => constants[id.index()] = Some(binding.clone()),
+                RootName::Def(def) => overrides.push((def, binding.clone())),
+                RootName::Var(_) => {}
+            }
+        }
     };
 
     for assignment in config.constants.iter().filter(|assignment| assignment.args.is_empty()) {
@@ -188,11 +199,11 @@ pub fn bind_model(spec: &Spec, config: &ModelConfig) -> Result<Model, ConfigErro
     for substitution in &config.substitutions {
         let (name, target) = (substitution.name, substitution.target);
         let replaced = targets(spec, name, substitution.module);
-        if substitution.module.is_some() && replaced.is_none() {
+        if substitution.module.is_some() && replaced.is_empty() {
             continue;
         }
         if substitution.module.is_none() {
-            if replaced.is_none() {
+            if replaced.is_empty() {
                 return Err(error(format!(
                     "In the configuration file, the identifier {name} does not appear in the specification."
                 )));
@@ -203,7 +214,7 @@ pub fn bind_model(spec: &Spec, config: &ModelConfig) -> Result<Model, ConfigErro
                 )));
             }
         }
-        let binding = substitute(spec, name, target, replaced, &constants)?;
+        let binding = substitute(spec, name, target, replaced.first().copied(), &constants)?;
         bind(replaced, binding, &mut constants);
     }
 
@@ -330,5 +341,29 @@ Missing == F(5)
             eval("Missing").unwrap_err().message,
             "Attempted to apply operator:\n{ <0, 1>, <1, 2>}\nto arguments (5), which is undefined."
         );
+    }
+
+    #[test]
+    fn applies_a_scoped_entry_in_every_instance_of_the_module() {
+        let root = r#"
+---- MODULE M ----
+VARIABLES x, y
+I == INSTANCE Inner WITH v <- x
+J == INSTANCE Inner WITH v <- y
+Both == <<I!Size, J!Size>>
+Small == 0
+====
+"#;
+        let inner = "---- MODULE Inner ----\nVARIABLE v\nSize == 1\n====\n";
+        let spec = std::sync::Arc::new(
+            resolve(root, &mut |name: &str| (name == "Inner").then(|| inner.to_string())).unwrap(),
+        );
+        let config = parse_config("CONSTANTS Size <- [Inner] Small").unwrap();
+        let model = bind_model(&spec, &config).unwrap();
+        assert_eq!(model.overrides.len(), 2);
+        let evaluator =
+            Evaluator::new(spec.clone(), model.constants).with_overrides(model.overrides);
+        let Some(RootName::Def(both)) = spec.lookup("Both") else { panic!() };
+        assert_eq!(evaluator.eval_def(both, None).unwrap().to_string(), "<<0, 0>>");
     }
 }

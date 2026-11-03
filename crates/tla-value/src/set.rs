@@ -54,7 +54,7 @@ pub(crate) fn is_overridden(value: &Value) -> bool {
 }
 
 /// Whether TLC's `Enumerable` interface covers the value: every set but the overridden ones.
-fn is_tlc_enumerable(value: &Value) -> bool {
+pub(crate) fn is_tlc_enumerable(value: &Value) -> bool {
     value.is_set() && !is_overridden(value)
 }
 
@@ -110,10 +110,14 @@ fn subsets(base: &[Value]) -> Vec<Value> {
     subsets
 }
 
+/// How a set lists the elements of a set it combines: in TLC's order, or as TLC streams them.
+pub(crate) type ElementsOf = fn(&Value) -> Result<Arc<[Value]>>;
+
 /// The elements of the sets a set of records or tuples combines, enumerated in turn, stopping at
 /// the first empty one, which leaves the combination empty.
 fn component_elements(
     sets: &[&Value],
+    elements_of: ElementsOf,
     unenumerable: impl Fn(&Value, usize) -> String,
 ) -> Result<Vec<Arc<[Value]>>> {
     let mut lists = Vec::with_capacity(sets.len());
@@ -121,7 +125,7 @@ fn component_elements(
         if is_overridden(set) {
             return Err(Error(unenumerable(set, index)));
         }
-        let elements = set.elements()?;
+        let elements = elements_of(set)?;
         if elements.is_empty() {
             return Ok(vec![elements]);
         }
@@ -142,14 +146,14 @@ fn keep(set: &Value, mut test: impl FnMut(&Value) -> Result<bool>) -> Result<Arc
 }
 
 /// The sets `UNION base` combines, which TLC must be able to enumerate.
-fn union_sets(base: &Value) -> Result<Arc<[Value]>> {
+pub(crate) fn union_sets(base: &Value, elements_of: ElementsOf) -> Result<Arc<[Value]>> {
     if !is_tlc_enumerable(base) {
         fail!([base], "Attempted to enumerate the nonenumerable set:\nUNION({base})");
     }
-    base.elements()
+    elements_of(base)
 }
 
-fn union_set<'a>(base: &Value, set: &'a Value, index: usize) -> Result<&'a Value> {
+pub(crate) fn union_set<'a>(base: &Value, set: &'a Value, index: usize) -> Result<&'a Value> {
     if is_tlc_enumerable(set) {
         return Ok(set);
     }
@@ -217,6 +221,8 @@ impl Value {
     /// The set of `elements`. A set whose elements TLC can't sort, such as `{1, "a"}`, is kept
     /// as written, as TLC keeps it, and fails only when something has to sort it.
     pub fn set(elements: Vec<Value>) -> Result<Value> {
+        // TLC's `ValueVec.sort` compares each element after the first with those before it.
+        elements.iter().skip(1).for_each(Value::cache_elements);
         match sort_unique(elements.clone()) {
             Ok(sorted) => Ok(Value::Set(sorted.into())),
             Err(_) => Ok(Value::MixedSet(elements.into())),
@@ -333,57 +339,8 @@ impl Value {
                 }
                 Ok(subsets(&base).into())
             }
-            LazySet::FuncSet { domain, range } => {
-                if self.is_empty()? {
-                    return Ok(Arc::from([]));
-                }
-                if is_overridden(domain) {
-                    fail!(
-                        [domain],
-                        "Attempted to enumerate a set of the form [D -> R],but the domain D:\n{domain}\ncannot be enumerated."
-                    );
-                }
-                let keys = domain.elements()?;
-                if !keys.is_empty() && is_overridden(range) {
-                    fail!(
-                        [range],
-                        "Attempted to enumerate a set of the form [D -> R],but the range R:\n{range}\ncannot be enumerated."
-                    );
-                }
-                let range = if keys.is_empty() { Arc::from([]) } else { range.elements()? };
-                let lists = vec![range; keys.len()];
-                choices(&lists)
-                    .into_iter()
-                    .map(|values| Value::function(keys.iter().cloned().zip(values).collect()))
-                    .collect()
-            }
-            LazySet::RecordSet(fields) => {
-                if self.is_empty()? {
-                    return Ok(Arc::from([]));
-                }
-                let sets: Vec<&Value> = fields.iter().map(|(_, set)| set).collect();
-                let lists = component_elements(&sets, |set, index| {
-                    format!(
-                        "Attempted to enumerate a set of the form [l1 : v1, ..., ln : vn],\nbut can't enumerate the value of the `{}' field:\n{set}",
-                        fields[index].0
-                    )
-                })?;
-                let records = choices(&lists).into_iter().map(|values| {
-                    Value::record(fields.iter().map(|(name, _)| *name).zip(values).collect())
-                });
-                Ok(records.collect())
-            }
-            LazySet::Product(factors) => {
-                if self.is_empty()? {
-                    return Ok(Arc::from([]));
-                }
-                let sets: Vec<&Value> = factors.iter().collect();
-                let lists = component_elements(&sets, |factor, index| {
-                    format!(
-                        "Attempted to enumerate a set of the form s1 \\X s2 ... \\X sn,\nbut can't enumerate s{index}:\n{factor}"
-                    )
-                })?;
-                Ok(choices(&lists).into_iter().map(Value::tuple).collect())
+            LazySet::FuncSet { .. } | LazySet::RecordSet(_) | LazySet::Product(_) => {
+                self.combined_elements(set, Value::elements)
             }
             LazySet::Seq(_) | LazySet::Nat | LazySet::Int | LazySet::String | LazySet::Any => {
                 fail!([self], "Attempted to enumerate the non-enumerable set {self}")
@@ -431,11 +388,75 @@ impl Value {
             }
             LazySet::Union(base) => {
                 let mut elements = Vec::new();
-                for (index, set) in union_sets(base)?.iter().enumerate() {
+                for (index, set) in union_sets(base, Value::elements)?.iter().enumerate() {
                     elements.extend(union_set(base, set, index)?.elements()?.iter().cloned());
                 }
                 Value::set(elements)?.elements()
             }
+        }
+    }
+
+    /// The elements of a set of functions, records, or tuples, built from the elements of the
+    /// sets it combines as `elements_of` lists them; the keys of functions in TLC's order.
+    pub(crate) fn combined_elements(
+        &self,
+        set: &LazySet,
+        elements_of: ElementsOf,
+    ) -> Result<Arc<[Value]>> {
+        match set {
+            LazySet::FuncSet { domain, range } => {
+                if self.is_empty()? {
+                    return Ok(Arc::from([]));
+                }
+                if is_overridden(domain) {
+                    fail!(
+                        [domain],
+                        "Attempted to enumerate a set of the form [D -> R],but the domain D:\n{domain}\ncannot be enumerated."
+                    );
+                }
+                let keys = domain.elements()?;
+                if !keys.is_empty() && is_overridden(range) {
+                    fail!(
+                        [range],
+                        "Attempted to enumerate a set of the form [D -> R],but the range R:\n{range}\ncannot be enumerated."
+                    );
+                }
+                let range = if keys.is_empty() { Arc::from([]) } else { elements_of(range)? };
+                let lists = vec![range; keys.len()];
+                choices(&lists)
+                    .into_iter()
+                    .map(|values| Value::function(keys.iter().cloned().zip(values).collect()))
+                    .collect()
+            }
+            LazySet::RecordSet(fields) => {
+                if self.is_empty()? {
+                    return Ok(Arc::from([]));
+                }
+                let sets: Vec<&Value> = fields.iter().map(|(_, set)| set).collect();
+                let lists = component_elements(&sets, elements_of, |set, index| {
+                    format!(
+                        "Attempted to enumerate a set of the form [l1 : v1, ..., ln : vn],\nbut can't enumerate the value of the `{}' field:\n{set}",
+                        fields[index].0
+                    )
+                })?;
+                let records = choices(&lists).into_iter().map(|values| {
+                    Value::record(fields.iter().map(|(name, _)| *name).zip(values).collect())
+                });
+                Ok(records.collect())
+            }
+            LazySet::Product(factors) => {
+                if self.is_empty()? {
+                    return Ok(Arc::from([]));
+                }
+                let sets: Vec<&Value> = factors.iter().collect();
+                let lists = component_elements(&sets, elements_of, |factor, index| {
+                    format!(
+                        "Attempted to enumerate a set of the form s1 \\X s2 ... \\X sn,\nbut can't enumerate s{index}:\n{factor}"
+                    )
+                })?;
+                Ok(choices(&lists).into_iter().map(Value::tuple).collect())
+            }
+            _ => self.elements(),
         }
     }
 
@@ -467,7 +488,7 @@ impl Value {
                 }
                 LazySet::FuncSet { domain, range } => Ok(!domain.is_empty()? && range.is_empty()?),
                 LazySet::Union(base) => {
-                    for (index, set) in union_sets(base)?.iter().enumerate() {
+                    for (index, set) in union_sets(base, Value::elements)?.iter().enumerate() {
                         if !union_set(base, set, index)?.is_empty()? {
                             return Ok(false);
                         }
@@ -484,18 +505,22 @@ impl Value {
     pub fn contains(&self, value: &Value) -> Result<bool> {
         match self {
             // TLC tests membership in a set enumeration it hasn't normalized member by member,
-            // so a comparison that fails fails as the equality of a member with the value.
-            Value::Set(elements) => match search(elements, value) {
-                Ok(found) => Ok(found.is_ok()),
-                Err(error) => {
-                    for element in elements.iter() {
-                        if element.equals(value)? {
-                            return Ok(true);
+            // so a comparison that fails fails as the equality of a member with the value. Either
+            // way it compares the value with the members as the receiver.
+            Value::Set(elements) => {
+                value.cache_elements();
+                match search(elements, value) {
+                    Ok(found) => Ok(found.is_ok()),
+                    Err(error) => {
+                        for element in elements.iter() {
+                            if element.equals(value)? {
+                                return Ok(true);
+                            }
                         }
+                        Err(error)
                     }
-                    Err(error)
                 }
-            },
+            }
             Value::MixedSet(elements) => {
                 for element in elements.iter() {
                     if element.equals(value)? {
@@ -818,7 +843,10 @@ impl Value {
                         Error(format!("Overflow when computing the number of elements in {self}"))
                     })
                 }
-                _ => Ok(self.elements()?.len() as i32),
+                _ => {
+                    self.cache_elements();
+                    Ok(self.elements()?.len() as i32)
+                }
             },
         }
     }

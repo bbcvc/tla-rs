@@ -1,6 +1,7 @@
 //! The frames expressions are evaluated in, and what lazy values capture of them.
 
 use std::ptr::NonNull;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, OnceLock};
 
 use tla_resolve::{Expr, ModuleId, Spec};
@@ -62,14 +63,37 @@ pub(crate) struct Thunk {
 #[derive(Clone, Copy)]
 pub(crate) enum StateRef<'a> {
     Complete(&'a State),
-    Partial(&'a [Option<Value>]),
+    Partial(&'a [Option<Value>], Version),
+}
+
+/// Which of the values a state being assigned holds. Each assignment makes a new version, and
+/// undoing it returns to the one before, as tla-ts's states being assigned are copied on each
+/// assignment and shared otherwise.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub(crate) struct Version {
+    /// The enumeration the state belongs to, unique in the process.
+    run: u64,
+    step: u64,
+}
+
+impl Version {
+    /// The first version of a state a new enumeration assigns.
+    pub fn first() -> Self {
+        static RUNS: AtomicU64 = AtomicU64::new(0);
+        Self { run: RUNS.fetch_add(1, Ordering::Relaxed), step: 0 }
+    }
+
+    /// The `step`th version after the first of the same enumeration.
+    pub fn at(self, step: u64) -> Self {
+        Self { run: self.run, step }
+    }
 }
 
 impl<'a> StateRef<'a> {
     pub fn get(self, index: usize) -> Option<&'a Value> {
         match self {
             StateRef::Complete(state) => state.get(index),
-            StateRef::Partial(state) => state.get(index).and_then(Option::as_ref),
+            StateRef::Partial(state, _) => state.get(index).and_then(Option::as_ref),
         }
     }
 
@@ -77,14 +101,14 @@ impl<'a> StateRef<'a> {
     pub fn complete(self) -> Option<&'a State> {
         match self {
             StateRef::Complete(state) => Some(state),
-            StateRef::Partial(_) => None,
+            StateRef::Partial(..) => None,
         }
     }
 
     fn to_owned(self) -> OwnedState {
         match self {
             StateRef::Complete(state) => OwnedState::Complete(state.clone()),
-            StateRef::Partial(state) => OwnedState::Partial(state.into()),
+            StateRef::Partial(state, version) => OwnedState::Partial(state.into(), version),
         }
     }
 }
@@ -93,18 +117,18 @@ impl<'a> StateRef<'a> {
 #[derive(Clone)]
 pub(crate) enum OwnedState {
     Complete(State),
-    Partial(Arc<[Option<Value>]>),
-    /// A state being assigned that a thunk doesn't keep, since it reads the state of the
-    /// expression that forces it.
-    Changing,
+    Partial(Arc<[Option<Value>]>, Version),
+    /// The version of a state being assigned, which a thunk keeps instead of the values, since
+    /// it reads the state of the expression that forces it.
+    Changing(Version),
 }
 
 impl OwnedState {
     fn as_ref(&self) -> StateRef<'_> {
         match self {
             OwnedState::Complete(state) => StateRef::Complete(state),
-            OwnedState::Partial(state) => StateRef::Partial(state),
-            OwnedState::Changing => StateRef::Partial(&[]),
+            OwnedState::Partial(state, version) => StateRef::Partial(state, *version),
+            OwnedState::Changing(version) => StateRef::Partial(&[], *version),
         }
     }
 }
@@ -131,14 +155,18 @@ impl Captured {
         }
     }
 
-    /// Whether `env` reads the states this was captured in. A state still being assigned
-    /// changes, so it is never the same.
+    /// Whether `env` reads the states this was captured in: the same complete states, and the
+    /// same version of a state being assigned.
     pub fn is_in_states_of(&self, env: &Env<'_>) -> bool {
         fn same(captured: Option<&OwnedState>, current: Option<StateRef<'_>>) -> bool {
             match (captured, current) {
                 (Some(OwnedState::Complete(captured)), Some(StateRef::Complete(current))) => {
                     Arc::ptr_eq(captured, current)
                 }
+                (
+                    Some(OwnedState::Changing(captured) | OwnedState::Partial(_, captured)),
+                    Some(StateRef::Partial(_, current)),
+                ) => captured == &current,
                 (None, None) => true,
                 _ => false,
             }
@@ -180,12 +208,12 @@ impl Env<'_> {
         }
     }
 
-    /// What a thunk keeps: the frame and the complete states, which tell when its value can be
-    /// cached, but not a copy of a state being assigned.
+    /// What a thunk keeps: the frame and the states, which tell when its value can be cached,
+    /// but only the version of a state being assigned.
     pub fn capture_scope(&self) -> Captured {
         let keep = |state: StateRef<'_>| match state {
             StateRef::Complete(state) => OwnedState::Complete(state.clone()),
-            StateRef::Partial(_) => OwnedState::Changing,
+            StateRef::Partial(_, version) => OwnedState::Changing(version),
         };
         Captured {
             frame: self.frame.clone(),
@@ -208,6 +236,12 @@ pub(crate) struct SpecRef<T: ?Sized> {
 // alive, so it can move and be shared across threads when `&T` can.
 unsafe impl<T: Sync + ?Sized> Send for SpecRef<T> {}
 unsafe impl<T: Sync + ?Sized> Sync for SpecRef<T> {}
+
+impl<T: ?Sized> Clone for SpecRef<T> {
+    fn clone(&self) -> Self {
+        Self { spec: self.spec.clone(), item: self.item }
+    }
+}
 
 impl<T: ?Sized> SpecRef<T> {
     /// # Safety

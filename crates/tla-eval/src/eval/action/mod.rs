@@ -8,8 +8,10 @@
 //! branch assigns variables in place and undoes them when it returns, instead of copying the
 //! state for each branch.
 
+mod apply;
 mod assign;
 mod run;
+mod split;
 
 use std::sync::Arc;
 
@@ -19,6 +21,7 @@ use tla_value::{Symbol, Value};
 
 pub(crate) use self::run::Computation;
 use self::run::{Run, env};
+pub use self::split::NextAction;
 use super::bound::{Variable, bind_frame};
 use super::describe;
 use crate::env::{Frame, Slot};
@@ -28,7 +31,7 @@ use crate::{ConstBinding, EvalError, Evaluator, Result};
 /// Where an action expression is: the frame it reads its parameters and bound variables from,
 /// and the module whose text holds it.
 #[derive(Clone)]
-pub(super) struct Site {
+pub(crate) struct Site {
     pub frame: Arc<Frame>,
     pub module: ModuleId,
 }
@@ -273,15 +276,20 @@ impl Evaluator {
                     Slot::Op(op) => op.clone(),
                     _ => return self.guard(expr, site, run, action, rest),
                 };
-                match &operator.0 {
-                    OperatorKind::Def { def, parent } if self.is_walked(*def) => {
-                        let callee = self.callee(*def, parent.clone(), args, site, run)?;
-                        let DefBody::Expr(body) = &self.spec.def(*def).body else { unreachable!() };
-                        let name = self.spec.def(*def).name;
-                        self.act(body, &callee, run, action.called(name), rest)
-                    }
-                    _ => self.guard(expr, site, run, action, rest),
-                }
+                let OperatorKind::Def { def, parent } = &operator.0 else {
+                    return self.guard(expr, site, run, action, rest);
+                };
+                let Some(target) = self.walked(*def, args.len()) else {
+                    return self.guard(expr, site, run, action, rest);
+                };
+                let parent = if target == *def { parent.clone() } else { None };
+                let callee = self.callee(target, parent, args, site, run)?;
+                let info = self.spec.def(target);
+                let DefBody::Expr(body) = &info.body else { unreachable!("a walked definition") };
+                self.act(body, &callee, run, action.called(info.name), rest)
+            }
+            ExprKind::FuncApp { func, args } => {
+                self.act_application(func, args, expr, site, run, action, rest)
             }
             ExprKind::Local(local) => {
                 // An argument that is an action, as `A` in `Op(A) == A /\ ...`, is walked where
@@ -300,13 +308,45 @@ impl Evaluator {
         }
     }
 
-    /// Whether the walk enters the body of `def` rather than evaluate a call of it: a
-    /// definition of the spec, which no native or configuration replaces.
-    fn is_walked(&self, def: DefId) -> bool {
-        self.natives[def.index()].is_none()
-            && self.overrides[def.index()].is_none()
-            && self.tlc_eval != Some(def)
-            && matches!(self.spec.def(def).body, DefBody::Expr(_))
+    /// The definition whose body the walk enters for a call of `def` with `arity` arguments,
+    /// as TLC looks it up: the definition the configuration replaces it with, `Op <- Other`,
+    /// through any further replacement, or `def` itself. `None` where the walk evaluates the
+    /// call instead: a definition a native or a value replaces, or a function definition.
+    fn walked(&self, def: DefId, arity: usize) -> Option<DefId> {
+        let mut target = def;
+        for _ in 0..self.spec.defs.len() {
+            match &self.overrides[target.index()] {
+                Some(ConstBinding::Def(other)) => target = *other,
+                Some(_) => return None,
+                None => break,
+            }
+        }
+        let info = self.spec.def(target);
+        let is_walked = self.overrides[target.index()].is_none()
+            && self.natives[target.index()].is_none()
+            && self.tlc_eval != Some(target)
+            && matches!(info.body, DefBody::Expr(_))
+            && info.params.len() == arity
+            // A replacement is a definition of the root module, outside every frame.
+            && (target == def || info.depth == 0);
+        is_walked.then_some(target)
+    }
+
+    /// The site of the body of `target`, which the walk enters for a call of `def` in `scope`
+    /// with `args` of `site`. A definition the configuration replaces `def` with is at the top
+    /// level, outside the call's scope.
+    #[allow(clippy::too_many_arguments)]
+    fn entered(
+        &self,
+        def: DefId,
+        target: DefId,
+        scope: &Scope,
+        args: &[Expr],
+        site: &Site,
+        run: &Run<'_>,
+    ) -> Result<Site> {
+        let parent = if target == def { self.scope_frame(scope, &env(site, run))? } else { None };
+        self.callee(target, parent, args, site, run)
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -321,12 +361,11 @@ impl Evaluator {
         action: Action,
         rest: &Rest<'_>,
     ) -> Result<()> {
-        let info = self.spec.def(def);
-        if !self.is_walked(def) || args.len() != info.params.len() {
+        let Some(target) = self.walked(def, args.len()) else {
             return self.guard(expr, site, run, action, rest);
-        }
-        let parent = self.scope_frame(scope, &env(site, run))?;
-        let callee = self.callee(def, parent, args, site, run)?;
+        };
+        let callee = self.entered(def, target, scope, args, site, run)?;
+        let info = self.spec.def(target);
         let DefBody::Expr(body) = &info.body else { unreachable!("a walked definition") };
         self.act(body, &callee, run, action.called(info.name), rest)
     }
@@ -351,13 +390,30 @@ impl Evaluator {
     }
 
     /// Binds the variables to each combination of their elements in a copy of the frame of
-    /// `site`, the first variable varying fastest, and visits each.
+    /// `site`, the first variable varying fastest, and visits each until the run stops.
     fn for_each_site(
         &self,
         variables: &[Variable<'_>],
         site: &Site,
         run: &mut Run<'_>,
         mut visit: impl FnMut(&Self, &mut Run<'_>, &Site) -> Result<()>,
+    ) -> Result<()> {
+        self.for_each_bound_site(variables, site, |bound| {
+            if run.is_stopped {
+                return Ok(false);
+            }
+            visit(self, run, bound)?;
+            Ok(true)
+        })
+    }
+
+    /// Binds the variables to each combination of their elements in a copy of the frame of
+    /// `site`, the first variable varying fastest, and visits each until `visit` returns false.
+    fn for_each_bound_site(
+        &self,
+        variables: &[Variable<'_>],
+        site: &Site,
+        mut visit: impl FnMut(&Site) -> Result<bool>,
     ) -> Result<()> {
         if variables.iter().any(|variable| variable.elements.len() == 0) {
             return Ok(());
@@ -372,10 +428,9 @@ impl Evaluator {
             bind(&mut bound, variable, 0)?;
         }
         loop {
-            if run.is_stopped {
+            if !visit(&bound)? {
                 return Ok(());
             }
-            visit(self, run, &bound)?;
             let mut position = 0;
             loop {
                 let Some(variable) = variables.get(position) else { return Ok(()) };

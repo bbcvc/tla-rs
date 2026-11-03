@@ -473,3 +473,314 @@ fn words_errors_as_tlc_does() {
         "UNCHANGED appears in an initial predicate at line 13, column 18"
     );
 }
+
+const FUNCTION_ACTIONS: &str = r#"
+---- MODULE FunctionActions ----
+VARIABLES x, y
+Actions == [p \in {1, 2} |-> x' = p /\ y' = y]
+Steps[n \in {1, 2}] == x' = n /\ y' = n
+One == Actions[1]
+Each == \E p \in {2, 1} : Actions[p]
+Defined == Steps[2]
+Guard == <<TRUE, FALSE>>[1] /\ x' = x /\ y' = y
+Outside == Actions[3]
+NotBoolean == <<1>>[1] /\ x' = x /\ y' = y
+NotFunction == {1}[1] /\ x' = x /\ y' = y
+====
+"#;
+
+/// tla-ts's compileFunctionAction: TLC walks the body of a lazy function an action applies, at
+/// the argument, so each disjunct or witness inside it generates a state.
+#[test]
+fn walks_the_bodies_of_functions_of_actions() {
+    let evaluator = evaluator(FUNCTION_ACTIONS);
+    let current = state(vec![Value::Int(0), Value::Int(0)]);
+    let successors = |name| next_states(&evaluator, name, &current);
+    assert_eq!(successors("One").unwrap(), ["1, 0"]);
+    assert_eq!(successors("Each").unwrap(), ["1, 0", "2, 0"]);
+    assert_eq!(successors("Defined").unwrap(), ["2, 2"]);
+    assert_eq!(successors("Guard").unwrap(), ["0, 0"]);
+    assert!(successors("Outside").unwrap_err().message.starts_with("In applying the function\n"));
+    assert_eq!(
+        successors("NotBoolean").unwrap_err().message,
+        "In computing next states, TLC expected a boolean expression,\nbut didn't find one.\nline 11, col 15 to line 11, col 22 of module FunctionActions"
+    );
+    assert_eq!(
+        successors("NotFunction").unwrap_err().message,
+        "In computing next states, a non-function (a set of the form {e1, ... ,eN}) was applied as a function.\nline 12, col 16 to line 12, col 21 of module FunctionActions"
+    );
+}
+
+/// The states generated and distinct of a spec with `body` after `EXTENDS Naturals, FiniteSets`.
+fn explore_body(body: &str) -> (usize, usize) {
+    let source = format!("---- MODULE M ----\nEXTENDS Naturals, FiniteSets\n{body}\n====");
+    explore(&evaluator(&source), "Init", "Next")
+}
+
+#[test]
+fn streams_lazy_unions_with_their_duplicates() {
+    let records = "x' \\in [b : UNION {{3, 1}, 0..1}, a : UNION {{2}, 1..2}]";
+    assert_eq!(explore_body(&format!("VARIABLE x\nInit == x = 0\nNext == {records}")).0, 85);
+    let set = "UNION {SUBSET {1}, {{}}}";
+    let body = format!("VARIABLE x\nInit == x \\in {set}\nNext == x' \\in {set}");
+    assert_eq!(explore_body(&body), (9, 2));
+    let counts =
+        |set: &str| explore_body(&format!("VARIABLE x\nInit == x \\in {set}\nNext == UNCHANGED x"));
+    assert_eq!(counts("SUBSET {1} \\cup SUBSET {2}"), (7, 3));
+    assert_eq!(counts("(1..3) \\cup SUBSET {}"), (8, 4));
+    assert_eq!(counts("{1} \\cup {1, 2}"), (4, 2));
+    assert_eq!(counts("UNION UNION (SUBSET {{}, {{}}})"), (3, 1));
+    assert_eq!(counts("UNION UNION {SUBSET {1}, {{1}}}"), (3, 1));
+    let nested = "x = 0 /\\ x' \\in UNION UNION (SUBSET {{1}, {1, 2}})";
+    assert_eq!(explore_body(&format!("VARIABLE x\nInit == x = 0\nNext == {nested}")), (7, 3));
+}
+
+#[test]
+fn streams_a_union_until_tlc_caches_it() {
+    let generated = |next: &str| {
+        let body =
+            format!("VARIABLES x, y\nInit == x = 0 /\\ y = 0\nNext == ({next}) /\\ UNCHANGED x");
+        explore_body(&body).0
+    };
+    let union = "UNION {UNION {0..2, {1}}, {7}}";
+    assert_eq!(generated(&format!("y' \\in {union}")), 21);
+    assert_eq!(generated(&format!("\\E e \\in {union} : y' = e")), 17);
+    assert_eq!(generated("y' \\in {1} \\X UNION {UNION {0..2, {1}}, {1, 2}}"), 25);
+    // A LET definition is evaluated anew at each reference, so sizing it leaves the next uncached.
+    assert_eq!(generated(&format!("LET u == {union} IN Cardinality(u) > 0 /\\ y' \\in u")), 21);
+    // Sizing the set itself caches it.
+    let sized = "\\E u \\in {UNION {0..2, {1}}} : Cardinality(u) > 0 /\\ y' \\in UNION {u, {7}}";
+    assert_eq!(generated(sized), 17);
+    // An argument keeps its value until the walk assigns a variable.
+    let call = |body: &str| {
+        let body = format!(
+            "VARIABLES x, y\nInit == x = 0 /\\ y = 0\nOp(u) == {body}\nNext == Op({union})"
+        );
+        explore_body(&body).0
+    };
+    assert_eq!(call("Cardinality(u) > 0 /\\ y' \\in u /\\ UNCHANGED x"), 17);
+    assert_eq!(call("Cardinality(u) > 0 /\\ UNCHANGED x /\\ y' \\in u"), 21);
+    // Sorting a set enumeration compares each element after the first, which caches it.
+    let counts =
+        |set: &str| explore_body(&format!("VARIABLE x\nInit == x \\in {set}\nNext == UNCHANGED x"));
+    assert_eq!(counts("UNION {UNION (SUBSET {{1}, {1, 2}}), {1}}"), (8, 3));
+    assert_eq!(counts("UNION {{1}, UNION (SUBSET {{1}, {1, 2}})}"), (6, 3));
+}
+
+fn labels(source: &str) -> Vec<String> {
+    let evaluator = evaluator(source);
+    let actions = evaluator.next_actions(def(&evaluator, "Next")).unwrap();
+    actions.iter().map(|action| evaluator.action_label(action)).collect()
+}
+
+const SPLIT: &str = r#"---- MODULE M ----
+EXTENDS Naturals
+VARIABLES x, y
+Init == x = 0 /\ y = 0
+A(i) == x' = i /\ y' = y
+B == \/ x' = x + 1 /\ y' = y
+     \/ y' = 2 /\ x' = x
+Next == \/ \E i \in 1..2 : A(i)
+        \/ B
+        \/ \E j \in {x} : x' = j /\ y' = y
+        \/ \E k \in {} : x' = k /\ y' = y
+====
+"#;
+
+#[test]
+fn splits_the_next_state_relation_as_tlc_does() {
+    assert_eq!(
+        labels(SPLIT),
+        [
+            "A(1) line 5, col 9 to line 5, col 24 of module M",
+            "A(2) line 5, col 9 to line 5, col 24 of module M",
+            "B line 6, col 9 to line 6, col 28 of module M",
+            "B line 7, col 9 to line 7, col 24 of module M",
+            "Next line 10, col 12 to line 10, col 42 of module M",
+            "Next line 11, col 12 to line 11, col 41 of module M",
+        ]
+    );
+    let calls = r#"---- MODULE M ----
+EXTENDS Naturals
+VARIABLES x, y
+Init == x = 0 /\ y = 0
+C == 3
+T == TRUE
+A(i, j) == LET L(k) == x' = k \/ x' = j IN L(i) /\ y' = y
+Next == \/ A(1, 2)
+        \/ A(x, 2)
+        \/ T
+        \/ C = 3 /\ UNCHANGED <<x, y>>
+====
+"#;
+    assert_eq!(
+        labels(calls),
+        [
+            "A(1,2) line 7, col 44 to line 7, col 57 of module M",
+            "A line 9, col 12 to line 9, col 18 of module M",
+            "T line 10, col 12 to line 10, col 12 of module M",
+            "Next line 11, col 12 to line 11, col 38 of module M",
+        ]
+    );
+    let single = "---- MODULE M ----\nVARIABLES x\nInit == x = 0\nNext == x' = 1\n====\n";
+    assert_eq!(labels(single), ["Next line 4, col 9 to line 4, col 14 of module M"]);
+}
+
+#[test]
+fn shares_the_split_across_threads() {
+    fn is_send_sync<T: Send + Sync>() {}
+    is_send_sync::<crate::NextAction>();
+}
+
+#[test]
+fn generates_the_successors_of_each_action_of_the_split() {
+    let evaluator = evaluator(SPLIT);
+    let current = state(vec![Value::Int(0), Value::Int(0)]);
+    let actions = evaluator.next_actions(def(&evaluator, "Next")).unwrap();
+    let mut each = Vec::new();
+    for action in actions.iter() {
+        evaluator
+            .action_states(action, &current, &mut |state| {
+                each.push(format!("{}: {}", action.signature(), printed(&state)));
+                Ok(true)
+            })
+            .unwrap();
+    }
+    assert_eq!(each, ["A(1): 1, 0", "A(2): 2, 0", "B: 1, 0", "B: 0, 2", "Next: 0, 0"]);
+    let all = next_states(&evaluator, "Next", &current).unwrap();
+    assert_eq!(all, ["1, 0", "2, 0", "1, 0", "0, 2", "0, 0"]);
+}
+
+#[test]
+fn names_the_action_of_an_incomplete_successor_when_the_relation_has_several() {
+    let source = |next: &str| {
+        format!(
+            "---- MODULE M ----\nVARIABLES x, y, z\nInit == x = 0 /\\ y = 0 /\\ z = 0\nA1 == x' = 1\nA2 == x' = 2 /\\ y' = 2 /\\ z' = 2\nNext == {next}\n====\n"
+        )
+    };
+    let message = |next: &str| {
+        let evaluator = evaluator(&source(next));
+        let current = state(vec![Value::Int(0), Value::Int(0), Value::Int(0)]);
+        next_states(&evaluator, "Next", &current).unwrap_err().message
+    };
+    assert_eq!(
+        message("x' = 1 /\\ y' = 1"),
+        "Successor state is not completely specified by the next-state action. The following variable is not defined: z."
+    );
+    assert_eq!(
+        message("A1"),
+        "Successor state is not completely specified by the next-state action. The following variables are not defined: y, z."
+    );
+    assert_eq!(
+        message("A1 \\/ A2"),
+        "Successor state is not completely specified by action A1 of the next-state relation. The following variables are not defined: y, z."
+    );
+    let evaluator = evaluator(&source("A1 \\/ A2"));
+    let actions = evaluator.next_actions(def(&evaluator, "Next")).unwrap();
+    let label = evaluator.action_label(&actions[0]);
+    assert_eq!(label, "A1 line 4, col 7 to line 4, col 12 of module M");
+}
+
+#[test]
+fn keeps_an_action_of_an_instance_whole() {
+    let inner = "---- MODULE Counter ----\nEXTENDS Naturals\nVARIABLE v\nInc == v' = v + 1\nDec(n) == v' = v - n\nBoth == Inc \\/ Dec(2)\n====\n";
+    let source = "---- MODULE M ----\nEXTENDS Naturals\nVARIABLE x\nI == INSTANCE Counter WITH v <- x\nInit == x = 0\nNext == I!Inc \\/ I!Dec(1) \\/ I!Dec(x) \\/ I!Both\n====\n";
+    let spec = tla_resolve::resolve(source, &mut |name: &str| {
+        (name == "Counter").then(|| inner.to_owned())
+    })
+    .unwrap();
+    let evaluator = Evaluator::new(Arc::new(spec), Vec::new());
+    let actions = evaluator.next_actions(def(&evaluator, "Next")).unwrap();
+    // TLC names these I!Inc, I!Dec(1), I!Dec, and I!Both, at the INSTANCE but for I!Dec(x).
+    let signatures: Vec<String> = actions.iter().map(|action| action.signature()).collect();
+    assert_eq!(signatures, ["Inc", "Dec(1)", "Dec", "Both"]);
+    assert_eq!(
+        evaluator.action_label(&actions[2]),
+        "Dec line 6, col 30 to line 6, col 37 of module M"
+    );
+    let current = state(vec![Value::Int(5)]);
+    let mut successors = Vec::new();
+    for action in actions.iter() {
+        evaluator
+            .action_states(action, &current, &mut |state| {
+                successors.push(printed(&state));
+                Ok(true)
+            })
+            .unwrap();
+    }
+    assert_eq!(successors, ["6", "4", "0", "6", "3"]);
+}
+
+/// An evaluator for `source`, with the modules `modules`, under the overrides of `config`.
+fn configured(source: &str, modules: &[(&str, &str)], config: &str) -> Evaluator {
+    let spec = tla_resolve::resolve(source, &mut |name: &str| {
+        modules.iter().find(|(module, _)| *module == name).map(|(_, text)| (*text).to_owned())
+    })
+    .unwrap_or_else(|error| panic!("{error}"));
+    let model = crate::bind_model(&spec, &tla_parser::parse_config(config).unwrap()).unwrap();
+    Evaluator::new(Arc::new(spec), model.constants).with_overrides(model.overrides)
+}
+
+const OVERRIDDEN: &str = r#"---- MODULE M ----
+EXTENDS Naturals
+VARIABLES x, y
+vars == <<x, y>>
+Init == x = 0 /\ y = 0
+MCInit == x \in {1, 2} /\ y = 0
+Step == x' = x + 1
+MCStep == x' = x + 10
+vars2 == <<y>>
+MCvars2 == <<>>
+Next == Step /\ UNCHANGED y
+MCNext == \/ Step /\ y' = y + 1
+          \/ x' = 0 /\ UNCHANGED vars2
+====
+"#;
+
+#[test]
+fn walks_the_definitions_the_configuration_substitutes() {
+    let current = state(vec![Value::Int(1), Value::Int(5)]);
+    let evaluator = configured(OVERRIDDEN, &[], "CONSTANTS Init <- MCInit Step <- MCStep");
+    assert_eq!(init_states(&evaluator, "Init").unwrap(), ["1, 0", "2, 0"]);
+    assert_eq!(next_states(&evaluator, "Next", &current).unwrap(), ["11, 5"]);
+    let evaluator = configured(OVERRIDDEN, &[], "CONSTANTS Next <- MCNext");
+    assert_eq!(next_states(&evaluator, "Next", &current).unwrap(), ["2, 6", "0, 5"]);
+    let labels: Vec<String> = evaluator
+        .next_actions(def(&evaluator, "Next"))
+        .unwrap()
+        .iter()
+        .map(|action| evaluator.action_label(action))
+        .collect();
+    assert_eq!(
+        labels,
+        [
+            "MCNext line 12, col 14 to line 12, col 31 of module M",
+            "MCNext line 13, col 14 to line 13, col 38 of module M",
+        ]
+    );
+    // UNCHANGED reads the substituted tuple, which leaves y unassigned.
+    let evaluator = configured(OVERRIDDEN, &[], "CONSTANTS Next <- MCNext vars2 <- MCvars2");
+    let error = next_states(&evaluator, "Next", &current).unwrap_err();
+    assert_eq!(
+        error.message,
+        "Successor state is not completely specified by action MCNext of the next-state relation. The following variable is not defined: y."
+    );
+}
+
+#[test]
+fn walks_a_definition_substituted_in_an_instantiated_module() {
+    let inner = "---- MODULE Inner ----\nEXTENDS Naturals\nVARIABLE v\nStep == v' = v + 1\nNext == Step\n====\n";
+    let source = "---- MODULE M ----\nEXTENDS Naturals\nVARIABLE x\nI == INSTANCE Inner WITH v <- x\nFast == x' = x + 100\nInit == x = 0\nNext == I!Next\n====\n";
+    let current = state(vec![Value::Int(1)]);
+    let plain = configured(source, &[("Inner", inner)], "");
+    assert_eq!(next_states(&plain, "Next", &current).unwrap(), ["2"]);
+    let scoped = configured(source, &[("Inner", inner)], "CONSTANTS Step <- [Inner] Fast");
+    assert_eq!(next_states(&scoped, "Next", &current).unwrap(), ["101"]);
+    // The entry replaces the definition in every instance of the module.
+    let source = "---- MODULE M ----\nEXTENDS Naturals\nVARIABLES x, y\nI == INSTANCE Inner WITH v <- x\nJ == INSTANCE Inner WITH v <- y\nFast == x' = x + 100 /\\ y' = y + 100\nInit == x = 0 /\\ y = 0\nNext == (I!Next /\\ y' = y) \\/ (J!Next /\\ x' = x) \\/ (I!Step /\\ y' \\in {y, y + 100})\n====\n";
+    let current = state(vec![Value::Int(1), Value::Int(1)]);
+    let plain = configured(source, &[("Inner", inner)], "");
+    assert_eq!(next_states(&plain, "Next", &current).unwrap(), ["2, 1", "1, 2", "2, 1", "2, 101"]);
+    let scoped = configured(source, &[("Inner", inner)], "CONSTANTS Step <- [Inner] Fast");
+    assert_eq!(next_states(&scoped, "Next", &current).unwrap(), ["101, 101"]);
+}

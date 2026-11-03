@@ -148,6 +148,7 @@ impl Value {
     /// value differs from everything but itself.
     pub fn equals(&self, other: &Value) -> Result<bool> {
         use Value::{Bool, Int, Model, Str};
+        self.cache_elements();
         match (self, other) {
             (Model(left), Model(right)) => {
                 check_model_types(self, other, true)?;

@@ -53,10 +53,10 @@ impl Evaluator {
                 }
                 _ => Ok(None),
             },
-            ExprKind::Call { def, scope, args } if args.is_empty() && self.is_walked(*def) => {
-                let DefBody::Expr(body) = &self.spec.def(*def).body else { return Ok(None) };
-                let parent = self.scope_frame(scope, &env(site, run))?;
-                let callee = self.callee(*def, parent, args, site, run)?;
+            ExprKind::Call { def, scope, args } if args.is_empty() => {
+                let Some(target) = self.walked(*def, 0) else { return Ok(None) };
+                let DefBody::Expr(body) = &self.spec.def(target).body else { return Ok(None) };
+                let callee = self.entered(*def, target, scope, args, site, run)?;
                 self.target_at(body, &callee, run, is_primed, depth + 1)
             }
             _ => Ok(None),
@@ -64,7 +64,9 @@ impl Evaluator {
     }
 
     /// `x' = e`, `x' \in S`, or `x' \subseteq S` for the variable `var`: assigns `var` if the
-    /// walk hasn't yet, for each element of `S` in TLC's order, and tests it otherwise.
+    /// walk hasn't yet, for each element of `S` as TLC's `Enumerator` streams it, and tests it
+    /// otherwise. A lazy union TLC hasn't cached streams each set it combines, so an element two
+    /// of them share is assigned once for each.
     #[allow(clippy::too_many_arguments)]
     pub(super) fn assign(
         &self,
@@ -97,7 +99,7 @@ impl Evaluator {
             let message = format!("{message}\n{}", self.range(&env, expr));
             return Err(self.error(&env, expr, message));
         }
-        let elements = set.elements().at(self, &env, expr)?;
+        let elements = set.streamed_elements().at(self, &env, expr)?;
         drop(env);
         for element in elements.iter() {
             run.with_assigned(var, element.clone(), |run| self.resume(run, action, rest))?;
@@ -172,10 +174,12 @@ impl Evaluator {
                     return self.keep(thunk.expr.get(), &origin, run, action, rest, depth + 1);
                 }
             }
-            ExprKind::Call { def, scope, args } if args.is_empty() && self.is_walked(*def) => {
-                let DefBody::Expr(body) = &self.spec.def(*def).body else { unreachable!() };
-                let parent = self.scope_frame(scope, &env(site, run))?;
-                let callee = self.callee(*def, parent, args, site, run)?;
+            ExprKind::Call { def, scope, args }
+                if args.is_empty()
+                    && let Some(target) = self.walked(*def, 0) =>
+            {
+                let DefBody::Expr(body) = &self.spec.def(target).body else { unreachable!() };
+                let callee = self.entered(*def, target, scope, args, site, run)?;
                 return self.keep(body, &callee, run, action, rest, depth + 1);
             }
             _ => {}
