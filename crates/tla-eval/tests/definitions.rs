@@ -1,0 +1,182 @@
+//! Definitions: recursion, operator arguments, `LAMBDA`, instances, and constants.
+
+mod common;
+
+use std::sync::Arc;
+
+use common::{error, eval, evaluator_with, ints, lookup, show, spec};
+use tla_eval::{ConstBinding, Evaluator};
+
+#[test]
+fn calls_recursive_operators() {
+    let printed = show(
+        r#"
+RECURSIVE Subsets(_)
+Subsets(S) == IF S = {} THEN {{}}
+              ELSE LET x == CHOOSE y \in S : TRUE
+                       rest == Subsets(S \ {x})
+                   IN rest \cup {T \cup {x} : T \in rest}
+RECURSIVE IsEven(_), IsOdd(_)
+IsEven(S) == IF S = {} THEN TRUE ELSE IsOdd(S \ {CHOOSE x \in S : TRUE})
+IsOdd(S) == IF S = {} THEN FALSE ELSE IsEven(S \ {CHOOSE x \in S : TRUE})
+Same == Subsets({1, 2, 3}) = SUBSET {1, 2, 3}
+Parity == <<IsEven({1, 2, 3}), IsOdd({1, 2, 3}), IsEven({})>>
+"#,
+        &["Same", "Parity"],
+    );
+    assert_eq!(printed, ["TRUE", "<<FALSE, TRUE, TRUE>>"]);
+}
+
+#[test]
+fn applies_recursive_functions_lazily() {
+    let printed = show(
+        r#"
+Subsets[S \in SUBSET {1, 2, 3}] ==
+    IF S = {} THEN {{}}
+    ELSE LET x == CHOOSE y \in S : TRUE
+         IN Subsets[S \ {x}] \cup {T \cup {x} : T \in Subsets[S \ {x}]}
+Nest[S \in SUBSET STRING] == IF S = {} THEN <<>> ELSE <<Nest[S \ {CHOOSE x \in S : TRUE}]>>
+Same == Subsets[{1, 2, 3}] = SUBSET {1, 2, 3}
+Nested == Nest[{"p", "q"}]
+Chain == LET f[S \in SUBSET {1, 2}] == IF S = {} THEN {} ELSE f[S \ {CHOOSE x \in S : TRUE}] \cup {S}
+         IN f[{1, 2}]
+Table == LET g[x \in {1, 2}] == {x} IN g
+"#,
+        &["Same", "Nested", "Chain", "Table"],
+    );
+    assert_eq!(printed, ["TRUE", "<<<<<<>>>>>>", "{{2}, {1, 2}}", "<<{1}, {2}>>"]);
+}
+
+#[test]
+fn recurses_hundreds_of_calls_deep() {
+    let printed = show(
+        r#"
+RECURSIVE Depth(_)
+Depth(S) == IF S = {} THEN <<>> ELSE LET rest == Depth(S \ {CHOOSE x \in S : TRUE}) IN rest
+Big == SUBSET {1, 2, 3, 4, 5, 6, 7, 8}
+Expr == Depth(Big)
+"#,
+        &["Expr"],
+    );
+    assert_eq!(printed, ["<<>>"]);
+}
+
+#[test]
+fn passes_operators_and_lambdas() {
+    let printed = show(
+        r#"
+Apply(F(_), v) == F(v)
+Twice(F(_), v) == Apply(F, Apply(F, v))
+Wrap(x) == <<x>>
+Combine(F(_, _), a, b) == F(a, b)
+WithParam(p) == Apply(LAMBDA x : <<x, p>>, 1)
+Nested(p) == LET Inner(q) == Twice(LAMBDA x : <<x, p, q>>, 0) IN Inner(5)
+Named == Apply(Wrap, 1)
+Lambda == Twice(LAMBDA x : {x}, 2)
+Captured == WithParam(7)
+Deep == Nested(3)
+Builtins == <<Combine(\cup, {1}, {2}), Combine(=, 1, 1), Combine(\in, 1, {2})>>
+Higher(G(_, _)) == G({1}, {1, 3})
+Passed == Higher(\subseteq)
+"#,
+        &["Named", "Lambda", "Captured", "Deep", "Builtins", "Passed"],
+    );
+    assert_eq!(
+        printed,
+        ["<<1>>", "{{2}}", "<<1, 7>>", "<<<<0, 3, 5>>, 3, 5>>", "<<{1, 2}, TRUE, FALSE>>", "TRUE"]
+    );
+}
+
+#[test]
+fn evaluates_arguments_only_where_read() {
+    let printed = show(
+        r#"
+First(a, b) == a
+Fails == CHOOSE x \in {} : TRUE
+Unused == First(1, Fails)
+Applied == [x \in {1, 2} |-> IF x = 1 THEN 0 ELSE Fails][1]
+Called(f) == f[1]
+Passed == Called([x \in {1, 2} |-> IF x = 1 THEN 0 ELSE Fails])
+"#,
+        &["Unused", "Applied", "Passed"],
+    );
+    assert_eq!(printed, ["1", "0", "0"]);
+}
+
+#[test]
+fn keeps_what_a_lazy_value_captured() {
+    let printed = show(
+        r#"
+Filters == [x \in {"u", "v"} |-> {y \in STRING : y = x}]
+Count == \A x \in {"u", "v"} : x \in Filters[x] /\ \A y \in {"u", "v"} \ {x} : y \notin Filters[x]
+Functions == [x \in {1, 2} |-> [s \in STRING |-> <<s, x>>]]
+Applied == <<Functions[1]["k"], Functions[2]["k"]>>
+"#,
+        &["Count", "Applied"],
+    );
+    assert_eq!(printed, ["TRUE", "<<<<\"k\", 1>>, <<\"k\", 2>>>>"]);
+}
+
+const INNER: &str = r#"
+---- MODULE Inner ----
+CONSTANT C, F(_)
+Get == F(C)
+Pair(x) == <<C, x>>
+====
+"#;
+
+#[test]
+fn instantiates_modules_with_substitutions() {
+    let evaluator = evaluator_with(
+        r#"
+Wrap(x) == {x}
+I == INSTANCE Inner WITH C <- 1, F <- LAMBDA x : <<x>>
+P(c) == INSTANCE Inner WITH C <- c, F <- Wrap
+Named == I!Get
+Parameterized == <<P(5)!Get, P({6})!Pair(7)>>
+InLet(c) == LET J == INSTANCE Inner WITH C <- c, F <- LAMBDA x : <<x, c>> IN J!Get
+Local == InLet(8)
+"#,
+        &[("Inner", INNER)],
+        Vec::new(),
+    );
+    let printed: Vec<String> = ["Named", "Parameterized", "Local"]
+        .iter()
+        .map(|name| eval(&evaluator, name).unwrap().to_string())
+        .collect();
+    assert_eq!(printed, ["<<1>>", "<<{5}, <<{6}, 7>>>>", "<<8, 8>>"]);
+}
+
+#[test]
+fn instantiates_unnamed_instances() {
+    let evaluator = evaluator_with(
+        "Wrap(x) == {x}\nINSTANCE Inner WITH C <- 2, F <- Wrap\nExpr == Pair(Get)",
+        &[("Inner", INNER)],
+        Vec::new(),
+    );
+    assert_eq!(eval(&evaluator, "Expr").unwrap().to_string(), "<<2, {2}>>");
+}
+
+#[test]
+fn reads_constants_from_the_model() {
+    let spec =
+        spec("CONSTANT N, G(_)\nDouble(x) == <<x, x>>\nExpr == G(N)\nSet == N \\cup {0}", &[]);
+    let double = lookup(&spec, "Double");
+    let constants = vec![ConstBinding::Value(ints(&[1, 2])), ConstBinding::Def(double)];
+    let evaluator = Evaluator::new(Arc::new(spec), constants);
+    assert_eq!(eval(&evaluator, "Expr").unwrap().to_string(), "<<{1, 2}, {1, 2}>>");
+    assert_eq!(eval(&evaluator, "Set").unwrap().to_string(), "{0, 1, 2}");
+    let unbound = evaluator_with("CONSTANT N\nExpr == N", &[], Vec::new());
+    assert_eq!(
+        eval(&unbound, "Expr").unwrap_err().message,
+        "The constant parameter N is not assigned a value by the configuration file."
+    );
+}
+
+#[test]
+fn fails_on_arguments_only_when_used() {
+    assert_eq!(
+        error("LET First(a, b) == b IN First(1, CHOOSE x \\in {} : TRUE)").message,
+        "Attempted to compute the value of an expression of form\nCHOOSE x \\in S: P, but no element of S satisfied P."
+    );
+}
