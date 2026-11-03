@@ -121,6 +121,22 @@ pub(crate) fn lookup(module: &str, name: &str, uses_integers: bool) -> Option<Na
     }
 }
 
+/// Whether the native of `name` in `module` takes its arguments unevaluated, as the Java methods
+/// TLC hands expressions do: each comes as an operator without parameters that evaluates it.
+pub(crate) fn takes_expressions(module: &str, name: &str) -> bool {
+    matches!((module, name), ("TLC", "TLCGet") | ("TLCExt", "AssertError" | "TLCDefer"))
+}
+
+/// The value of argument `index` of a native that takes its arguments unevaluated, or its value
+/// when the native is applied to values, as an operator argument is.
+fn forced(ctx: &mut crate::Ctx<'_>, args: &[Arg], index: usize) -> Outcome {
+    match args.get(index) {
+        Some(Arg::Value(value)) => Ok(value.clone()),
+        Some(Arg::Op(op)) => Ok(ctx.call(op, &[])?),
+        None => fail_eval!("Expected a value as argument {}", index + 1),
+    }
+}
+
 /// Argument `index`, which must be a value.
 fn arg(args: &[Arg], index: usize) -> Outcome<&Value> {
     match args.get(index) {

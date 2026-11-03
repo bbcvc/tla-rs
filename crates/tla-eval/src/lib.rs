@@ -69,6 +69,9 @@ pub struct Evaluator {
     pub(crate) constants: Arc<[ConstBinding]>,
     /// The native implementation of each definition TLC overrides, by [`DefId`].
     pub(crate) natives: Arc<[Option<Native>]>,
+    /// Whether the native of each definition takes its arguments unevaluated, as the Java methods
+    /// TLC hands expressions do, by [`DefId`].
+    pub(crate) takes_expressions: Arc<[bool]>,
     /// What the configuration replaces each definition with, by [`DefId`].
     pub(crate) overrides: Arc<[Option<ConstBinding>]>,
     pub(crate) runtime: Arc<Runtime>,
@@ -93,12 +96,22 @@ impl Evaluator {
                     .flatten()
             })
             .collect();
+        let takes_expressions = spec
+            .defs
+            .iter()
+            .map(|def| {
+                let module = spec.modules[def.module.index()].name.as_str();
+                tla_resolve::is_standard_module(module)
+                    && stdlib::takes_expressions(module, def.name.as_str())
+            })
+            .collect();
         let overrides = vec![None; spec.defs.len()].into();
         let is_recursive = eval::recursive_functions(&spec).into();
         Self {
             spec,
             constants: constants.into(),
             natives,
+            takes_expressions,
             overrides,
             runtime: Arc::default(),
             is_recursive,

@@ -7,7 +7,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use tla_value::{Symbol, Value};
 
-use crate::stdlib::{Outcome, arg};
+use crate::stdlib::{Outcome, arg, forced};
 use crate::{Arg, Ctx, Runtime};
 
 /// The prefix of the keys of named registers.
@@ -19,8 +19,10 @@ const POSSIBLE_REGISTER: &str = "s:_possible";
 /// The keys TLCGet can't read before TLC creates its model checker.
 const CHECKER_KEYS: [&str; 6] = ["diameter", "generated", "distinct", "queue", "stats", "config"];
 
+/// `TLCGet(key)`, which TLC evaluates with its argument, so that a failure of the argument is a
+/// failure of `TLCGet` too.
 pub(super) fn tlc_get(ctx: &mut Ctx<'_>, args: &[Arg]) -> Outcome {
-    let key = arg(args, 0)?;
+    let key = &forced(ctx, args, 0)?;
     let runtime = ctx.runtime();
     match key {
         Value::Int(index) if *index >= 0 => {
