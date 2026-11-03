@@ -143,23 +143,28 @@ impl Value {
             // Sets of one size, whose permuted elements compare in their order.
             (Value::Set(elements), Value::Set(others)) => match &elements[..] {
                 [element] => element.compare_permuted(image, preimage, &others[0]),
+                // The permuted elements in their order, smallest first, taken from a heap of the
+                // elements as permuted, which a difference stops early.
                 _ => {
-                    let mut permuted = elements
-                        .iter()
-                        .map(|element| element.permute(image))
-                        .collect::<Result<Vec<_>>>()?;
-                    let mut failure = None;
-                    permuted.sort_by(|left, right| {
-                        left.compare(right).unwrap_or_else(|error| {
-                            failure.get_or_insert(error);
-                            Ordering::Equal
-                        })
-                    });
-                    if let Some(error) = failure {
-                        return Err(error);
+                    // The smallest, found by a scan, decides most comparisons alone.
+                    let mut rest: Vec<&Value> = elements.iter().collect();
+                    let mut smallest = 0;
+                    for index in 1..rest.len() {
+                        if rest[index].compare_both_permuted(rest[smallest], image)?
+                            == Ordering::Less
+                        {
+                            smallest = index;
+                        }
                     }
-                    for (element, other) in permuted.iter().zip(others.iter()) {
-                        let ordering = element.compare(other)?;
+                    let ordering = rest[smallest].compare_permuted(image, preimage, &others[0])?;
+                    if ordering != Ordering::Equal {
+                        return Ok(ordering);
+                    }
+                    rest.swap_remove(smallest);
+                    let mut heap = PermutedHeap::new(rest, image)?;
+                    for other in others[1..].iter() {
+                        let smallest = heap.pop()?.expect("as many elements as the other set");
+                        let ordering = smallest.compare_permuted(image, preimage, other)?;
                         if ordering != Ordering::Equal {
                             return Ok(ordering);
                         }
@@ -172,7 +177,7 @@ impl Value {
     }
 
     /// Whether the permutation moves a model value the value holds.
-    fn moves(&self, image: &impl Fn(Symbol) -> Option<Value>) -> bool {
+    pub(crate) fn moves(&self, image: &impl Fn(Symbol) -> Option<Value>) -> bool {
         match self {
             Value::Model(name) => image(*name).is_some(),
             Value::Bool(_) | Value::Int(_) | Value::Str(_) | Value::Interval(..) => false,
@@ -270,6 +275,145 @@ fn permuted_sources(
         sources.push(source);
     }
     Ok(Some(sources))
+}
+
+/// The elements of a set as a permutation leaves them, in a heap by the order of their images.
+struct PermutedHeap<'a, F> {
+    elements: Vec<&'a Value>,
+    image: &'a F,
+}
+
+impl<'a, F: Fn(Symbol) -> Option<Value>> PermutedHeap<'a, F> {
+    fn new(elements: Vec<&'a Value>, image: &'a F) -> Result<Self> {
+        let mut heap = Self { elements, image };
+        for index in (0..heap.elements.len() / 2).rev() {
+            heap.sift_down(index)?;
+        }
+        Ok(heap)
+    }
+
+    /// Whether the image of the element at `left` comes before that of the element at `right`.
+    fn is_before(&self, left: usize, right: usize) -> Result<bool> {
+        let ordering =
+            self.elements[left].compare_both_permuted(self.elements[right], self.image)?;
+        Ok(ordering == Ordering::Less)
+    }
+
+    fn sift_down(&mut self, mut index: usize) -> Result<()> {
+        loop {
+            let (left, right) = (2 * index + 1, 2 * index + 2);
+            let mut smallest = index;
+            if left < self.elements.len() && self.is_before(left, smallest)? {
+                smallest = left;
+            }
+            if right < self.elements.len() && self.is_before(right, smallest)? {
+                smallest = right;
+            }
+            if smallest == index {
+                return Ok(());
+            }
+            self.elements.swap(index, smallest);
+            index = smallest;
+        }
+    }
+
+    /// The element with the smallest image left.
+    fn pop(&mut self) -> Result<Option<&'a Value>> {
+        if self.elements.is_empty() {
+            return Ok(None);
+        }
+        let last = self.elements.len() - 1;
+        self.elements.swap(0, last);
+        let smallest = self.elements.pop();
+        if !self.elements.is_empty() {
+            self.sift_down(0)?;
+        }
+        Ok(smallest)
+    }
+}
+
+impl Value {
+    /// `self.permute(image).compare(&other.permute(image))`, without building the parts of
+    /// either that the comparison doesn't need.
+    fn compare_both_permuted(
+        &self,
+        other: &Value,
+        image: &impl Fn(Symbol) -> Option<Value>,
+    ) -> Result<Ordering> {
+        let model_image = |value: &Value| match value {
+            Value::Model(name) => image(*name),
+            _ => None,
+        };
+        match (self, other) {
+            (Value::Model(_), _) | (_, Value::Model(_)) => {
+                let left = model_image(self);
+                let right = model_image(other);
+                match (left, right) {
+                    (Some(left), Some(right)) => left.compare(&right),
+                    (Some(left), None) => left.compare(other),
+                    (None, Some(right)) => self.compare(&right),
+                    (None, None) => self.compare(other),
+                }
+            }
+            (Value::Bool(_) | Value::Int(_) | Value::Str(_) | Value::Interval(..), _) => {
+                self.compare(other)
+            }
+            (Value::Tuple(items), Value::Tuple(others)) => {
+                if items.len() != others.len() {
+                    return Ok(items.len().cmp(&others.len()));
+                }
+                for (item, other) in items.iter().zip(others.iter()) {
+                    let ordering = item.compare_both_permuted(other, image)?;
+                    if ordering != Ordering::Equal {
+                        return Ok(ordering);
+                    }
+                }
+                Ok(Ordering::Equal)
+            }
+            // Functions whose keys a permutation leaves, such as records, compared by their keys
+            // and then by their values.
+            (Value::Func(func), Value::Func(others))
+                if keys_stay(&func.keys, &others.keys, image) =>
+            {
+                if func.keys.len() != others.keys.len() {
+                    return Ok(func.keys.len().cmp(&others.keys.len()));
+                }
+                if !Arc::ptr_eq(&func.keys, &others.keys) {
+                    for (key, other) in func.keys.iter().zip(others.keys.iter()) {
+                        let ordering = key.compare(other)?;
+                        if ordering != Ordering::Equal {
+                            return Ok(ordering);
+                        }
+                    }
+                }
+                for (value, other) in func.values.iter().zip(others.values.iter()) {
+                    let ordering = value.compare_both_permuted(other, image)?;
+                    if ordering != Ordering::Equal {
+                        return Ok(ordering);
+                    }
+                }
+                Ok(Ordering::Equal)
+            }
+            _ => self.permute(image)?.compare(&other.permute(image)?),
+        }
+    }
+}
+
+/// Whether the permutation leaves the keys of two functions, both or neither of them a record's,
+/// which TLC compares only with a record.
+fn keys_stay(
+    keys: &Arc<[Value]>,
+    others: &Arc<[Value]>,
+    image: &impl Fn(Symbol) -> Option<Value>,
+) -> bool {
+    let is_records = is_record(keys);
+    if Arc::ptr_eq(keys, others) {
+        return is_records || !keys.iter().any(|key| key.moves(image));
+    }
+    is_records == is_record(others)
+        && (is_records
+            || (!keys.iter().any(|key| key.moves(image))
+                && !others.iter().any(|key| key.moves(image))))
 }
 
 /// Whether the keys are those of a record, which TLC compares only with a record.
@@ -397,6 +541,20 @@ mod tests {
             record(a.clone(), set(&[&b])),
             record(b.clone(), set(&[&a])),
             function(&[(&Value::tuple(vec![a.clone()]), Value::Int(1))]),
+            Value::set(vec![
+                Value::tuple(vec![a.clone(), Value::Int(1)]),
+                Value::tuple(vec![b.clone(), Value::Int(2)]),
+                Value::tuple(vec![c.clone(), Value::Int(0)]),
+            ])
+            .unwrap(),
+            Value::set(vec![
+                Value::tuple(vec![b.clone(), Value::Int(1)]),
+                Value::tuple(vec![a.clone(), Value::Int(2)]),
+                Value::tuple(vec![c.clone(), Value::Int(0)]),
+            ])
+            .unwrap(),
+            Value::set(vec![record(a.clone(), set(&[&b])), record(c.clone(), set(&[&a]))]).unwrap(),
+            Value::set(vec![record(b.clone(), set(&[&a])), record(c.clone(), set(&[&b]))]).unwrap(),
         ];
         for value in &values {
             for other in &values {
@@ -412,6 +570,34 @@ mod tests {
                     }
                 }
             }
+        }
+    }
+
+    /// Fingerprinting a value as permuted feeds what fingerprinting the permuted value does.
+    #[test]
+    fn fingerprints_permuted_values_as_the_permuted_values() {
+        use std::hash::{DefaultHasher, Hasher};
+        let (a, b, c) = (model("a"), model("b"), model("c"));
+        let function = |pairs: Vec<(Value, Value)>| Value::function(pairs).unwrap();
+        let values = vec![
+            a.clone(),
+            Value::tuple(vec![a.clone(), Value::Int(1), b.clone()]),
+            function(vec![(a.clone(), b.clone()), (b.clone(), c.clone()), (c.clone(), a.clone())]),
+            function(vec![(a.clone(), Value::Int(1)), (c.clone(), Value::Int(2))]),
+            function(vec![(Value::tuple(vec![a.clone()]), b.clone())]),
+            Value::record(vec![
+                (Symbol::intern("x"), a.clone()),
+                (Symbol::intern("y"), Value::Int(2)),
+            ]),
+            Value::set(vec![a.clone(), c.clone()]).unwrap(),
+            Value::set(vec![Value::tuple(vec![b.clone()]), Value::tuple(vec![c.clone()])]).unwrap(),
+        ];
+        for value in &values {
+            let mut direct = DefaultHasher::new();
+            value.permute(&swap).unwrap().fingerprint(&mut direct).unwrap();
+            let mut permuted = DefaultHasher::new();
+            value.fingerprint_permuted(&swap, &mut permuted).unwrap();
+            assert_eq!(direct.finish(), permuted.finish(), "{value}");
         }
     }
 

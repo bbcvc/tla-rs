@@ -6,7 +6,7 @@
 //! `p` primes the argument expression. The arguments of a native implementation and of a
 //! built-in operator are evaluated before the call.
 
-use std::sync::{Arc, OnceLock};
+use std::sync::{Arc, OnceLock, PoisonError};
 
 use tla_resolve::{Builtin, ConstId, DefBody, DefId, Expr, ExprKind, Local, OpRef, Scope};
 use tla_value::{Error, Value};
@@ -76,7 +76,7 @@ impl Evaluator {
                 .map_err(|error| EvalError::at(&self.spec, info.module, info.span, error.0));
         }
         if args.is_empty() && self.is_computed_once(def) {
-            return self.constant_value(def);
+            return self.constant_value_in(def, state, next);
         }
         let slots = args.into_iter().map(Slot::Value).collect();
         self.enter(def, parent, slots, state, next, (false, enabled))
@@ -137,13 +137,19 @@ impl Evaluator {
             return self.call_native(native, def, scope, args, expr, env);
         }
         if args.is_empty() && self.is_computed_once(def) {
-            return self.constant_value(def);
+            return self.constant_value_in(def, env.state, env.next);
         }
         if args.len() != info.params.len() {
             return Err(self.arity_error(def, args.len(), env, expr));
         }
         if args.is_empty() && self.is_cached_let[def.index()] {
             return self.let_value(def, scope, env);
+        }
+        if args.is_empty()
+            && self.is_cached_state_definition[def.index()]
+            && matches!(scope, Scope::Global)
+        {
+            return self.state_value(def, env);
         }
         let parent = self.scope_frame(scope, env)?;
         let slots = args.iter().map(|arg| self.arg_slot(arg, env)).collect::<Result<Vec<_>>>()?;
@@ -163,6 +169,22 @@ impl Evaluator {
         let value = self.enter(def, parent.clone(), Vec::new(), env.state, env.next, context)?;
         if let Some(frame) = &parent {
             frame.keep_let_value(def, self.let_reads[def.index()], env, value.clone());
+        }
+        Ok(value)
+    }
+
+    /// The value of the module-level definition `def`, kept for the states it was computed in.
+    fn state_value(&self, def: DefId, env: &Env<'_>) -> Result<Value> {
+        let lock = || self.state_values.lock().unwrap_or_else(PoisonError::into_inner);
+        // A definition that doesn't read the next state gives the same value whatever it is.
+        let reads_next = self.reads_next_state[def.index()];
+        if let Some(value) = lock().get(def, reads_next, env) {
+            return Ok(value);
+        }
+        let context = (env.keep_lazy, env.enabled);
+        let value = self.enter(def, None, Vec::new(), env.state, env.next, context)?;
+        if !value.holds_streamed_set() {
+            lock().keep(def, reads_next, env, value.clone());
         }
         Ok(value)
     }

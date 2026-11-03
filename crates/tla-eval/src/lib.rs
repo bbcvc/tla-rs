@@ -117,6 +117,12 @@ pub struct Evaluator {
     pub(crate) is_cached_let: Arc<[bool]>,
     /// The slots of its frame each `LET` definition may read, as bits, by [`DefId`].
     pub(crate) let_reads: Arc<[u64]>,
+    /// Whether each definition is a module-level one whose value is kept for the states it was
+    /// computed in, by [`DefId`], and the values kept.
+    pub(crate) is_cached_state_definition: Arc<[bool]>,
+    /// Whether each definition may read the next state, by [`DefId`].
+    pub(crate) reads_next_state: Arc<[bool]>,
+    pub(crate) state_values: Arc<Mutex<env::StateValues>>,
     pub(crate) constant_values: Arc<[OnceLock<Value>]>,
     /// TLC's `TLCEval`, and the applications of it whose argument TLC normalizes, by address.
     pub(crate) tlc_eval: Option<DefId>,
@@ -162,6 +168,9 @@ impl Evaluator {
             .collect();
         let is_cached_let = eval::cached_lets(&spec, &is_computed_once).into();
         let let_reads = eval::let_reads(&spec).into();
+        let is_cached_state_definition =
+            eval::cached_state_definitions(&spec, &is_computed_once).into();
+        let reads_next_state = eval::reads_next_state(&spec).into();
         let constant_values = (0..spec.defs.len()).map(|_| OnceLock::new()).collect();
         let tlc_eval = eval::tlc_eval(&spec);
         let tlc_cache = spec.defs.iter().position(|def| {
@@ -185,6 +194,9 @@ impl Evaluator {
             is_constant_definition,
             is_cached_let,
             let_reads,
+            is_cached_state_definition,
+            reads_next_state,
+            state_values: Arc::default(),
             constant_values,
             tlc_eval,
             normalizing_evaluations,

@@ -28,6 +28,14 @@ pub(crate) fn note_lazy(set: &LazySet) {
     }
 }
 
+/// Whether a lazy set TLC doesn't stream combines one that it does.
+fn lazy_parts_hold_streamed_set(set: &LazySet) -> bool {
+    match set {
+        LazySet::Subset(base) | LazySet::Seq(base) => base.holds_streamed_set(),
+        _ => false,
+    }
+}
+
 /// The sets TLC streams apart from their cached elements: those that combine other sets.
 fn is_streaming(set: &LazySet) -> bool {
     matches!(
@@ -44,6 +52,29 @@ fn is_streaming(set: &LazySet) -> bool {
 }
 
 impl Value {
+    /// Whether the value holds a lazy set whose elements TLC streams until it caches them, so
+    /// that the same value kept and the value built again can stream differently.
+    pub fn holds_streamed_set(&self) -> bool {
+        if !IS_STREAMED.load(Ordering::Relaxed) {
+            return false;
+        }
+        match self {
+            Value::Lazy(set) => is_streaming(set) || lazy_parts_hold_streamed_set(set),
+            Value::Set(values) | Value::MixedSet(values) | Value::Tuple(values) => {
+                values.iter().any(Value::holds_streamed_set)
+            }
+            Value::Func(func) => {
+                func.keys.iter().chain(func.values.iter()).any(Value::holds_streamed_set)
+            }
+            Value::LazyFunc(lazy) => lazy.domain.holds_streamed_set(),
+            Value::Bool(_)
+            | Value::Int(_)
+            | Value::Str(_)
+            | Value::Model(_)
+            | Value::Interval(..) => false,
+        }
+    }
+
     /// Records that TLC has cached this set's elements, as it does when it compares the set
     /// with another as the receiver, sizes it, or fingerprints it.
     pub fn cache_elements(&self) {

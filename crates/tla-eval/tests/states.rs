@@ -133,3 +133,29 @@ Matches == "a" \in Later
     assert!(later.contains(&Value::str("a")).unwrap());
     assert!(!later.contains(&Value::str("b")).unwrap());
 }
+
+/// The value a definition without parameters keeps is the value in the states it was computed
+/// in: a state-level one for each current state, and one that reads the next state for each step.
+/// SANY's level skips the arguments of `*`, which TLC's Naturals ignores, but `Double` reads `x`.
+#[test]
+fn keeps_definitions_only_for_the_states_they_read() {
+    let evaluator = evaluator(
+        r#"
+EXTENDS Integers
+VARIABLES x
+Double == x * 2
+Step == x' - x
+Uses == <<Double, Double', Step>>
+Hidden == x' * 3
+UsesHidden == <<Hidden, Hidden>>
+"#,
+    );
+    let (one, two, five) = (state(vec![int(1)]), state(vec![int(2)]), state(vec![int(5)]));
+    assert_eq!(on_step(&evaluator, "Uses", &one, &two), "<<2, 4, 1>>");
+    assert_eq!(on_step(&evaluator, "Uses", &one, &five), "<<2, 10, 4>>");
+    assert_eq!(on_step(&evaluator, "Uses", &two, &one), "<<4, 2, -1>>");
+    assert_eq!(in_state(&evaluator, "Double", &five), "10");
+    // SANY's level of `x' * 3` is a constant's, but it reads the next state.
+    assert_eq!(on_step(&evaluator, "UsesHidden", &one, &two), "<<6, 6>>");
+    assert_eq!(on_step(&evaluator, "UsesHidden", &one, &five), "<<15, 15>>");
+}

@@ -88,15 +88,11 @@ impl Frame {
     /// Keeps the value of the `LET` definition `def`, which may read the slots `reads` of this
     /// frame, computed in this frame where `env` is.
     pub fn keep_let_value(&self, def: DefId, reads: u64, env: &Env<'_>, value: Value) {
-        let keep = |state: StateRef<'_>| match state {
-            StateRef::Complete(state) => OwnedState::Complete(state.clone()),
-            StateRef::Partial(_, version) => OwnedState::Changing(version),
-        };
         let cached = LetValue {
             def,
             reads,
-            state: env.state.map(keep),
-            next: env.next.map(keep),
+            state: env.state.map(kept_state),
+            next: env.next.map(kept_state),
             keep_lazy: env.keep_lazy,
             enabled: env.enabled,
             value,
@@ -239,6 +235,68 @@ impl Captured {
     /// same version of a state being assigned.
     pub fn is_in_states_of(&self, env: &Env<'_>) -> bool {
         is_same_state(self.state.as_ref(), env.state) && is_same_state(self.next.as_ref(), env.next)
+    }
+}
+
+/// What a cache keeps of a state to tell it again: a complete state itself, and the version of
+/// a state being assigned.
+fn kept_state(state: StateRef<'_>) -> OwnedState {
+    match state {
+        StateRef::Complete(state) => OwnedState::Complete(state.clone()),
+        StateRef::Partial(_, version) => OwnedState::Changing(version),
+    }
+}
+
+/// The values of definitions without parameters computed in the last few states, which are the
+/// same while the states are.
+#[derive(Default)]
+pub(crate) struct StateValues {
+    values: Vec<StateValue>,
+}
+
+struct StateValue {
+    def: DefId,
+    state: Option<OwnedState>,
+    /// The next state, for a definition that reads it.
+    next: Option<Option<OwnedState>>,
+    keep_lazy: bool,
+    enabled: Enabled,
+    value: Value,
+}
+
+/// How many values [`StateValues`] keeps before it starts again.
+const STATE_VALUES: usize = 64;
+
+impl StateValues {
+    /// The value of `def`, which reads the next state if `reads_next`, computed where `env` is.
+    pub fn get(&self, def: DefId, reads_next: bool, env: &Env<'_>) -> Option<Value> {
+        let found = self.values.iter().find(|kept| {
+            kept.def == def
+                && kept.keep_lazy == env.keep_lazy
+                && kept.enabled == env.enabled
+                && is_same_state(kept.state.as_ref(), env.state)
+                && (!reads_next || {
+                    let next = kept.next.as_ref().expect("kept with the next state");
+                    is_same_state(next.as_ref(), env.next)
+                })
+        });
+        found.map(|kept| kept.value.clone())
+    }
+
+    /// Keeps the value of `def`, which reads the next state if `reads_next`, computed where
+    /// `env` is.
+    pub fn keep(&mut self, def: DefId, reads_next: bool, env: &Env<'_>, value: Value) {
+        if self.values.len() >= STATE_VALUES {
+            self.values.clear();
+        }
+        self.values.push(StateValue {
+            def,
+            state: env.state.map(kept_state),
+            next: reads_next.then(|| env.next.map(kept_state)),
+            keep_lazy: env.keep_lazy,
+            enabled: env.enabled,
+            value,
+        });
     }
 }
 
