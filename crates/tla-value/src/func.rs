@@ -79,19 +79,24 @@ impl Value {
         if is_tuple {
             return Ok(Value::Tuple(pairs.into_iter().map(|(_, value)| value).collect()));
         }
-        let keys = sort_unique(pairs.iter().map(|(key, _)| key.clone()).collect())?;
-        let mut values = Vec::with_capacity(keys.len());
-        for key in &keys {
-            let mut found = None;
-            for (candidate, value) in &pairs {
-                if candidate.equals(key)? {
-                    found = Some(value.clone());
-                    break;
-                }
-            }
-            values.push(found.expect("every sorted key comes from a pair"));
+        // Keys enumerated from a domain come sorted.
+        let is_sorted = pairs
+            .windows(2)
+            .all(|pair| matches!(pair[0].0.compare(&pair[1].0), Ok(std::cmp::Ordering::Less)));
+        if is_sorted {
+            let (keys, values) = pairs.into_iter().unzip();
+            return Ok(Self::from_sorted(keys, values));
         }
-        Ok(Self::from_sorted(keys, values))
+        let keys = sort_unique(pairs.iter().map(|(key, _)| key.clone()).collect())?;
+        let mut values: Vec<Option<Value>> = vec![None; keys.len()];
+        for (key, value) in pairs {
+            let Ok(index) = search(&keys, &key)? else {
+                unreachable!("every key of a pair is among the sorted keys")
+            };
+            values[index].get_or_insert(value);
+        }
+        let values = values.into_iter().map(|value| value.expect("every key has a pair"));
+        Ok(Self::from_sorted(keys, values.collect()))
     }
 
     /// A function from keys already sorted and distinct.
