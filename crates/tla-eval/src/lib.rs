@@ -14,7 +14,7 @@ mod stdlib;
 
 use std::sync::Arc;
 
-pub use config::bind_constants;
+pub use config::{Model, bind_model, config_value};
 pub use native::{Arg, Ctx, Native, Operator};
 pub use runtime::Runtime;
 use tla_ast::{Span, Symbol};
