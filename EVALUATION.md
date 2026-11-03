@@ -147,10 +147,12 @@ What the pass leaves out:
 
 - Definition arguments are lazy, as in TLC, so `p'` primes the argument passed for `p`.
 - Recursive and `LET` functions are lazy. Applying one evaluates its body at the argument, without building the function at each step of the recursion.
+- A `LET` definition without parameters is computed once for the frame the `LET` is evaluated in and the states, as TLC binds it to a `LazyValue`, until a variable it reads is bound again. One that has effects, makes a random choice, applies an operator parameter, or builds a set with `UNION` or `\cup` is computed at each reference.
 - Quantifiers, `CHOOSE` and set filters take a large set of functions, records, or tuples, or a large power set, one element at a time, in TLC's order (`Value::enumeration`), so they stop at the first witness without building the rest. A power set of more than 30 elements, too large to list, is enumerated this way, as TLC enumerates it.
 - Constant definitions are computed once, with TLC's startup random generator, as TLC computes them when it starts, and a lazy set keeps its elements once enumerated.
 - The model configuration binds constants, overrides definitions, and defines operator tables.
-- Native implementations replace the definitions TLC overrides in Java. These are Naturals, Integers, Sequences, FiniteSets, TLC, TLCExt, Bags, Json, Randomization and `_Possible`, plus IOUtils' `Serialize` for NDJSON, which TLC's own Json class writes.
+- Native implementations replace the definitions TLC overrides in Java. These are Naturals, Integers, Sequences, FiniteSets, TLC, TLCExt, Bags, Json, Randomization and `_Possible`, plus IOUtils' `Serialize` for NDJSON, which TLC's own Json class writes. `TLCCache` keeps the value of its expression for each closure.
+- A Java class named after a module beside the spec overrides the module's operators, as TLC loads it, where its methods return constants (`BoolValue.ValTrue`, `IntValue.gen(n)`, a new `StringValue`); one that computes its value is unsupported.
 - `Evaluator::with_community_modules` adds the community module IOUtils, as TLC has it when `CommunityModules-deps.jar` is on its class path. That covers `IOEnv`, `atoi`, the `IOExec` family, and plain text `Serialize` and `Deserialize`. Without the jar, TLC evaluates IOUtils' TLA+ placeholders. The commands only run once `Runtime::allow_exec` allows them. Java's object serialization (`IOSerialize`, `IODeserialize`) isn't ported and fails with an error.
 
 `crates/tla-eval/examples/check_assumptions.rs` checks every model's `ASSUME`s, as TLC does before it explores any state, and compares the outcome with TLC's recorded status. Each model runs in a child process with a timeout. `--outcomes FILE` writes every model's outcome, so two builds can be compared model by model.
@@ -194,7 +196,7 @@ Still missing from evaluation:
 | TLC's order of computing constant definitions at startup | `Evaluator::evaluate_constant_definitions` goes through the definitions in the resolver's order. TLC goes through the modules in the order SANY finishes them, through each module's definitions in the order of SANY's symbol table (tla-ts `createTlcDefinitionOrder`), and skips the modules an `INSTANCE` gives parameters to. Values are the same; impure natives in several constant definitions, such as `Print` or `RandomElement`, can run in another order. |
 | Streaming the elements of a lazy set before TLC caches them | TLC enumerates a `UNION` or `\cup` it hasn't cached by streaming the sets it combines, duplicates and all (tla-ts `getStreamedElements`). This matters for how many successors TLC generates. |
 | A graceful error on deep recursion | Each recursion level uses about 2.6 KB of stack in release builds. The checker should evaluate on threads with large stacks. |
-| `PickSuccessor`, `TLCCache`'s caching, and `AssertError`'s check that its message is a string literal | Small; they matter only for the specs that use them. |
+| `PickSuccessor`, and `AssertError`'s check that its message is a string literal | Small; they matter only for the specs that use them. |
 
 ## Model checking results
 
