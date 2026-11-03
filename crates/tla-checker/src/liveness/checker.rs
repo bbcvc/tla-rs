@@ -4,8 +4,9 @@
 
 use std::collections::HashMap;
 
+use tla_eval::SpecExpr;
 use tla_eval::{Evaluator, State};
-use tla_resolve::{DefId, Expr};
+use tla_resolve::DefId;
 
 use super::convert::Translation;
 use super::graph::{Graph, remove_repeats};
@@ -96,7 +97,7 @@ impl Cache {
 pub struct Checker<'e> {
     evaluator: &'e Evaluator,
     /// The expressions the atoms evaluate.
-    exprs: Vec<&'e Expr>,
+    exprs: Vec<SpecExpr>,
     graphs: Vec<Graph>,
     /// The number of distinct action checks across the solutions.
     action_ids: usize,
@@ -553,7 +554,7 @@ fn same(left: &State, right: &State) -> bool {
 
 fn all_hold(
     evaluator: &Evaluator,
-    exprs: &[&Expr],
+    exprs: &[SpecExpr],
     cache: &mut Cache,
     predicates: &[Live],
     state: &State,
@@ -568,20 +569,19 @@ fn all_hold(
 
 fn value(
     evaluator: &Evaluator,
-    exprs: &[&Expr],
+    exprs: &[SpecExpr],
     eval: &Eval,
     state: &State,
     next: Option<&State>,
 ) -> Result<tla_eval::Value, String> {
-    // SAFETY: the translation kept expressions of the evaluator's spec, each with the frames of
-    // the definition it is in.
-    unsafe { evaluator.eval_in(&eval.frames, exprs[eval.expr], Some(state), next) }
+    evaluator
+        .eval_in(&eval.frames, &exprs[eval.expr], Some(state), next)
         .map_err(|error| error.to_string())
 }
 
 fn boolean(
     evaluator: &Evaluator,
-    exprs: &[&Expr],
+    exprs: &[SpecExpr],
     eval: &Eval,
     state: &State,
     next: Option<&State>,
@@ -598,7 +598,7 @@ fn boolean(
 /// The value of a liveness formula below temporal level in `state`, or on the step to `next`.
 fn eval(
     evaluator: &Evaluator,
-    exprs: &[&Expr],
+    exprs: &[SpecExpr],
     cache: &mut Cache,
     live: &Live,
     state: &State,
