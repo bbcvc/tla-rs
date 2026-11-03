@@ -8,11 +8,24 @@ use std::collections::HashMap;
 
 use tla_resolve::{Builtin, DefBody, DefId, Expr, ExprKind, Level, OpRef, Scope, Spec};
 
-/// The operators of TLC's standard modules whose Java overrides declare a state level, by
-/// module and name.
+/// The operators of TLC's modules whose Java overrides declare a state level, by module and
+/// name: the list tla-eval computes constant definitions by.
 const STATE_LEVEL_OPERATORS: &[(&str, &[&str])] = &[
     ("TLC", &["TLCGet", "TLCSet"]),
-    ("TLCExt", &["TLCGetOrDefault", "TLCGetAndSet", "Trace", "TLCEvalDefinition"]),
+    (
+        "TLCExt",
+        &[
+            "AssertError",
+            "TLCGetOrDefault",
+            "TLCGetAndSet",
+            "Trace",
+            "CounterExample",
+            "TLCDefer",
+            "PickSuccessor",
+            "TLCCache",
+            "TLCEvalDefinition",
+        ],
+    ),
     ("_Possible", &["_Track", "_Counts", "_CheckName", "_PrintCounts"]),
     (
         "Json",
@@ -26,7 +39,8 @@ const STATE_LEVEL_OPERATORS: &[(&str, &[&str])] = &[
             "ndJsonDeserialize",
         ],
     ),
-    ("Randomization", &["RandomSubset", "RandomSetOfSubsets"]),
+    ("Randomization", &["RandomSubset", "RandomSetOfSubsets", "TestRandomSetOfSubsets"]),
+    ("IOUtils", &["IOExec", "IOEnvExec", "IOExecTemplate", "IOEnvExecTemplate"]),
 ];
 
 /// The levels of definitions, remembered. Definitions added to the spec later don't change the
@@ -121,8 +135,7 @@ impl Levels {
 fn is_state_level_operator(spec: &Spec, def: DefId) -> bool {
     let def = spec.def(def);
     let module = &spec.modules[def.module.index()];
-    module.is_standard
-        && def.depth == 0
+    def.depth == 0
         && STATE_LEVEL_OPERATORS.iter().any(|(name, operators)| {
             *name == module.name.as_str() && operators.contains(&def.name.as_str())
         })
