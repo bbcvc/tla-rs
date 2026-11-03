@@ -277,6 +277,11 @@ impl Evaluator {
                     _ => return self.guard(expr, site, run, action, rest),
                 };
                 let OperatorKind::Def { def, parent } = &operator.0 else {
+                    if let (OperatorKind::Builtin(Builtin::Unchanged), [arg]) =
+                        (&operator.0, &args[..])
+                    {
+                        return self.unchanged_action(arg, expr, site, run, action, rest);
+                    }
                     return self.guard(expr, site, run, action, rest);
                 };
                 let Some(target) = self.walked(*def, args.len()) else {

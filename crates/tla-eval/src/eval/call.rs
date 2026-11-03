@@ -8,7 +8,7 @@
 
 use std::sync::{Arc, OnceLock};
 
-use tla_resolve::{ConstId, DefBody, DefId, Expr, ExprKind, Local, OpRef, Scope};
+use tla_resolve::{Builtin, ConstId, DefBody, DefId, Expr, ExprKind, Local, OpRef, Scope};
 use tla_value::{Error, Value};
 
 use super::At;
@@ -222,6 +222,15 @@ impl Evaluator {
             let slots =
                 args.iter().map(|arg| self.arg_slot(arg, env)).collect::<Result<Vec<_>>>()?;
             return self.enter(*def, parent.clone(), slots, env.state, env.next, env.keep_lazy);
+        }
+        // An operator of actions passed as an argument, as `'` or `UNCHANGED` in `Op(UNCHANGED)`,
+        // applies to the expressions it is given, which it reads in another state.
+        if let OperatorKind::Builtin(
+            builtin @ (Builtin::Prime | Builtin::Unchanged | Builtin::Enabled),
+        ) = op.0
+            && args.len() == 1
+        {
+            return self.builtin(builtin, args, expr, env);
         }
         let values = self.eval_all(args, env)?;
         self.apply_operator(&op, &values, env.state, env.next).at(self, env, expr)

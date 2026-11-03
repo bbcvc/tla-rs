@@ -816,3 +816,21 @@ fn reads_the_level_after_the_current_state_in_the_state_being_assigned() {
     evaluator.runtime().on_level(move |state| if Arc::ptr_eq(state, &expanded) { 3 } else { 4 });
     assert_eq!(next_states(&evaluator, "Next", &current).unwrap(), ["3, 4"]);
 }
+
+#[test]
+fn applies_operators_of_actions_passed_as_arguments() {
+    let source = r#"---- MODULE M ----
+EXTENDS Naturals
+VARIABLES x, y
+Keep(Foo(_)) == Foo(y)
+Primed(Foo(_)) == Foo(x) = x + 1
+Enabled(Foo(_)) == Foo(x' = x + 1)
+Next == x' = x + 1 /\ Keep(UNCHANGED)
+Step == x' = x + 1 /\ y' = y /\ Primed(') /\ Enabled(ENABLED)
+====
+"#;
+    let evaluator = evaluator(source);
+    let current = state(vec![Value::Int(1), Value::Int(5)]);
+    assert_eq!(next_states(&evaluator, "Next", &current).unwrap(), ["2, 5"]);
+    assert_eq!(next_states(&evaluator, "Step", &current).unwrap(), ["2, 5"]);
+}
