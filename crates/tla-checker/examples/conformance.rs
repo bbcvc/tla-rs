@@ -115,6 +115,11 @@ fn check(spec_path: &Path, config_path: &Path, library: &HashMap<String, PathBuf
             .ok()
             .or_else(|| library.get(name).and_then(|path| std::fs::read_to_string(path).ok()))
     };
+    // TLC orders strings by when it interns them, which every sorted set and record built from
+    // here on depends on. The order is the process's, so each model runs in a process of its own.
+    if let Ok(order) = tla_resolve::tlc_string_order(&source, &config, &mut loader) {
+        tla_eval::value::set_order(order.iter().map(String::as_str));
+    }
     let spec = match tla_resolve::resolve(&source, &mut loader) {
         Ok(spec) => spec,
         Err(error) => return Outcome::error(error.to_string()),

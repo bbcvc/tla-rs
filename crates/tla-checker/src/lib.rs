@@ -124,7 +124,8 @@ pub struct Options {
 }
 
 /// Checks `spec` under `config`, with `successors` computing the states of the evaluator it is
-/// given.
+/// given. TLC orders strings by when it reads them, so the caller sets that order
+/// ([`tla_eval::value::set_order`]) before it resolves the spec, which builds values.
 pub fn check<S: Successors>(
     mut spec: Spec,
     config: &ModelConfig,
@@ -157,12 +158,13 @@ pub fn check<S: Successors>(
     let runtime = evaluator.runtime();
     runtime.allow_exec(options.allow_exec);
     runtime.set_seed(options.seed);
+    // TLC creates its model checker, whose options TLCGet("config") reads, and computes the
+    // constant definitions before it checks the assumptions.
+    runtime.start(CheckerOptions::for_config(config));
+    evaluator.evaluate_constant_definitions();
     if let Err(error) = check_constants(&evaluator, &mut plan) {
         return Outcome::error(error.message);
     }
-    // TLC creates its model checker, whose options TLCGet("config") reads, before it checks the
-    // assumptions.
-    runtime.start(CheckerOptions::for_config(config));
     if let Some(outcome) = check_assumptions(&evaluator, &assumptions) {
         return outcome;
     }
