@@ -9,10 +9,11 @@
 //! isn't computed. TLC computes them all when it starts, and ignores those that fail, which it
 //! computes again where the spec uses them.
 
-use tla_resolve::{DefBody, DefId, Expr, ExprKind, Level, OpRef, Spec};
+use tla_resolve::{Builtin, DefBody, DefId, Expr, ExprKind, Level, OpRef, Spec};
 use tla_value::Value;
 
 use super::analysis::for_each_child;
+use crate::env::StateRef;
 use crate::{Evaluator, Result};
 
 /// Whether each definition, by [`DefId`], is a constant definition TLC computes once.
@@ -36,7 +37,8 @@ struct Analysis<'a> {
 }
 
 impl Analysis<'_> {
-    /// Whether a definition is an operator TLC counts as state-level, or uses one.
+    /// Whether a definition is an operator TLC counts as state-level, or uses one, or reads a
+    /// variable or the next state.
     fn uses_state_level(&mut self, id: DefId) -> bool {
         if let Some(known) = self.uses_state_level[id.index()] {
             return known;
@@ -57,9 +59,18 @@ impl Analysis<'_> {
             if found {
                 break;
             }
-            if let ExprKind::Call { def, .. } | ExprKind::OpArg(OpRef::Def { def, .. }) = &expr.kind
-            {
-                found = self.uses_state_level(*def);
+            match &expr.kind {
+                ExprKind::Call { def, .. } | ExprKind::OpArg(OpRef::Def { def, .. }) => {
+                    found = self.uses_state_level(*def);
+                }
+                // SANY's level skips an argument its operator ignores, as TLC's Naturals ignores
+                // those of `*`, but the definition still reads what the argument reads.
+                ExprKind::Var(_)
+                | ExprKind::Builtin {
+                    op: Builtin::Prime | Builtin::Unchanged | Builtin::Enabled,
+                    ..
+                } => found = true,
+                _ => {}
             }
             for_each_child(expr, &mut |child| pending.push(child));
         }
@@ -69,15 +80,27 @@ impl Analysis<'_> {
 }
 
 impl Evaluator {
-    /// The value of a constant definition, computed once with TLC's startup random generator.
+    /// The value of a constant definition, computed as TLC starts.
     pub(super) fn constant_value(&self, def: DefId) -> Result<Value> {
+        self.constant_value_in(def, None, None)
+    }
+
+    /// The value of a constant definition, computed once with TLC's startup random generator.
+    /// TLC goes on without one that fails as it starts, and computes it where the spec uses it,
+    /// keeping it once that succeeds, as tla-ts does.
+    pub(super) fn constant_value_in(
+        &self,
+        def: DefId,
+        state: Option<StateRef<'_>>,
+        next: Option<StateRef<'_>>,
+    ) -> Result<Value> {
         let cell = &self.constant_values[def.index()];
         if let Some(value) = cell.get() {
             return Ok(value.clone());
         }
         let value = self
             .runtime
-            .at_startup(|| self.enter(def, None, Vec::new(), None, None, Default::default()))?;
+            .at_startup(|| self.enter(def, None, Vec::new(), state, next, Default::default()))?;
         let value = self.startup_value(def, value);
         Ok(cell.get_or_init(|| value).clone())
     }

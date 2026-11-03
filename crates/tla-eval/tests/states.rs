@@ -133,3 +133,17 @@ Matches == "a" \in Later
     assert!(later.contains(&Value::str("a")).unwrap());
     assert!(!later.contains(&Value::str("b")).unwrap());
 }
+
+/// SANY's level skips the arguments of `*`, which TLC's Naturals ignores, but `Double` reads `x`,
+/// so it is no constant TLC computes as it starts.
+#[test]
+fn reads_the_state_through_arguments_sanys_level_skips() {
+    let evaluator = evaluator(
+        r#"
+EXTENDS Integers
+VARIABLES x
+Double == x * 2
+"#,
+    );
+    assert_eq!(in_state(&evaluator, "Double", &state(vec![int(5)])), "10");
+}
