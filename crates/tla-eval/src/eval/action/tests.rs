@@ -983,3 +983,40 @@ fn names_an_incomplete_action_of_an_instance_as_sany_does() {
         "Successor state is not completely specified by action I!Set of the next-state relation. The following variable is not defined: y."
     );
 }
+
+#[test]
+fn takes_apart_a_variable_an_instance_substitutes_a_definition_for() {
+    // As in the refinement EWD840 checks, TD == INSTANCE SyncTerminationDetection, whose
+    // variable terminationDetected the spec defines rather than declares.
+    let inner = r#"---- MODULE Sync ----
+VARIABLES active, detected
+terminated == ~active
+Detect == terminated /\ detected' = TRUE /\ UNCHANGED active
+Wake == active' = TRUE /\ UNCHANGED detected
+vars == <<active, detected>>
+D == ENABLED <<Detect>>_vars
+W == ENABLED <<Wake>>_vars
+P == ENABLED (detected' = detected)
+====
+"#;
+    let source = r#"---- MODULE M ----
+EXTENDS Naturals
+VARIABLES active, tpos
+detected == tpos = 0
+TD == INSTANCE Sync
+Values == <<TD!D, TD!W, TD!P>>
+====
+"#;
+    let spec =
+        tla_resolve::resolve(source, &mut |name: &str| (name == "Sync").then(|| inner.to_owned()))
+            .unwrap();
+    let evaluator = Evaluator::new(Arc::new(spec), Vec::new());
+    let values = |active: bool, tpos: i32| {
+        let current = state(vec![Value::Bool(active), Value::Int(tpos)]);
+        evaluator.eval_def(def(&evaluator, "Values"), Some(&current)).unwrap().to_string()
+    };
+    // As tla-ts finds.
+    assert_eq!(values(false, 0), "<<FALSE, TRUE, TRUE>>");
+    assert_eq!(values(false, 1), "<<TRUE, TRUE, TRUE>>");
+    assert_eq!(values(true, 0), "<<FALSE, FALSE, TRUE>>");
+}
