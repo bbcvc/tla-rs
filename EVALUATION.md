@@ -127,3 +127,55 @@ What the pass leaves out:
 | The location of the bound variable in SANY's message for a range above action level | The resolved program keeps no span for it. |
 
 The grammar parses `ENABLED x'` and `UNCHANGED x'` as `(ENABLED x)'` and `(UNCHANGED x)'`, where SANY applies the prefix operator to `x'`, as it does for `SUBSET x'`. Both forms of `UNCHANGED x'` are level errors, with different messages, but `ENABLED x'` changes meaning and goes from level 1 to level 2. The parser should bind `'` tighter.
+
+## Evaluation results
+
+`tla-value` implements TLC's values. Equality and ordering cross representations (`1..3 = {1, 2, 3}`) and fail where TLC fails (`1 = "a"`). Sets and function domains are sorted in TLC's order, and sets TLC keeps symbolic, such as `SUBSET S`, `[S -> T]`, `Nat` and filters over them, stay lazy. Printing and fingerprints follow TLC. `tla-eval` evaluates the resolved program:
+
+- Definition arguments are lazy, as in TLC, so `p'` primes the argument passed for `p`.
+- Recursive and `LET` functions are lazy.
+- The model configuration binds constants, overrides definitions, and defines operator tables.
+- Native implementations replace the definitions TLC overrides in Java. These are Naturals, Integers, Sequences, FiniteSets, TLC, TLCExt, Bags, Json, Randomization and `_Possible`.
+
+`crates/tla-eval/examples/check_assumptions.rs` checks every model's `ASSUME`s, as TLC does before it explores any state, and compares the outcome with TLC's recorded status. Each model runs in a child process with a timeout. `--outcomes FILE` writes every model's outcome, so two builds can be compared model by model.
+
+```shell
+C=../tla-ts/packages/tla-ts/tests/conformance
+cargo run --release -p tla-eval --example check_assumptions -- $C/.corpora \
+  --library $C/.corpora/tlapm/library --library $C/.corpora/community/modules \
+  --expected $C/expected.json --timeout 20
+```
+
+It checks 920 models in 22 seconds on 11 cores. Outcomes: 846 satisfied, 21 violated, 52 failing before evaluation, and 1 timing out.
+
+On the first run, 51 models disagreed with TLC; 8 still do:
+
+| Cause | Models | Plan |
+| --- | ---: | --- |
+| Subexpression selectors and labels, including the two that fail as syntax errors (`test206`, `test219`) | 7 | In progress on the `selectors` branch. |
+| `NormalizationAssume`: TLC prints records and `@@` functions in the order the spec writes their fields; printing an unsortable set in an error message fails; and TLC skips `TLCEval`'s Java override when `TLCEval` is passed for a constant | 1 | Written field order needs tracking in `tla-value`; the rest are small. |
+
+The timeout is `CarTalkPuzzle` Model_3. Its `Break` filters about 2.6e10 functions, which TLC can't finish either, so TLC has no recorded result for it.
+
+What TLC does that the run turned up:
+
+- An assumption that fails to evaluate counts as violated.
+- TLC checks neither `AXIOM`s nor the assumptions of modules the spec only instantiates. It checks the root module's and those of the modules it extends.
+- The configuration ignores assignments to names the specification lacks, such as `n1 = n1` for a model value.
+- `<-` may name `TRUE`, `FALSE`, `BOOLEAN`, `STRING` or another constant.
+- An entry scoped with `[M]` replaces the definition in module `M` for every instance of it.
+- `TLCGet("config")` answers from the configuration and the checker's options before any state is explored.
+- `AssertError`, `TLCDefer` and `TLCGet` see their arguments unevaluated.
+- A set of functions with an empty domain is `{<<>>}`, whatever its range.
+
+Still missing from evaluation:
+
+| Gap | Effect |
+| --- | --- |
+| `ENABLED` | Needs successor generation, which comes with the model checker. |
+| Caching constant definitions and lazy sets' enumerations | Values are the same, but chains of lazy sets re-enumerate, and impure natives such as `RandomElement` can differ from TLC. Add it with the checker. |
+| TLC's string order | Strings are ordered by when this process interns them, not as TLC interns them, so `CHOOSE` and printing over strings can differ from TLC. |
+| Written field order of records | See `NormalizationAssume` above. |
+| A graceful error on deep recursion | Each recursion level uses about 2.6 KB of stack in release builds. The checker should evaluate on threads with large stacks. |
+| `PickSuccessor`, `TLCCache`'s caching, and `AssertError`'s check that its message is a string literal | Small; they matter only for the specs that use them. |
+| The intern number of a model value in TLC's FP64 fingerprint | Random choices seeded per state differ from TLC for states containing model values. |
