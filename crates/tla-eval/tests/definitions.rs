@@ -192,7 +192,7 @@ fn reads_constants_from_the_model() {
 fn fails_on_arguments_only_when_used() {
     assert_eq!(
         error("LET First(a, b) == b IN First(1, CHOOSE x \\in {} : TRUE)").message,
-        "Attempted to compute the value of an expression of form\nCHOOSE x \\in S: P, but no element of S satisfied P."
+        "Attempted to compute the value of an expression of form\nCHOOSE x \\in S: P, but no element of S satisfied P.\nline 2, col 42 to line 2, col 63 of module Test"
     );
 }
 
@@ -310,7 +310,7 @@ fn defers_errors_of_functions_over_other_domains() {
             "\\E f \\in {[x \\in {1, 2} |-> IF x = 1 THEN 0 ELSE CHOOSE z \\in {} : TRUE]} : TRUE"
         )
         .message,
-        "Attempted to compute the value of an expression of form\nCHOOSE x \\in S: P, but no element of S satisfied P."
+        "Attempted to compute the value of an expression of form\nCHOOSE x \\in S: P, but no element of S satisfied P.\nline 2, col 58 to line 2, col 79 of module Test"
     );
 }
 

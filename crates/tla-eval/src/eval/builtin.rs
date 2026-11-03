@@ -30,7 +30,7 @@ impl Evaluator {
             Builtin::Prime => self.prime(&args[0], expr, env),
             Builtin::Unchanged => self.unchanged(&args[0], expr, env).map(Value::Bool),
             Builtin::Enabled => unsupported("ENABLED is not supported yet"),
-            Builtin::Always | Builtin::Eventually => unsupported(TEMPORAL_ERROR),
+            Builtin::Always | Builtin::Eventually => self.fail_at(env, expr, TEMPORAL_ERROR),
             Builtin::LeadsTo => {
                 unsupported("TLC cannot evaluate a temporal formula such as ~> in a state")
             }
@@ -45,17 +45,18 @@ impl Evaluator {
                 match (op, values.first()) {
                     (Builtin::Domain, Some(value)) if !value.is_function() => {
                         let message = format!(
-                            "Attempted to apply the operator DOMAIN to a non-function\n({})",
-                            describe(value)
+                            "Attempted to apply the operator DOMAIN to a non-function\n({})\n{}",
+                            describe(value),
+                            self.range(env, expr)
                         );
                         Err(self.error(env, expr, message))
                     }
                     (Builtin::SubsetEq, Some(value)) if !value.is_set() || is_overridden(value) => {
-                        Err(self.error(
-                            env,
-                            expr,
-                            "Attempted to evaluate an expression of form S \\subseteq T, but S was not enumerable.",
-                        ))
+                        let message = format!(
+                            "Attempted to evaluate an expression of form S \\subseteq T, but S was not enumerable.\n{}",
+                            self.range(env, expr)
+                        );
+                        Err(self.error(env, expr, message))
                     }
                     _ => self.apply_builtin(op, &values).at(self, env, expr),
                 }
