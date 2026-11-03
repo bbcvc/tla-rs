@@ -46,6 +46,24 @@ struct Reported {
     has_liveness: bool,
 }
 
+/// The text `Reported::encode` escaped.
+fn unescape(text: &str) -> String {
+    let mut unescaped = String::with_capacity(text.len());
+    let mut chars = text.chars();
+    while let Some(char) = chars.next() {
+        unescaped.push(match (char, char == '\\') {
+            (_, true) => match chars.next() {
+                Some('n') => '\n',
+                Some('t') => '\t',
+                Some(other) => other,
+                None => '\\',
+            },
+            (char, false) => char,
+        });
+    }
+    unescaped
+}
+
 impl Reported {
     fn from_outcome(outcome: &Outcome) -> Self {
         Self {
@@ -82,10 +100,7 @@ impl Reported {
         if fields.len() != 8 {
             return None;
         }
-        let unescape = |text: &str| {
-            (!text.is_empty())
-                .then(|| text.replace("\\t", "\t").replace("\\n", "\n").replace("\\\\", "\\"))
-        };
+        let unescape = |text: &str| (!text.is_empty()).then(|| unescape(text));
         let number = |text: &str| text.parse().ok();
         Some(Self {
             status: fields[0].to_owned(),
@@ -229,21 +244,22 @@ fn compare(expected: &Expected, actual: &Reported) -> (Verdict, Option<String>) 
     if actual.status == Status::Unsupported.name() {
         return (Verdict::Unsupported, actual.message.clone());
     }
-    if expected.status == "error" {
-        return match actual.status.as_str() {
-            "error" => (Verdict::Match, None),
-            status => (Verdict::Mismatch, Some(format!("expected an error, got {status}"))),
-        };
-    }
-    // TLC's liveness checker reports a violated temporal property as either, and TLC checks
-    // the temporal properties before the postconditions.
-    let is_liveness_left_out = ["liveness-violation", "property-violation"]
+    // TLC's liveness checker reports a violated temporal property as either, and fails on a
+    // temporal property it can't evaluate. TLC checks the temporal properties before the
+    // postconditions.
+    let is_liveness_left_out = ["liveness-violation", "property-violation", "error"]
         .contains(&expected.status.as_str())
         && [Status::Success.name(), Status::PostconditionViolation.name()]
             .contains(&actual.status.as_str())
         && actual.has_liveness;
     if is_liveness_left_out {
         return (Verdict::Unsupported, Some("liveness checking".into()));
+    }
+    if expected.status == "error" {
+        return match actual.status.as_str() {
+            "error" => (Verdict::Match, None),
+            status => (Verdict::Mismatch, Some(format!("expected an error, got {status}"))),
+        };
     }
     // TLC exits as for a violated assumption when a postcondition fails.
     let status = match actual.status.as_str() {
@@ -407,5 +423,75 @@ fn collect(path: &Path, files: &mut Vec<PathBuf>) {
         }
     } else if path.extension().is_some_and(|found| found == "tla") {
         files.push(path.to_path_buf());
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn reported(status: Status) -> Reported {
+        Reported {
+            status: status.name().to_owned(),
+            violation: None,
+            trace_length: None,
+            generated: None,
+            distinct: None,
+            depth: None,
+            message: None,
+            has_liveness: false,
+        }
+    }
+
+    fn expected(record: serde_json::Value) -> Expected {
+        Expected::from_json(&record)
+    }
+
+    #[test]
+    fn encodes_outcomes_in_one_line() {
+        let outcome = Reported {
+            violation: Some("Inv".into()),
+            trace_length: Some(3),
+            message: Some("a\tb\nc \\n".into()),
+            has_liveness: true,
+            ..reported(Status::InvariantViolation)
+        };
+        let line = outcome.encode();
+        assert!(!line.contains('\n'));
+        let decoded = Reported::decode(&line).unwrap();
+        assert_eq!(decoded.encode(), line);
+        assert_eq!(decoded.message.as_deref(), Some("a\tb\nc \\n"));
+        assert!(decoded.has_liveness && decoded.generated.is_none());
+    }
+
+    #[test]
+    fn compares_outcomes_as_tla_ts_does() {
+        let success = Reported {
+            generated: Some(4),
+            distinct: Some(3),
+            depth: Some(2),
+            ..reported(Status::Success)
+        };
+        let record = serde_json::json!({
+            "status": "success", "generatedStates": 4, "distinctStates": 3, "depth": 2
+        });
+        assert_eq!(compare(&expected(record), &success).0, Verdict::Match);
+        let record = serde_json::json!({
+            "status": "success", "generatedStates": 5, "distinctStates": 3, "depth": 2
+        });
+        assert_eq!(compare(&expected(record), &success).0, Verdict::Mismatch);
+        // TLC exits as for a violated assumption when a postcondition fails.
+        let postcondition =
+            Reported { trace_length: Some(0), ..reported(Status::PostconditionViolation) };
+        let record = serde_json::json!({ "status": "assumption-violation", "traceLength": 0 });
+        assert_eq!(compare(&expected(record), &postcondition).0, Verdict::Match);
+        // What liveness checking would find is left out.
+        let record = serde_json::json!({ "status": "liveness-violation", "traceLength": 2 });
+        assert_eq!(compare(&expected(record.clone()), &success).0, Verdict::Mismatch);
+        let live = Reported { has_liveness: true, ..success };
+        assert_eq!(compare(&expected(record), &live).0, Verdict::Unsupported);
+        let record = serde_json::json!({ "status": "error" });
+        assert_eq!(compare(&expected(record.clone()), &live).0, Verdict::Unsupported);
+        assert_eq!(compare(&expected(record), &reported(Status::Error)).0, Verdict::Match);
     }
 }

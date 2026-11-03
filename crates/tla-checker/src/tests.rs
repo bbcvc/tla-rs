@@ -14,7 +14,10 @@ fn rejects_substitutes_for_constants_that_need_a_state() {
     let outcome = check("CONSTANT C <- Foo");
     assert_eq!(
         (outcome.status, outcome.message.as_deref()),
-        (Status::Error, Some("The configuration file substitutes constant C with non-constant Foo"))
+        (
+            Status::Error,
+            Some("The configuration file substitutes constant C with non-constant Foo")
+        )
     );
     // TLC reads the statistics only once it creates its model checker.
     assert_eq!(check("CONSTANT C <- Diameter").status, Status::Error);

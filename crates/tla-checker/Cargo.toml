@@ -14,3 +14,7 @@ tla-value.workspace = true
 
 [dev-dependencies]
 serde_json.workspace = true
+
+[[example]]
+name = "conformance"
+test = true
