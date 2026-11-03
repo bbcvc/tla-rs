@@ -146,7 +146,8 @@ What the pass leaves out:
 `tla-value` implements TLC's values. Equality and ordering cross representations (`1..3 = {1, 2, 3}`) and fail where TLC fails (`1 = "a"`). Sets and function domains are sorted in TLC's order, and sets TLC keeps symbolic, such as `SUBSET S`, `[S -> T]`, `Nat` and filters over them, stay lazy. Printing and fingerprints follow TLC. `tla-eval` evaluates the resolved program:
 
 - Definition arguments are lazy, as in TLC, so `p'` primes the argument passed for `p`.
-- Recursive and `LET` functions are lazy.
+- Recursive and `LET` functions are lazy. Applying one evaluates its body at the argument, without building the function at each step of the recursion.
+- Quantifiers, `CHOOSE` and set filters take a large set of functions, records, or tuples, or a large power set, one element at a time, in TLC's order (`Value::enumeration`), so they stop at the first witness without building the rest. A power set of more than 30 elements, too large to list, is enumerated this way, as TLC enumerates it.
 - Constant definitions are computed once, with TLC's startup random generator, as TLC computes them when it starts, and a lazy set keeps its elements once enumerated.
 - The model configuration binds constants, overrides definitions, and defines operator tables.
 - Native implementations replace the definitions TLC overrides in Java. These are Naturals, Integers, Sequences, FiniteSets, TLC, TLCExt, Bags, Json, Randomization and `_Possible`, plus IOUtils' `Serialize` for NDJSON, which TLC's own Json class writes.
@@ -192,6 +193,5 @@ Still missing from evaluation:
 | Natives for the other community modules TLC overrides in Java, such as CSV, and `TLCGet("config").install` | Only matter with `--community-modules`; CSV's writers stay `TRUE`, and `SmokeEWD998_SC`'s command has no jar to run. |
 | TLC's order of computing constant definitions at startup | `Evaluator::evaluate_constant_definitions` goes through the definitions in the resolver's order. TLC goes through the modules in the order SANY finishes them, through each module's definitions in the order of SANY's symbol table (tla-ts `createTlcDefinitionOrder`), and skips the modules an `INSTANCE` gives parameters to. Values are the same; impure natives in several constant definitions, such as `Print` or `RandomElement`, can run in another order. |
 | Streaming the elements of a lazy set before TLC caches them | TLC enumerates a `UNION` or `\cup` it hasn't cached by streaming the sets it combines, duplicates and all (tla-ts `getStreamedElements`). This matters for how many successors TLC generates. |
-| `CHOOSE` over a large set of functions | The evaluator enumerates `[S -> T]` before choosing, where TLC streams it. `EWD998ChanID_export` and `_shiviz` time out on a constant definition that chooses from 7^7 functions. |
 | A graceful error on deep recursion | Each recursion level uses about 2.6 KB of stack in release builds. The checker should evaluate on threads with large stacks. |
 | `PickSuccessor`, `TLCCache`'s caching, and `AssertError`'s check that its message is a string literal | Small; they matter only for the specs that use them. |
