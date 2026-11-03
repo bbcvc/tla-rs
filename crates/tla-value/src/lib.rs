@@ -15,6 +15,7 @@ mod format;
 mod func;
 mod order;
 mod set;
+mod stream;
 
 use std::fmt;
 use std::sync::Arc;
@@ -157,6 +158,7 @@ impl Value {
     }
 
     pub fn lazy(set: LazySet) -> Self {
+        stream::note_lazy(&set);
         Self::Lazy(Arc::new(set))
     }
 
