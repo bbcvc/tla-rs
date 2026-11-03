@@ -1,7 +1,13 @@
-//! Parses TLA+ modules with tree-sitter-tlaplus and lowers them into [`tla_ast`] trees.
+//! Parses TLA+ modules with tree-sitter-tlaplus and lowers them into [`tla_ast`] trees, and parses
+//! TLC model configuration (`.cfg`) files.
 
+mod config;
 mod expr;
 mod lower;
+
+pub use config::{
+    ConfigError, ConfigValue, ConstantAssignment, ConstantSubstitution, ModelConfig, parse_config,
+};
 
 use tla_ast::{Module, Span};
 use tree_sitter::{Node, Parser};
