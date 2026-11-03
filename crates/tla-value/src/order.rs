@@ -1,18 +1,24 @@
 //! TLC's ordering and equality, ported from tla-ts `compareValues` and `valuesEqual`.
 //!
 //! The order sorts sets and function domains, and so decides what `CHOOSE` returns: model
-//! values first, then integers by value, strings by when they were first interned, `FALSE`
+//! values first, then integers by value, strings by when TLC first interns them (see [`crate::set_order`]), `FALSE`
 //! before `TRUE`, sets by size and then element by element, and functions by domain size, then
 //! keys, then values. Values of kinds TLC can't compare, such as an integer and a string, are an
 //! error rather than an order.
 
 use std::cmp::Ordering;
+use std::sync::Arc;
 
 use crate::format::printable;
 use crate::{LazySet, Result, Value, fail, model_type};
 
 /// Fails as TLC does when a typed model value meets a value of another type.
 fn check_model_types(left: &Value, right: &Value, is_equality: bool) -> Result<()> {
+    if let (Value::Model(left), Value::Model(right)) = (left, right)
+        && left == right
+    {
+        return Ok(());
+    }
     let type_of = |value: &Value| match value {
         Value::Model(name) => model_type(*name),
         _ => None,
@@ -148,6 +154,7 @@ impl Value {
     /// value differs from everything but itself.
     pub fn equals(&self, other: &Value) -> Result<bool> {
         use Value::{Bool, Int, Model, Str};
+        self.cache_elements();
         match (self, other) {
             (Model(left), Model(right)) => {
                 check_model_types(self, other, true)?;
@@ -204,6 +211,10 @@ fn compare_functions(left: &Value, right: &Value, verb: &str) -> Result<Ordering
     }
     match (left, right) {
         (Value::Tuple(left), Value::Tuple(right)) => compare_elements(left, right),
+        // Functions with the very same keys, as records of one shape share, compare by values.
+        (Value::Func(left), Value::Func(right)) if Arc::ptr_eq(&left.keys, &right.keys) => {
+            compare_elements(&left.values, &right.values)
+        }
         (Value::LazyFunc(_), _) => compare_functions(&left.materialize()?, right, verb),
         (_, Value::LazyFunc(_)) => compare_functions(left, &right.materialize()?, verb),
         _ => {
@@ -220,7 +231,9 @@ fn compare_functions(left: &Value, right: &Value, verb: &str) -> Result<Ordering
                     "Attempted to {verb} record:\n{left}\nwith non-record\n{right}"
                 );
             }
-            if left_keys.len() != right_keys.len() && !is_mismatch {
+            // Any other function compares its size first, as TLC's FcnRcdValue does, so a tuple
+            // differs from a record of another size without comparing their keys.
+            if left_keys.len() != right_keys.len() {
                 return Ok(left_keys.len().cmp(&right_keys.len()));
             }
             for (left, right) in left_keys.iter().zip(right_keys.iter()) {
@@ -228,9 +241,6 @@ fn compare_functions(left: &Value, right: &Value, verb: &str) -> Result<Ordering
                 if ordering != Ordering::Equal {
                     return Ok(ordering);
                 }
-            }
-            if left_keys.len() != right_keys.len() {
-                return Ok(left_keys.len().cmp(&right_keys.len()));
             }
             compare_elements(&left_values, &right_values)
         }

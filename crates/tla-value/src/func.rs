@@ -1,6 +1,8 @@
 //! Functions: canonical construction, application, `DOMAIN`, and `EXCEPT`.
 
 use std::borrow::Cow;
+use std::cell::RefCell;
+use std::collections::HashMap;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 
@@ -69,6 +71,25 @@ pub enum Key {
     Field(Symbol),
 }
 
+/// The keys of each shape of record, by its field names.
+type Shapes = HashMap<Box<[Symbol]>, Arc<[Value]>>;
+
+/// The keys of records with the fields `names`, sorted and distinct: one allocation for each
+/// shape of record a thread builds, so that records of one shape share their keys.
+fn record_keys(names: &[Symbol]) -> Arc<[Value]> {
+    thread_local! {
+        static SHAPES: RefCell<Shapes> = RefCell::default();
+    }
+    SHAPES.with_borrow_mut(|shapes| {
+        if let Some(keys) = shapes.get(names) {
+            return keys.clone();
+        }
+        let keys: Arc<[Value]> = names.iter().map(|name| Value::Str(*name)).collect();
+        shapes.insert(names.into(), keys.clone());
+        keys
+    })
+}
+
 impl Value {
     /// The function mapping each key to its value. A function whose domain is `1..n` becomes a
     /// tuple. A repeated key keeps its first value.
@@ -79,19 +100,24 @@ impl Value {
         if is_tuple {
             return Ok(Value::Tuple(pairs.into_iter().map(|(_, value)| value).collect()));
         }
-        let keys = sort_unique(pairs.iter().map(|(key, _)| key.clone()).collect())?;
-        let mut values = Vec::with_capacity(keys.len());
-        for key in &keys {
-            let mut found = None;
-            for (candidate, value) in &pairs {
-                if candidate.equals(key)? {
-                    found = Some(value.clone());
-                    break;
-                }
-            }
-            values.push(found.expect("every sorted key comes from a pair"));
+        // Keys enumerated from a domain come sorted.
+        let is_sorted = pairs
+            .windows(2)
+            .all(|pair| matches!(pair[0].0.compare(&pair[1].0), Ok(std::cmp::Ordering::Less)));
+        if is_sorted {
+            let (keys, values) = pairs.into_iter().unzip();
+            return Ok(Self::from_sorted(keys, values));
         }
-        Ok(Self::from_sorted(keys, values))
+        let keys = sort_unique(pairs.iter().map(|(key, _)| key.clone()).collect())?;
+        let mut values: Vec<Option<Value>> = vec![None; keys.len()];
+        for (key, value) in pairs {
+            let Ok(index) = search(&keys, &key)? else {
+                unreachable!("every key of a pair is among the sorted keys")
+            };
+            values[index].get_or_insert(value);
+        }
+        let values = values.into_iter().map(|value| value.expect("every key has a pair"));
+        Ok(Self::from_sorted(keys, values.collect()))
     }
 
     /// A function from keys already sorted and distinct.
@@ -108,24 +134,27 @@ impl Value {
 
     /// The record `[name |-> value, ...]`, which keeps the order its fields are written in.
     pub fn record(fields: Vec<(Symbol, Value)>) -> Value {
+        if fields.is_empty() {
+            return Value::empty_tuple();
+        }
         if fields.windows(2).all(|pair| pair[0].0 < pair[1].0) {
-            let (keys, values) =
-                fields.into_iter().map(|(name, value)| (Value::Str(name), value)).unzip();
-            return Self::from_sorted(keys, values);
+            let (names, values): (Vec<Symbol>, Vec<Value>) = fields.into_iter().unzip();
+            let keys = record_keys(&names);
+            return Value::Func(Arc::new(Func { keys, values: values.into(), written: None }));
         }
         let written: Vec<Value> = fields.iter().map(|(name, _)| Value::Str(*name)).collect();
         let mut fields = fields;
         fields.sort_by_key(|(name, _)| *name);
         fields.dedup_by_key(|(name, _)| *name);
-        let (keys, values): (Vec<Value>, Vec<Value>) =
-            fields.into_iter().map(|(name, value)| (Value::Str(name), value)).unzip();
+        let (names, values): (Vec<Symbol>, Vec<Value>) = fields.into_iter().unzip();
+        let keys = record_keys(&names);
         // A record with a repeated field is sorted, as TLC builds it.
         let written = if keys.len() == written.len() {
             WrittenOrder::of(&keys, &written).expect("field names compare")
         } else {
             None
         };
-        Value::Func(Arc::new(Func { keys: keys.into(), values: values.into(), written }))
+        Value::Func(Arc::new(Func { keys, values: values.into(), written }))
     }
 
     /// The function `@@` builds from `pairs`, which keeps the order of keys that are all
@@ -239,7 +268,7 @@ impl Value {
     pub fn domain(&self) -> Result<Value> {
         match self {
             Value::Tuple(items) => Ok(Value::Interval(1, items.len() as i32)),
-            Value::Func(func) => Ok(Value::Set(func.keys.to_vec().into())),
+            Value::Func(func) => Ok(Value::Set(func.keys.clone())),
             Value::LazyFunc(lazy) => Ok(lazy.domain.clone()),
             _ => fail!([self], "DOMAIN expects a function but received {self}"),
         }
@@ -320,6 +349,7 @@ impl Value {
                     apply: Arc::new(move |arg| {
                         if key.equals(arg)? { Ok(updated.clone()) } else { previous(arg) }
                     }),
+                    source: None,
                 })))
             }
             _ => fail!([self], "Attempted to apply EXCEPT construct to the value {self}."),
@@ -364,6 +394,7 @@ mod tests {
         let function = Value::LazyFunc(std::sync::Arc::new(crate::LazyFunc {
             domain: Value::lazy(crate::LazySet::Nat),
             apply: std::sync::Arc::new(|_| Ok(Value::Int(0))),
+            source: None,
         }));
         assert_eq!(
             function.materialize().unwrap_err().0,

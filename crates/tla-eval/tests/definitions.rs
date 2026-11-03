@@ -320,3 +320,31 @@ fn shares_evaluators_across_threads() {
     assert_send_sync::<Evaluator>();
     assert_send_sync::<tla_eval::Value>();
 }
+
+#[test]
+fn evaluates_expressions_in_the_frames_of_calls() {
+    use tla_resolve::{DefBody, ExprKind, Pattern};
+
+    let spec =
+        spec("EXTENDS Naturals\nAbove(n) == \\A p \\in {1, 2} : p + n > 2\nUse == Above(1)", &[]);
+    let evaluator = Evaluator::new(Arc::new(spec), Vec::new());
+    let spec = evaluator.spec();
+    let (above, using) = (lookup(spec, "Above"), lookup(spec, "Use"));
+    let DefBody::Expr(body) = &spec.def(above).body else { panic!("Above is an expression") };
+    let ExprKind::Quant { bounds, body, .. } = &body.kind else { panic!("a quantifier") };
+    let Pattern::Names(slots) = &bounds[0].pattern else { panic!("a name") };
+    let DefBody::Expr(call) = &spec.def(using).body else { panic!("Use is an expression") };
+    let ExprKind::Call { def, .. } = &call.kind else { panic!("a call") };
+    let call = evaluator.spec_expr(using, call).unwrap();
+    let frames = evaluator.call_frames(&evaluator.module_frames(using), &call, *def).unwrap();
+    let body = evaluator.spec_expr(above, body).unwrap();
+    let at = |p: i32| {
+        let bound = evaluator.bind(&frames, slots[0], tla_eval::Value::Int(p));
+        evaluator.eval_in(&bound, &body, None, None).unwrap().as_bool()
+    };
+    assert_eq!((at(1), at(2)), (Some(false), Some(true)));
+    // An expression is the spec's only where a definition's body holds it.
+    let copy = body.get().clone();
+    assert!(evaluator.spec_expr(above, &copy).is_none());
+    assert!(evaluator.spec_expr(using, body.get()).is_none());
+}

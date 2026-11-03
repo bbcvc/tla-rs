@@ -1,9 +1,10 @@
 //! The frames expressions are evaluated in, and what lazy values capture of them.
 
 use std::ptr::NonNull;
-use std::sync::{Arc, OnceLock};
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::{Arc, Mutex, OnceLock, PoisonError};
 
-use tla_resolve::{Expr, ModuleId, Spec};
+use tla_resolve::{DefId, Expr, ModuleId, Spec};
 use tla_value::Value;
 
 use crate::{Operator, State};
@@ -24,10 +25,32 @@ pub(crate) enum Slot {
 /// Frames are shared through `Arc`. Evaluation writes slots of the current frame with
 /// `Arc::make_mut`, so a lazy value that captured the frame keeps the values it saw, and no
 /// frame can ever hold a reference to itself.
-#[derive(Clone)]
 pub(crate) struct Frame {
     pub slots: Vec<Slot>,
     pub parent: Option<Arc<Frame>>,
+    /// The values of the `LET` definitions evaluated in this frame, as TLC binds a `LET`
+    /// definition to a `LazyValue`: each for the states it was computed in, until a slot of the
+    /// frame changes.
+    lets: Mutex<Vec<LetValue>>,
+}
+
+/// The value of a `LET` definition, and where it was computed.
+struct LetValue {
+    def: DefId,
+    /// The slots of the frame the value may have read, as bits: bit 63 for every slot from 63.
+    reads: u64,
+    state: Option<OwnedState>,
+    next: Option<OwnedState>,
+    keep_lazy: bool,
+    enabled: Enabled,
+    value: Value,
+}
+
+impl Clone for Frame {
+    /// A copy, about to be written, which keeps no `LET` values.
+    fn clone(&self) -> Self {
+        Self { slots: self.slots.clone(), parent: self.parent.clone(), lets: Mutex::default() }
+    }
 }
 
 impl Frame {
@@ -35,7 +58,46 @@ impl Frame {
     pub fn new(args: Vec<Slot>, size: usize, parent: Option<Arc<Frame>>) -> Self {
         let mut slots = args;
         slots.resize(size.max(slots.len()), Slot::Value(Value::FALSE));
-        Self { slots, parent }
+        Self { slots, parent, lets: Mutex::default() }
+    }
+
+    /// Writes a slot, dropping the `LET` values computed in the frame that may have read it.
+    pub fn set(&mut self, slot: usize, value: Slot) {
+        self.slots[slot] = value;
+        let lets = self.lets.get_mut().unwrap_or_else(PoisonError::into_inner);
+        if !lets.is_empty() {
+            let bit = 1 << slot.min(63);
+            lets.retain(|cached| cached.reads & bit == 0);
+        }
+    }
+
+    /// The value of the `LET` definition `def` computed in this frame where `env` is.
+    pub fn let_value(&self, def: DefId, env: &Env<'_>) -> Option<Value> {
+        let lets = self.lets.lock().unwrap_or_else(PoisonError::into_inner);
+        lets.iter()
+            .find(|cached| {
+                cached.def == def
+                    && cached.keep_lazy == env.keep_lazy
+                    && cached.enabled == env.enabled
+                    && is_same_state(cached.state.as_ref(), env.state)
+                    && is_same_state(cached.next.as_ref(), env.next)
+            })
+            .map(|cached| cached.value.clone())
+    }
+
+    /// Keeps the value of the `LET` definition `def`, which may read the slots `reads` of this
+    /// frame, computed in this frame where `env` is.
+    pub fn keep_let_value(&self, def: DefId, reads: u64, env: &Env<'_>, value: Value) {
+        let cached = LetValue {
+            def,
+            reads,
+            state: env.state.map(kept_state),
+            next: env.next.map(kept_state),
+            keep_lazy: env.keep_lazy,
+            enabled: env.enabled,
+            value,
+        };
+        self.lets.lock().unwrap_or_else(PoisonError::into_inner).push(cached);
     }
 
     /// The frame `hops` frames up from this one.
@@ -57,15 +119,104 @@ pub(crate) struct Thunk {
     pub value: OnceLock<Value>,
 }
 
+/// A state expressions read: a complete one, or one whose variables are being assigned, as by an
+/// initial predicate or by the primes of an action, where an unassigned variable is undefined.
+#[derive(Clone, Copy)]
+pub(crate) enum StateRef<'a> {
+    Complete(&'a State),
+    Partial(&'a [Option<Value>], Version),
+}
+
+/// Which of the values a state being assigned holds. Each assignment makes a new version, and
+/// undoing it returns to the one before, as tla-ts's states being assigned are copied on each
+/// assignment and shared otherwise.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub(crate) struct Version {
+    /// The enumeration the state belongs to, unique in the process.
+    run: u64,
+    step: u64,
+}
+
+impl Version {
+    /// The first version of a state a new enumeration assigns.
+    pub fn first() -> Self {
+        static RUNS: AtomicU64 = AtomicU64::new(0);
+        Self { run: RUNS.fetch_add(1, Ordering::Relaxed), step: 0 }
+    }
+
+    /// The `step`th version after the first of the same enumeration.
+    pub fn at(self, step: u64) -> Self {
+        Self { run: self.run, step }
+    }
+}
+
+impl<'a> StateRef<'a> {
+    pub fn get(self, index: usize) -> Option<&'a Value> {
+        match self {
+            StateRef::Complete(state) => state.get(index),
+            StateRef::Partial(state, _) => state.get(index).and_then(Option::as_ref),
+        }
+    }
+
+    /// The state, if every variable has a value in it.
+    pub fn complete(self) -> Option<&'a State> {
+        match self {
+            StateRef::Complete(state) => Some(state),
+            StateRef::Partial(..) => None,
+        }
+    }
+
+    fn to_owned(self) -> OwnedState {
+        match self {
+            StateRef::Complete(state) => OwnedState::Complete(state.clone()),
+            StateRef::Partial(state, version) => OwnedState::Partial(state.into(), version),
+        }
+    }
+}
+
+/// A [`StateRef`] that a lazy value keeps.
+#[derive(Clone)]
+pub(crate) enum OwnedState {
+    Complete(State),
+    Partial(Arc<[Option<Value>]>, Version),
+    /// The version of a state being assigned, which a thunk keeps instead of the values, since
+    /// it reads the state of the expression that forces it.
+    Changing(Version),
+}
+
+impl OwnedState {
+    fn as_ref(&self) -> StateRef<'_> {
+        match self {
+            OwnedState::Complete(state) => StateRef::Complete(state),
+            OwnedState::Partial(state, version) => StateRef::Partial(state, *version),
+            OwnedState::Changing(version) => StateRef::Partial(&[], *version),
+        }
+    }
+}
+
+/// Whether an expression is in the operand of an ENABLED of an instantiated module, or what
+/// that operand calls, where TLC takes a primed variable of the module for a variable of its
+/// own: tla-ts's rewrite modes. It goes with the text, so an argument keeps the mode of the
+/// place that passes it.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub(crate) enum Enabled {
+    #[default]
+    Outside,
+    Inside,
+    /// Inside, and under a prime.
+    Primed,
+}
+
 /// Everything about the place an expression is evaluated in but the evaluator: what a lazy
 /// value or a thunk keeps to evaluate an expression later.
 #[derive(Clone)]
 pub(crate) struct Captured {
     pub frame: Arc<Frame>,
     pub module: ModuleId,
-    pub state: Option<State>,
-    pub next: Option<State>,
+    pub state: Option<OwnedState>,
+    pub next: Option<OwnedState>,
     pub keep_lazy: bool,
+    pub enabled: Enabled,
 }
 
 impl Captured {
@@ -73,22 +224,95 @@ impl Captured {
         Env {
             frame: self.frame.clone(),
             module: self.module,
-            state: self.state.as_ref(),
-            next: self.next.as_ref(),
+            state: self.state.as_ref().map(OwnedState::as_ref),
+            next: self.next.as_ref().map(OwnedState::as_ref),
             keep_lazy: self.keep_lazy,
+            enabled: self.enabled,
         }
     }
 
-    /// Whether `env` reads the states this was captured in.
+    /// Whether `env` reads the states this was captured in: the same complete states, and the
+    /// same version of a state being assigned.
     pub fn is_in_states_of(&self, env: &Env<'_>) -> bool {
-        fn same(captured: Option<&State>, current: Option<&State>) -> bool {
-            match (captured, current) {
-                (Some(captured), Some(current)) => Arc::ptr_eq(captured, current),
-                (None, None) => true,
-                _ => false,
-            }
+        is_same_state(self.state.as_ref(), env.state) && is_same_state(self.next.as_ref(), env.next)
+    }
+}
+
+/// What a cache keeps of a state to tell it again: a complete state itself, and the version of
+/// a state being assigned.
+fn kept_state(state: StateRef<'_>) -> OwnedState {
+    match state {
+        StateRef::Complete(state) => OwnedState::Complete(state.clone()),
+        StateRef::Partial(_, version) => OwnedState::Changing(version),
+    }
+}
+
+/// The values of definitions without parameters computed in the last few states, which are the
+/// same while the states are.
+#[derive(Default)]
+pub(crate) struct StateValues {
+    values: Vec<StateValue>,
+}
+
+struct StateValue {
+    def: DefId,
+    state: Option<OwnedState>,
+    /// The next state, for a definition that reads it.
+    next: Option<Option<OwnedState>>,
+    keep_lazy: bool,
+    enabled: Enabled,
+    value: Value,
+}
+
+/// How many values [`StateValues`] keeps before it starts again.
+const STATE_VALUES: usize = 64;
+
+impl StateValues {
+    /// The value of `def`, which reads the next state if `reads_next`, computed where `env` is.
+    pub fn get(&self, def: DefId, reads_next: bool, env: &Env<'_>) -> Option<Value> {
+        let found = self.values.iter().find(|kept| {
+            kept.def == def
+                && kept.keep_lazy == env.keep_lazy
+                && kept.enabled == env.enabled
+                && is_same_state(kept.state.as_ref(), env.state)
+                && (!reads_next || {
+                    let next = kept.next.as_ref().expect("kept with the next state");
+                    is_same_state(next.as_ref(), env.next)
+                })
+        });
+        found.map(|kept| kept.value.clone())
+    }
+
+    /// Keeps the value of `def`, which reads the next state if `reads_next`, computed where
+    /// `env` is.
+    pub fn keep(&mut self, def: DefId, reads_next: bool, env: &Env<'_>, value: Value) {
+        if self.values.len() >= STATE_VALUES {
+            self.values.clear();
         }
-        same(self.state.as_ref(), env.state) && same(self.next.as_ref(), env.next)
+        self.values.push(StateValue {
+            def,
+            state: env.state.map(kept_state),
+            next: reads_next.then(|| env.next.map(kept_state)),
+            keep_lazy: env.keep_lazy,
+            enabled: env.enabled,
+            value,
+        });
+    }
+}
+
+/// Whether a state kept is the state `current`: the same complete state, or the same version of a
+/// state being assigned.
+fn is_same_state(kept: Option<&OwnedState>, current: Option<StateRef<'_>>) -> bool {
+    match (kept, current) {
+        (Some(OwnedState::Complete(kept)), Some(StateRef::Complete(current))) => {
+            Arc::ptr_eq(kept, current)
+        }
+        (
+            Some(OwnedState::Changing(kept) | OwnedState::Partial(_, kept)),
+            Some(StateRef::Partial(_, current)),
+        ) => kept == &current,
+        (None, None) => true,
+        _ => false,
     }
 }
 
@@ -97,18 +321,19 @@ impl Captured {
 pub(crate) struct Env<'a> {
     pub frame: Arc<Frame>,
     pub module: ModuleId,
-    pub state: Option<&'a State>,
+    pub state: Option<StateRef<'a>>,
     /// The next state, which primed expressions read.
-    pub next: Option<&'a State>,
+    pub next: Option<StateRef<'a>>,
     /// TLC's `EvalControl.KeepLazy`: set while evaluating the function of an application, so
     /// that a function constructor builds a lazy function and evaluates its body only where it
     /// is applied.
     pub keep_lazy: bool,
+    pub enabled: Enabled,
 }
 
 impl Env<'_> {
     pub fn set(&mut self, slot: usize, value: Value) {
-        Arc::make_mut(&mut self.frame).slots[slot] = Slot::Value(value);
+        Arc::make_mut(&mut self.frame).set(slot, Slot::Value(value));
     }
 
     pub fn slot(&self, hops: usize, slot: usize) -> &Slot {
@@ -119,9 +344,27 @@ impl Env<'_> {
         Captured {
             frame: self.frame.clone(),
             module: self.module,
-            state: self.state.cloned(),
-            next: self.next.cloned(),
+            state: self.state.map(StateRef::to_owned),
+            next: self.next.map(StateRef::to_owned),
             keep_lazy: self.keep_lazy,
+            enabled: self.enabled,
+        }
+    }
+
+    /// What a thunk keeps: the frame and the states, which tell when its value can be cached,
+    /// but only the version of a state being assigned.
+    pub fn capture_scope(&self) -> Captured {
+        let keep = |state: StateRef<'_>| match state {
+            StateRef::Complete(state) => OwnedState::Complete(state.clone()),
+            StateRef::Partial(_, version) => OwnedState::Changing(version),
+        };
+        Captured {
+            frame: self.frame.clone(),
+            module: self.module,
+            state: self.state.map(keep),
+            next: self.next.map(keep),
+            keep_lazy: self.keep_lazy,
+            enabled: self.enabled,
         }
     }
 }
@@ -137,6 +380,12 @@ pub(crate) struct SpecRef<T: ?Sized> {
 // alive, so it can move and be shared across threads when `&T` can.
 unsafe impl<T: Sync + ?Sized> Send for SpecRef<T> {}
 unsafe impl<T: Sync + ?Sized> Sync for SpecRef<T> {}
+
+impl<T: ?Sized> Clone for SpecRef<T> {
+    fn clone(&self) -> Self {
+        Self { spec: self.spec.clone(), item: self.item }
+    }
+}
 
 impl<T: ?Sized> SpecRef<T> {
     /// # Safety

@@ -6,15 +6,15 @@
 //! `p` primes the argument expression. The arguments of a native implementation and of a
 //! built-in operator are evaluated before the call.
 
-use std::sync::{Arc, OnceLock};
+use std::sync::{Arc, OnceLock, PoisonError};
 
-use tla_resolve::{ConstId, DefBody, DefId, Expr, ExprKind, Local, OpRef, Scope};
+use tla_resolve::{Builtin, ConstId, DefBody, DefId, Expr, ExprKind, Local, OpRef, Scope};
 use tla_value::{Error, Value};
 
-use super::At;
-use crate::env::{Env, Frame, Slot, SpecRef, Thunk};
+use super::{At, STACK_OVERFLOW, is_stack_low};
+use crate::env::{Enabled, Env, Frame, Slot, SpecRef, StateRef, Thunk};
 use crate::native::OperatorKind;
-use crate::{Arg, ConstBinding, Ctx, EvalError, Evaluator, Native, Operator, Result, State};
+use crate::{Arg, ConstBinding, Ctx, EvalError, Evaluator, Native, Operator, Result};
 
 impl Evaluator {
     /// Calls `def` with `args`, in a new frame whose parent is `parent`, unless the configuration
@@ -24,8 +24,22 @@ impl Evaluator {
         def: DefId,
         parent: Option<Arc<Frame>>,
         args: Vec<Value>,
-        state: Option<&State>,
-        next: Option<&State>,
+        state: Option<StateRef<'_>>,
+        next: Option<StateRef<'_>>,
+    ) -> Result<Value> {
+        self.call_def_in(def, parent, args, state, next, Enabled::Outside)
+    }
+
+    /// [`Evaluator::call_def`] of an operator passed where `enabled` tells, whose body it is
+    /// evaluated in.
+    fn call_def_in(
+        &self,
+        def: DefId,
+        parent: Option<Arc<Frame>>,
+        args: Vec<Value>,
+        state: Option<StateRef<'_>>,
+        next: Option<StateRef<'_>>,
+        enabled: Enabled,
     ) -> Result<Value> {
         let info = self.spec.def(def);
         if args.len() != info.params.len() {
@@ -53,7 +67,7 @@ impl Evaluator {
                     Arg::Value(value) => Slot::Value(value.clone()),
                     Arg::Op(op) => Slot::Op(op.clone()),
                 });
-                self.enter(def, parent.clone(), slots.collect(), state, next, false)
+                self.enter(def, parent.clone(), slots.collect(), state, next, (false, enabled))
             };
             let mut ctx = Ctx::new(self, state);
             ctx.next = next;
@@ -61,23 +75,29 @@ impl Evaluator {
             return native(&mut ctx, &args)
                 .map_err(|error| EvalError::at(&self.spec, info.module, info.span, error.0));
         }
+        if args.is_empty() && self.is_computed_once(def) {
+            return self.constant_value_in(def, state, next);
+        }
         let slots = args.into_iter().map(Slot::Value).collect();
-        self.enter(def, parent, slots, state, next, false)
+        self.enter(def, parent, slots, state, next, (false, enabled))
     }
 
     /// Evaluates the body of `def` in a new frame holding `slots`.
-    fn enter(
+    pub(super) fn enter(
         &self,
         def: DefId,
         parent: Option<Arc<Frame>>,
         slots: Vec<Slot>,
-        state: Option<&State>,
-        next: Option<&State>,
-        keep_lazy: bool,
+        state: Option<StateRef<'_>>,
+        next: Option<StateRef<'_>>,
+        (keep_lazy, enabled): (bool, Enabled),
     ) -> Result<Value> {
         let info = self.spec.def(def);
+        if is_stack_low() {
+            return Err(EvalError::at(&self.spec, info.module, info.span, STACK_OVERFLOW));
+        }
         let frame = Arc::new(Frame::new(slots, info.frame_size, parent));
-        let mut env = Env { frame, module: info.module, state, next, keep_lazy };
+        let mut env = Env { frame, module: info.module, state, next, keep_lazy, enabled };
         match &info.body {
             DefBody::Expr(body) => self.eval(body, &mut env),
             DefBody::Function { bounds, body } => {
@@ -108,15 +128,95 @@ impl Evaluator {
         {
             return self.eval(arg, env);
         }
+        if self.tlc_cache == Some(def)
+            && let [cached, closure] = args
+        {
+            return self.tlc_cache(cached, closure, expr, env);
+        }
         if let Some(native) = self.natives[def.index()] {
             return self.call_native(native, def, scope, args, expr, env);
+        }
+        if args.is_empty() && self.is_computed_once(def) {
+            return self.constant_value_in(def, env.state, env.next);
         }
         if args.len() != info.params.len() {
             return Err(self.arity_error(def, args.len(), env, expr));
         }
+        if args.is_empty() && self.is_cached_let[def.index()] {
+            return self.let_value(def, scope, env);
+        }
+        if args.is_empty()
+            && self.is_cached_state_definition[def.index()]
+            && matches!(scope, Scope::Global)
+        {
+            return self.state_value(def, env);
+        }
         let parent = self.scope_frame(scope, env)?;
         let slots = args.iter().map(|arg| self.arg_slot(arg, env)).collect::<Result<Vec<_>>>()?;
-        self.enter(def, parent, slots, env.state, env.next, env.keep_lazy)
+        self.enter(def, parent, slots, env.state, env.next, (env.keep_lazy, env.enabled))
+    }
+
+    /// The value of the `LET` definition `def`, computed once for the frame the `LET` is
+    /// evaluated in and the states, as TLC binds it to a `LazyValue`.
+    fn let_value(&self, def: DefId, scope: &Scope, env: &Env<'_>) -> Result<Value> {
+        let parent = self.scope_frame(scope, env)?;
+        if let Some(frame) = &parent
+            && let Some(value) = frame.let_value(def, env)
+        {
+            return Ok(value);
+        }
+        let context = (env.keep_lazy, env.enabled);
+        let value = self.enter(def, parent.clone(), Vec::new(), env.state, env.next, context)?;
+        if let Some(frame) = &parent {
+            frame.keep_let_value(def, self.let_reads[def.index()], env, value.clone());
+        }
+        Ok(value)
+    }
+
+    /// The value of the module-level definition `def`, kept for the states it was computed in.
+    fn state_value(&self, def: DefId, env: &Env<'_>) -> Result<Value> {
+        let lock = || self.state_values.lock().unwrap_or_else(PoisonError::into_inner);
+        // A definition that doesn't read the next state gives the same value whatever it is.
+        let reads_next = self.reads_next_state[def.index()];
+        if let Some(value) = lock().get(def, reads_next, env) {
+            return Ok(value);
+        }
+        let context = (env.keep_lazy, env.enabled);
+        let value = self.enter(def, None, Vec::new(), env.state, env.next, context)?;
+        if !value.holds_streamed_set() {
+            lock().keep(def, reads_next, env, value.clone());
+        }
+        Ok(value)
+    }
+
+    /// `TLCCache(expr, closure)`: the value `expr` had when last computed with a `closure` equal
+    /// to this one, as TLC's Java override keeps it. An `expr` that reads the state is kept for
+    /// the state it read (tla-ts `TLCCache`).
+    #[cold]
+    #[inline(never)]
+    fn tlc_cache(
+        &self,
+        cached: &Expr,
+        closure: &Expr,
+        expr: &Expr,
+        env: &mut Env<'_>,
+    ) -> Result<Value> {
+        let closure = self.eval(closure, env)?;
+        let state = match env.state {
+            _ if !super::mentions_variables(&self.spec, cached) => None,
+            Some(StateRef::Complete(state)) => Some(state.clone()),
+            // A state still being assigned changes, so nothing is kept for it.
+            Some(StateRef::Partial(..)) | None => return self.eval(cached, env),
+        };
+        let key = cached as *const Expr as usize;
+        if let Some(value) =
+            self.runtime.cached(key, state.as_ref(), &closure).at(self, env, expr)?
+        {
+            return Ok(value);
+        }
+        let value = self.eval(cached, env)?;
+        self.runtime.cache(key, state, closure, value.clone());
+        Ok(value)
     }
 
     #[cold]
@@ -142,32 +242,55 @@ impl Evaluator {
         env: &mut Env<'_>,
     ) -> Result<Value> {
         let takes_expressions = self.takes_expressions[def.index()];
-        let arg_exprs = args;
-        let args = self
-            .spec
-            .def(def)
-            .params
-            .iter()
-            .zip(args)
-            .map(|(&arity, arg)| match (arity, &arg.kind) {
-                (0, _) if takes_expressions => Ok(Arg::Op(self.deferred(arg, env))),
-                (0, _) => Ok(Arg::Value(self.eval(arg, env)?)),
-                (_, ExprKind::OpArg(op)) => Ok(Arg::Op(self.operator(op, arg, env)?)),
-                _ => Err(self.error(env, arg, "Expected an operator as this argument")),
-            })
-            .collect::<Result<Vec<_>>>()?;
-        let outer: &Env<'_> = env;
+        let arg = |arity: usize, arg: &Expr, env: &mut Env<'_>| match (arity, &arg.kind) {
+            (0, _) if takes_expressions => Ok(Arg::Op(self.deferred(arg, env))),
+            (0, _) => Ok(Arg::Value(self.eval(arg, env)?)),
+            (_, ExprKind::OpArg(op)) => Ok(Arg::Op(self.operator(op, arg, env)?)),
+            _ => Err(self.error(env, arg, "Expected an operator as this argument")),
+        };
+        // Natives take few arguments, which go on the stack.
+        let result = match (self.spec.def(def).params.as_slice(), args) {
+            ([a], [x]) => {
+                let values = [arg(*a, x, env)?];
+                self.run_native(native, def, scope, args, &values, env)
+            }
+            ([a, b], [x, y]) => {
+                let values = [arg(*a, x, env)?, arg(*b, y, env)?];
+                self.run_native(native, def, scope, args, &values, env)
+            }
+            (params, _) => {
+                let values = params
+                    .iter()
+                    .zip(args)
+                    .map(|(&arity, expr)| arg(arity, expr, env))
+                    .collect::<Result<Vec<_>>>()?;
+                self.run_native(native, def, scope, args, &values, env)
+            }
+        };
+        result.at(self, env, expr)
+    }
+
+    /// Runs a native with its arguments `values`, able to fall back to `def` applied to
+    /// `arg_exprs`.
+    fn run_native(
+        &self,
+        native: Native,
+        def: DefId,
+        scope: &Scope,
+        arg_exprs: &[Expr],
+        values: &[Arg],
+        env: &Env<'_>,
+    ) -> tla_value::Result<Value> {
         let definition = || {
-            let parent = self.scope_frame(scope, outer)?;
-            let slots = arg_exprs.iter().map(|arg| self.arg_slot(arg, outer));
+            let parent = self.scope_frame(scope, env)?;
+            let slots = arg_exprs.iter().map(|arg| self.arg_slot(arg, env));
             let slots = slots.collect::<Result<_>>()?;
-            self.enter(def, parent, slots, outer.state, outer.next, outer.keep_lazy)
+            self.enter(def, parent, slots, env.state, env.next, (env.keep_lazy, env.enabled))
         };
         let mut ctx = Ctx::new(self, env.state);
         ctx.next = env.next;
         ctx.definition = Some(&definition);
-        let result = native(&mut ctx, &args);
-        result.at(self, env, expr)
+        native(&mut ctx, values)
     }
 
     /// `F(args)` for an operator parameter `F`.
@@ -183,7 +306,7 @@ impl Evaluator {
             return Err(self.error(env, expr, "Expected an operator but found a value"));
         };
         let op = op.clone();
-        if let OperatorKind::Def { def, parent } = &op.0
+        if let OperatorKind::Def { def, parent, enabled } = &op.0
             && self.natives[def.index()].is_none()
             && self.overrides[def.index()].is_none()
         {
@@ -192,7 +315,29 @@ impl Evaluator {
             }
             let slots =
                 args.iter().map(|arg| self.arg_slot(arg, env)).collect::<Result<Vec<_>>>()?;
-            return self.enter(*def, parent.clone(), slots, env.state, env.next, env.keep_lazy);
+            // The operator keeps the mode of where it was passed, under the prime of the caller.
+            let enabled = match (*enabled, env.enabled) {
+                (Enabled::Outside, _) => Enabled::Outside,
+                (_, Enabled::Primed) => Enabled::Primed,
+                (enabled, _) => enabled,
+            };
+            return self.enter(
+                *def,
+                parent.clone(),
+                slots,
+                env.state,
+                env.next,
+                (env.keep_lazy, enabled),
+            );
+        }
+        // An operator of actions passed as an argument, as `'` or `UNCHANGED` in `Op(UNCHANGED)`,
+        // applies to the expressions it is given, which it reads in another state.
+        if let OperatorKind::Builtin(
+            builtin @ (Builtin::Prime | Builtin::Unchanged | Builtin::Enabled),
+        ) = op.0
+            && args.len() == 1
+        {
+            return self.builtin(builtin, args, expr, env);
         }
         let values = self.eval_all(args, env)?;
         self.apply_operator(&op, &values, env.state, env.next).at(self, env, expr)
@@ -203,12 +348,12 @@ impl Evaluator {
         &self,
         op: &Operator,
         args: &[Value],
-        state: Option<&State>,
-        next: Option<&State>,
+        state: Option<StateRef<'_>>,
+        next: Option<StateRef<'_>>,
     ) -> tla_value::Result<Value> {
         match &op.0 {
-            OperatorKind::Def { def, parent } => self
-                .call_def(*def, parent.clone(), args.to_vec(), state, next)
+            OperatorKind::Def { def, parent, enabled } => self
+                .call_def_in(*def, parent.clone(), args.to_vec(), state, next, *enabled)
                 .map_err(|error| Error(error.message)),
             OperatorKind::Builtin(builtin) => self.apply_builtin(*builtin, args),
             OperatorKind::Closure(apply) => {
@@ -265,7 +410,7 @@ impl Evaluator {
     }
 
     /// The frame a definition called with `scope` captures.
-    fn scope_frame(&self, scope: &Scope, env: &Env<'_>) -> Result<Option<Arc<Frame>>> {
+    pub(crate) fn scope_frame(&self, scope: &Scope, env: &Env<'_>) -> Result<Option<Arc<Frame>>> {
         Ok(match scope {
             Scope::Global => None,
             Scope::Up(hops) => Some(env.frame.up(*hops).clone()),
@@ -280,7 +425,7 @@ impl Evaluator {
 
     /// What the parameter an argument is passed to holds: the operator it stands for, the value
     /// of a literal or of a slot already evaluated, or else a thunk.
-    fn arg_slot(&self, arg: &Expr, env: &Env<'_>) -> Result<Slot> {
+    pub(crate) fn arg_slot(&self, arg: &Expr, env: &Env<'_>) -> Result<Slot> {
         Ok(match &arg.kind {
             ExprKind::OpArg(op) => Slot::Op(self.operator(op, arg, env)?),
             ExprKind::Bool(value) => Slot::Value(Value::Bool(*value)),
@@ -299,7 +444,7 @@ impl Evaluator {
         Slot::Thunk(Arc::new(Thunk {
             // SAFETY: every expression this evaluator evaluates is part of its spec.
             expr: unsafe { SpecRef::new(&self.spec, arg) },
-            captured: env.capture(),
+            captured: env.capture_scope(),
             value: OnceLock::new(),
         }))
     }
@@ -322,6 +467,9 @@ impl Evaluator {
         if !Arc::ptr_eq(thunk.expr.spec(), &self.spec) {
             return Err(self.error(env, expr, "An argument of another specification was read"));
         }
+        if is_stack_low() {
+            return Err(self.error(env, expr, STACK_OVERFLOW));
+        }
         let is_cached = thunk.captured.is_in_states_of(env);
         if is_cached && let Some(value) = thunk.value.get() {
             return Ok(value.clone());
@@ -332,6 +480,8 @@ impl Evaluator {
             state: env.state,
             next: env.next,
             keep_lazy: env.keep_lazy,
+            // As tla-ts rewrites an argument where it is written.
+            enabled: thunk.captured.enabled,
         };
         let value = self.eval(thunk.expr.get(), &mut inner)?;
         if is_cached {
@@ -343,9 +493,11 @@ impl Evaluator {
     /// The operator an argument for a parameter such as `F(_)` stands for.
     pub(super) fn operator(&self, op: &OpRef, expr: &Expr, env: &Env<'_>) -> Result<Operator> {
         let kind = match op {
-            OpRef::Def { def, scope } => {
-                OperatorKind::Def { def: *def, parent: self.scope_frame(scope, env)? }
-            }
+            OpRef::Def { def, scope } => OperatorKind::Def {
+                def: *def,
+                parent: self.scope_frame(scope, env)?,
+                enabled: env.enabled,
+            },
             OpRef::Param(local) => {
                 return match env.slot(local.hops, local.slot) {
                     Slot::Op(op) => Ok(op.clone()),
@@ -353,7 +505,9 @@ impl Evaluator {
                 };
             }
             OpRef::Const(id) => match self.constants.get(id.index()) {
-                Some(ConstBinding::Def(def)) => OperatorKind::Def { def: *def, parent: None },
+                Some(ConstBinding::Def(def)) => {
+                    OperatorKind::Def { def: *def, parent: None, enabled: Enabled::Outside }
+                }
                 Some(ConstBinding::Value(value)) => {
                     let value = value.clone();
                     return Ok(Operator::closure(move |_, _| Ok(value.clone())));

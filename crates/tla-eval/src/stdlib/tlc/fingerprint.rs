@@ -2,8 +2,8 @@
 //! first irreducible polynomial, which `-fp 0` selects. TLC reseeds its random choices with the
 //! fingerprint of each state it expands, and `TLCExt!TLCFP` returns part of one.
 //!
-//! TLC extends a fingerprint by a model value's token number, its rank in TLC's intern order,
-//! which this crate's interner doesn't expose. A model value counts as token 0 here.
+//! TLC extends a fingerprint by a model value's token number, its place in TLC's intern order,
+//! which [`tla_value::Symbol::tlc_number`] gives once the spec's string order is set.
 
 use tla_value::{Result, Value};
 
@@ -79,9 +79,9 @@ impl Fingerprint {
                     self.byte(unit as u8);
                 }
             }
-            Value::Model(_) => {
+            Value::Model(name) => {
                 self.byte(MODEL_VALUE);
-                self.int(0);
+                self.int(name.tlc_number() as i32);
             }
             Value::Tuple(items) => {
                 self.byte(FCN_RCD_VALUE);
@@ -113,8 +113,9 @@ impl Fingerprint {
     }
 }
 
-/// TLCStateMut#fingerPrint of `values`, in order.
-pub(crate) fn tlc_fingerprint(values: &[Value]) -> Result<u64> {
+/// TLC's 64-bit fingerprint of `values` in order, TLCStateMut#fingerPrint of a state whose
+/// variables, in TLC's order, have those values.
+pub fn tlc_fingerprint(values: &[Value]) -> Result<u64> {
     let mut fingerprint = Fingerprint(IRREDUCIBLE_POLYNOMIAL);
     for value in values {
         fingerprint.value(value)?;

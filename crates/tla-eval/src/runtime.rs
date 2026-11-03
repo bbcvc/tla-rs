@@ -26,12 +26,27 @@ pub struct Runtime {
     pub is_stopped: AtomicBool,
     /// Whether IOUtils' `IOExec` and its kin may run commands.
     allows_exec: AtomicBool,
+    /// Whether TLC reports warnings, which its `-nowarning` turns off.
+    warnings: AtomicBool,
     /// The environment variables IOUtils' `IOEnv` reports, as a record.
     environment: OnceLock<Value>,
     checker: RwLock<Checker>,
     random: Mutex<Randomness>,
     started_at: SystemTime,
+    /// The values `TLCCache` keeps.
+    cache: Mutex<Cache>,
 }
+
+/// The values `TLCCache` keeps, by the address of the expression and then by the closure: those
+/// of expressions that don't read the state, and those of the others for the last state read.
+#[derive(Default)]
+struct Cache {
+    constant: CachedValues,
+    state: Option<(State, CachedValues)>,
+}
+
+/// The values of each expression, by its address, with the closures they were computed with.
+type CachedValues = HashMap<usize, Vec<(Value, Value)>>;
 
 #[derive(Default)]
 pub struct Registers {
@@ -112,6 +127,9 @@ struct Randomness {
     seed: i64,
     startup: JavaRandom,
     workers: HashMap<ThreadId, Worker>,
+    /// The variables in TLC's order, by their index in the state, which TLC's fingerprint of a
+    /// state follows, if not the order they are declared in.
+    variable_order: Option<Vec<usize>>,
 }
 
 #[derive(Default)]
@@ -131,19 +149,61 @@ impl Default for Runtime {
             registers: Mutex::default(),
             is_stopped: AtomicBool::new(false),
             allows_exec: AtomicBool::new(false),
+            warnings: AtomicBool::new(true),
             environment: OnceLock::new(),
             checker: RwLock::default(),
             random: Mutex::new(Randomness {
                 seed: 0,
                 startup: JavaRandom::new(0),
                 workers: HashMap::new(),
+                variable_order: None,
             }),
             started_at: SystemTime::now(),
+            cache: Mutex::default(),
         }
     }
 }
 
 impl Runtime {
+    /// The value `TLCCache` keeps for the expression at `key` with `closure`, in `state` if the
+    /// expression reads it.
+    pub(crate) fn cached(
+        &self,
+        key: usize,
+        state: Option<&State>,
+        closure: &Value,
+    ) -> Result<Option<Value>> {
+        let cache = self.cache.lock().unwrap();
+        let values = match (state, &cache.state) {
+            (None, _) => cache.constant.get(&key),
+            (Some(state), Some((cached, values))) if Arc::ptr_eq(state, cached) => values.get(&key),
+            (Some(_), _) => None,
+        };
+        for (cached, value) in values.into_iter().flatten() {
+            if cached.equals(closure)? {
+                return Ok(Some(value.clone()));
+            }
+        }
+        Ok(None)
+    }
+
+    /// Keeps the value of the expression at `key` with `closure` for `TLCCache`.
+    pub(crate) fn cache(&self, key: usize, state: Option<State>, closure: Value, value: Value) {
+        let mut cache = self.cache.lock().unwrap();
+        let values = match state {
+            None => &mut cache.constant,
+            Some(state) => {
+                let is_same =
+                    matches!(&cache.state, Some((cached, _)) if Arc::ptr_eq(&state, cached));
+                if !is_same {
+                    cache.state = Some((state, HashMap::new()));
+                }
+                &mut cache.state.as_mut().expect("the state was just set").1
+            }
+        };
+        values.entry(key).or_default().push((closure, value));
+    }
+
     pub fn print(&self, line: String) {
         self.output.lock().unwrap().push(line);
     }
@@ -156,6 +216,17 @@ impl Runtime {
 
     pub fn allows_exec(&self) -> bool {
         self.allows_exec.load(Ordering::SeqCst)
+    }
+
+    /// Turns TLC's warnings on or off, as its `-nowarning` does. Besides the warnings, it
+    /// decides whether `getNextStates` stops walking an action once every variable has a value,
+    /// which TLC does only with warnings on, and so how many states a disjunction generates.
+    pub fn set_warnings(&self, warnings: bool) {
+        self.warnings.store(warnings, Ordering::SeqCst);
+    }
+
+    pub fn warnings(&self) -> bool {
+        self.warnings.load(Ordering::Relaxed)
     }
 
     /// Sets the environment variables `IOEnv` reports in place of the process's. It has no
@@ -237,6 +308,13 @@ impl Runtime {
         }
     }
 
+    /// `TLCGet("level")` in a state still being assigned, which is none the model checker has
+    /// found: as in tla-ts, the level after the state being expanded, or 0 for an initial state.
+    pub(crate) fn assigned_level(&self) -> i32 {
+        let assigned: State = Arc::from([]);
+        self.level(Some(&assigned))
+    }
+
     pub(crate) fn behavior(&self, state: &State) -> Option<Vec<State>> {
         self.checker.read().unwrap().behavior.as_ref().map(|behavior| behavior(state))
     }
@@ -255,6 +333,13 @@ impl Runtime {
         random.seed = seed;
         random.startup = JavaRandom::new(seed);
         random.workers.values_mut().for_each(|worker| worker.seeded = None);
+    }
+
+    /// Gives TLC's order of the variables, by their index in the state, which the fingerprint of
+    /// a state that seeds a random generator follows.
+    pub fn set_variable_order(&self, order: Vec<usize>) {
+        let is_declared = order.iter().enumerate().all(|(position, &index)| position == index);
+        self.random.lock().unwrap().variable_order = (!is_declared).then_some(order);
     }
 
     pub fn seed(&self) -> i64 {
@@ -317,7 +402,18 @@ impl Runtime {
         };
         let mut generator = match seeded {
             Some(generator) => generator,
-            None => JavaRandom::new((tlc_fingerprint(&state)? ^ seed as u64) as i64),
+            None => {
+                let order = self.random.lock().unwrap().variable_order.clone();
+                let fingerprint = match order {
+                    Some(order) => {
+                        let values: Vec<Value> =
+                            order.iter().map(|&index| state[index].clone()).collect();
+                        tlc_fingerprint(&values)?
+                    }
+                    None => tlc_fingerprint(&state)?,
+                };
+                JavaRandom::new((fingerprint ^ seed as u64) as i64)
+            }
         };
         let result = choose(&mut generator);
         let mut random = self.random.lock().unwrap();
@@ -385,6 +481,18 @@ mod tests {
         assert_eq!(draw(&runtime), JavaRandom::new(seed).next_int(1000));
         let in_startup = runtime.at_startup(|| draw(&runtime));
         assert_eq!(in_startup, JavaRandom::new(3).next_int(1000));
+    }
+
+    /// TLC fingerprints the state that seeds a generator with its variables in TLC's order.
+    #[test]
+    fn seeds_with_the_state_in_tlcs_variable_order() {
+        let runtime = Runtime::default();
+        runtime.set_seed(3);
+        runtime.set_variable_order(vec![1, 0]);
+        let reversed = [Value::Int(2), Value::Int(1)];
+        let seed = (tlc_fingerprint(&reversed).unwrap() ^ 3) as i64;
+        runtime.set_expanding(Some(Arc::from(vec![Value::Int(1), Value::Int(2)])));
+        assert_eq!(draw(&runtime), JavaRandom::new(seed).next_int(1000));
     }
 
     #[test]

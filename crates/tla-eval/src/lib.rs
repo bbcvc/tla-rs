@@ -8,19 +8,29 @@
 mod config;
 mod env;
 mod eval;
+mod java;
 mod native;
 mod runtime;
+mod scope;
 mod stdlib;
 
-use std::collections::HashSet;
-use std::sync::Arc;
+use std::collections::{HashMap, HashSet};
+use std::sync::{Arc, Mutex, OnceLock};
 
 pub use config::{Model, OperatorTable, bind_model, config_value};
+pub use eval::NextAction;
+pub use java::{JavaOverrideError, java_overrides};
 pub use native::{Arg, Ctx, Native, Operator};
 pub use runtime::{CheckerOptions, Registers, Runtime, Statistics};
+pub use scope::{Frames, SpecExpr};
 use tla_ast::{Span, Symbol};
-use tla_resolve::{DefId, ModuleId, Spec};
+use tla_resolve::{DefId, ModuleId, Spec, VarId};
 pub use tla_value::{self as value, Value};
+
+/// TLC's fingerprint of a state (`TLCStateMut#fingerPrint`), of its values in order.
+pub fn tlc_fingerprint(values: &[Value]) -> std::result::Result<u64, String> {
+    stdlib::tlc::tlc_fingerprint(values).map_err(|error| error.0)
+}
 
 /// An evaluation error at a place in a module.
 #[derive(Clone, Debug, PartialEq, Eq, thiserror::Error)]
@@ -31,6 +41,20 @@ pub struct EvalError {
     pub span: Span,
     pub line: usize,
     pub column: usize,
+    /// The state, when an initial predicate or an action leaves variables of it unassigned,
+    /// which TLC reports with the partial state.
+    pub incomplete: Option<Box<Incomplete>>,
+}
+
+/// A state an initial predicate or an action leaves with variables unassigned.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Incomplete {
+    /// The action that assigned the next state, as TLC names it, or `None` for an initial state.
+    pub action: Option<Symbol>,
+    /// The variables left unassigned.
+    pub missing: Vec<VarId>,
+    /// The value of each variable as TLC prints it, or `None` where it is unassigned.
+    pub state: Vec<Option<String>>,
 }
 
 impl EvalError {
@@ -42,7 +66,7 @@ impl EvalError {
     ) -> Self {
         let info = &spec.modules[module.index()];
         let (line, column) = span.line_column(&info.source);
-        Self { message: message.into(), module: info.name, span, line, column }
+        Self { message: message.into(), module: info.name, span, line, column, incomplete: None }
     }
 }
 
@@ -80,9 +104,33 @@ pub struct Evaluator {
     pub(crate) runtime: Arc<Runtime>,
     /// Whether each definition is a function definition that refers to itself, by [`DefId`].
     pub(crate) is_recursive: Arc<[bool]>,
+    /// The function constructors that apply the recursive function whose body holds them, by
+    /// address, which TLC builds lazily.
+    pub(crate) recursive_constructions: Arc<HashSet<usize>>,
+    /// What TLC's ENABLED does with the variables of an instantiated module.
+    pub(crate) instance_enabled: Arc<eval::InstanceEnabled>,
+    /// Whether each definition is a constant TLC computes once, by [`DefId`], and its value once
+    /// computed.
+    pub(crate) is_constant_definition: Arc<[bool]>,
+    /// Whether each definition is one of a `LET` whose value is kept for the frame the `LET` is
+    /// evaluated in, by [`DefId`].
+    pub(crate) is_cached_let: Arc<[bool]>,
+    /// The slots of its frame each `LET` definition may read, as bits, by [`DefId`].
+    pub(crate) let_reads: Arc<[u64]>,
+    /// Whether each definition is a module-level one whose value is kept for the states it was
+    /// computed in, by [`DefId`], and the values kept.
+    pub(crate) is_cached_state_definition: Arc<[bool]>,
+    /// Whether each definition may read the next state, by [`DefId`].
+    pub(crate) reads_next_state: Arc<[bool]>,
+    pub(crate) state_values: Arc<Mutex<env::StateValues>>,
+    pub(crate) constant_values: Arc<[OnceLock<Value>]>,
     /// TLC's `TLCEval`, and the applications of it whose argument TLC normalizes, by address.
     pub(crate) tlc_eval: Option<DefId>,
     pub(crate) normalizing_evaluations: Arc<HashSet<usize>>,
+    /// TLCExt's `TLCCache`, whose Java override caches the value of its expression.
+    pub(crate) tlc_cache: Option<DefId>,
+    /// TLC's split of each next-state relation split so far into actions.
+    pub(crate) next_actions: Arc<Mutex<HashMap<DefId, Arc<[NextAction]>>>>,
 }
 
 impl Evaluator {
@@ -91,7 +139,7 @@ impl Evaluator {
             .modules
             .iter()
             .any(|module| module.is_standard && module.name.as_str() == "Integers");
-        let natives = spec
+        let natives: Arc<[Option<Native>]> = spec
             .defs
             .iter()
             .map(|def| {
@@ -109,7 +157,27 @@ impl Evaluator {
             .collect();
         let overrides = vec![None; spec.defs.len()].into();
         let is_recursive = eval::recursive_functions(&spec).into();
+        let recursive_constructions = Arc::new(eval::recursive_constructions(&spec));
+        let instance_enabled = Arc::new(eval::instance_enabled(&spec));
+        let is_constant_definition: Arc<[bool]> = eval::constant_definitions(&spec).into();
+        // A native is computed at each call, even where its definition is a constant.
+        let is_computed_once: Vec<bool> = is_constant_definition
+            .iter()
+            .zip(natives.iter())
+            .map(|(&is_constant, native)| is_constant && native.is_none())
+            .collect();
+        let is_cached_let = eval::cached_lets(&spec, &is_computed_once).into();
+        let let_reads = eval::let_reads(&spec).into();
+        let is_cached_state_definition =
+            eval::cached_state_definitions(&spec, &is_computed_once).into();
+        let reads_next_state = eval::reads_next_state(&spec).into();
+        let constant_values = (0..spec.defs.len()).map(|_| OnceLock::new()).collect();
         let tlc_eval = eval::tlc_eval(&spec);
+        let tlc_cache = spec.defs.iter().position(|def| {
+            let module = spec.modules[def.module.index()].name.as_str();
+            module == "TLCExt" && def.name.as_str() == "TLCCache"
+        });
+        let tlc_cache = tlc_cache.map(|index| DefId(index as u32));
         let normalizing_evaluations = Arc::new(
             tlc_eval.map(|def| eval::normalizing_evaluations(&spec, def)).unwrap_or_default(),
         );
@@ -121,8 +189,19 @@ impl Evaluator {
             overrides,
             runtime: Arc::default(),
             is_recursive,
+            recursive_constructions,
+            instance_enabled,
+            is_constant_definition,
+            is_cached_let,
+            let_reads,
+            is_cached_state_definition,
+            reads_next_state,
+            state_values: Arc::default(),
+            constant_values,
             tlc_eval,
             normalizing_evaluations,
+            tlc_cache,
+            next_actions: Arc::default(),
         }
     }
 
@@ -161,6 +240,33 @@ impl Evaluator {
         &self.runtime
     }
 
+    /// Whether a string with a character above U+00FF can reach a state: one the spec writes or
+    /// the configuration binds, or one a JSON deserializer reads. TLC fingerprints a string by
+    /// the low byte of each character, so it counts states whose strings differ only above U+00FF
+    /// as one, and a checker that counts states as TLC does fingerprints them with
+    /// [`tlc_fingerprint`] (tla-ts `hasWideString`).
+    pub fn has_wide_strings(&self) -> bool {
+        fn is_wide_value(value: &Value) -> bool {
+            match value {
+                Value::Str(text) => eval::is_wide(text.as_str()),
+                Value::Set(elements) | Value::MixedSet(elements) => {
+                    elements.iter().any(is_wide_value)
+                }
+                _ => false,
+            }
+        }
+        let is_wide_binding = |binding: &ConstBinding| match binding {
+            ConstBinding::Value(value) => is_wide_value(value),
+            ConstBinding::Table(table) => {
+                table.rows.iter().any(|(args, value)| args.iter().chain([value]).any(is_wide_value))
+            }
+            ConstBinding::Def(_) => false,
+        };
+        self.constants.iter().any(is_wide_binding)
+            || self.overrides.iter().flatten().any(is_wide_binding)
+            || eval::has_wide_string_literal(&self.spec)
+    }
+
     /// Evaluates a definition without parameters, such as an `ASSUME` or `Init`, in `state`, or
     /// as a constant expression when there is no state.
     pub fn eval_def(&self, def: DefId, state: Option<&State>) -> Result<Value> {
@@ -171,5 +277,56 @@ impl Evaluator {
     /// the step from `state` to `next`, which primed expressions read.
     pub fn eval_action(&self, def: DefId, state: &State, next: &State) -> Result<Value> {
         self.eval_zero_arity(def, Some(state), Some(next))
+    }
+
+    /// Each state satisfying the conjunction of the zero-arity definitions `init`, in TLC's
+    /// order, repeats included. `found` returns `Ok(false)` to stop the enumeration.
+    pub fn init_states(
+        &self,
+        init: &[DefId],
+        found: &mut dyn FnMut(State) -> Result<bool>,
+    ) -> Result<()> {
+        self.enumerate_init(init, found)
+    }
+
+    /// Each successor of `state` under the zero-arity action definition `next`, in TLC's order,
+    /// repeats included, as TLC counts them in "states generated". `found` returns `Ok(false)` to
+    /// stop the enumeration.
+    pub fn next_states(
+        &self,
+        next: DefId,
+        state: &State,
+        found: &mut dyn FnMut(State) -> Result<bool>,
+    ) -> Result<()> {
+        self.enumerate_next(next, state, found)
+    }
+
+    /// TLC's split of the zero-arity action definition `next` into the actions it names in a
+    /// behavior (`Tool.getActions`), in TLC's order: the disjuncts of the relation, one action
+    /// for each witness of an `\E` over a set TLC computes as a constant, and the bodies of the
+    /// definitions it calls with constant arguments. TLC computes the split once, when it
+    /// starts, and so does the evaluator, which keeps it for later calls.
+    ///
+    /// A report of a successor the relation leaves incomplete names the action when there are
+    /// several: [`Incomplete::action`] is the [`NextAction::name`] of the one that left it.
+    pub fn next_actions(&self, next: DefId) -> Result<Arc<[NextAction]>> {
+        self.split_next(next)
+    }
+
+    /// Each successor of `state` under one action of a split of the next-state relation, in
+    /// TLC's order, repeats included.
+    pub fn action_states(
+        &self,
+        action: &NextAction,
+        state: &State,
+        found: &mut dyn FnMut(State) -> Result<bool>,
+    ) -> Result<()> {
+        self.enumerate_action(action, state, found)
+    }
+
+    /// Where TLC says an action is, as it labels a step of a behavior (`Action.getLocation`):
+    /// `A(1) line 4, col 7 to line 4, col 12 of module M`.
+    pub fn action_label(&self, action: &NextAction) -> String {
+        self.label_action(action)
     }
 }

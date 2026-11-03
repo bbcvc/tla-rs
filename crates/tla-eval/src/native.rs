@@ -5,7 +5,7 @@ use std::sync::Arc;
 use tla_resolve::{Builtin, DefId};
 use tla_value::{Error, Result, Value};
 
-use crate::env::Frame;
+use crate::env::{Enabled, Frame, StateRef};
 use crate::{Evaluator, State};
 
 /// A native implementation of a standard module's operator. It receives its arguments
@@ -40,10 +40,12 @@ pub struct Operator(pub(crate) OperatorKind);
 
 #[derive(Clone)]
 pub(crate) enum OperatorKind {
-    /// A definition, with the frame it captures.
+    /// A definition, with the frame it captures, and whether it was passed in the operand of an
+    /// ENABLED of an instantiated module, which it is evaluated in as an argument is.
     Def {
         def: DefId,
         parent: Option<Arc<Frame>>,
+        enabled: Enabled,
     },
     Builtin(Builtin),
     /// An operator implemented in Rust.
@@ -67,15 +69,15 @@ pub(crate) type Definition<'a> = &'a dyn Fn() -> crate::Result<Value>;
 /// What a native can use of the evaluator: operators passed to it, the state, and TLC's runtime.
 pub struct Ctx<'a> {
     pub(crate) evaluator: &'a Evaluator,
-    pub(crate) state: Option<&'a State>,
+    pub(crate) state: Option<StateRef<'a>>,
     /// The next state, which an operator argument reads when it primes an expression.
-    pub(crate) next: Option<&'a State>,
+    pub(crate) next: Option<StateRef<'a>>,
     /// The definition the native replaces, applied to the call's arguments.
     pub(crate) definition: Option<Definition<'a>>,
 }
 
 impl<'a> Ctx<'a> {
-    pub(crate) fn new(evaluator: &'a Evaluator, state: Option<&'a State>) -> Self {
+    pub(crate) fn new(evaluator: &'a Evaluator, state: Option<StateRef<'a>>) -> Self {
         Self { evaluator, state, next: None, definition: None }
     }
 
@@ -97,8 +99,8 @@ impl<'a> Ctx<'a> {
         &self.evaluator.runtime
     }
 
-    /// The current state, when evaluating in one.
+    /// The current state, when evaluating in a complete one.
     pub fn state(&self) -> Option<&State> {
-        self.state
+        self.state.and_then(StateRef::complete)
     }
 }

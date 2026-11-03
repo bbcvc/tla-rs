@@ -2,13 +2,22 @@
 
 use std::sync::Arc;
 
-use tla_resolve::{Bound, DefId, ExceptKey, ExceptUpdate, Expr};
+use tla_resolve::{Bound, DefBody, DefId, ExceptKey, ExceptUpdate, Expr, ExprKind, Scope};
 use tla_value::{Error, Key, LazyFunc, LazySet, Symbol, Value};
 
-use super::bound::{Binder, Variable, bind, binders, tuple_items};
-use super::{At, describe};
-use crate::env::{Env, SpecRef};
+use super::bound::{Binder, Variable, bind_frame, binders, tuple_items};
+use super::{At, STACK_OVERFLOW, describe, is_stack_low};
+use crate::env::{Captured, Env, Frame, SpecRef};
+use crate::stdlib::tlc::pretty_print;
 use crate::{EvalError, Evaluator, Result};
+
+/// The parameters, body, and scope of a function that TLC keeps lazy, which successor
+/// generation walks when an action applies the function, as TLC walks a `FcnLambdaValue`.
+pub(crate) struct Lambda {
+    pub bounds: SpecRef<[Bound]>,
+    pub body: SpecRef<Expr>,
+    pub captured: Captured,
+}
 
 impl Evaluator {
     /// `[x \in S, ... |-> body]`. TLC enumerates the function when it can enumerate its domain,
@@ -77,16 +86,22 @@ impl Evaluator {
 
     fn lazy_function(&self, bounds: &[Bound], body: &Expr, domain: Value, env: &Env<'_>) -> Value {
         let evaluator = self.clone();
-        let captured = env.capture();
-        // SAFETY: every expression this evaluator evaluates is part of its spec.
-        let (bounds, body) =
-            unsafe { (SpecRef::new(&self.spec, bounds), SpecRef::new(&self.spec, body)) };
-        let apply = Arc::new(move |argument: &Value| {
-            let mut env = captured.env();
-            bind_argument(bounds.get(), argument, &mut env)?;
-            evaluator.eval(body.get(), &mut env).map_err(|error| Error(error.message))
+        let lambda = Arc::new(Lambda {
+            // SAFETY: every expression this evaluator evaluates is part of its spec.
+            bounds: unsafe { SpecRef::new(&self.spec, bounds) },
+            body: unsafe { SpecRef::new(&self.spec, body) },
+            captured: env.capture(),
         });
-        Value::LazyFunc(Arc::new(LazyFunc { domain, apply }))
+        let source: Arc<dyn std::any::Any + Send + Sync> = lambda.clone();
+        let apply = Arc::new(move |argument: &Value| {
+            if is_stack_low() {
+                return Err(Error(STACK_OVERFLOW.to_owned()));
+            }
+            let mut env = lambda.captured.env();
+            bind_argument(lambda.bounds.get(), argument, &mut env.frame)?;
+            evaluator.eval(lambda.body.get(), &mut env).map_err(|error| Error(error.message))
+        });
+        Value::LazyFunc(Arc::new(LazyFunc { domain, apply, source: Some(source) }))
     }
 
     /// The value of `f[x \in S] == body`. A function definition that refers to itself, or one
@@ -111,6 +126,12 @@ impl Evaluator {
         expr: &Expr,
         env: &mut Env<'_>,
     ) -> Result<Value> {
+        if let ExprKind::Call { def, scope, args: call_args } = &func.kind
+            && call_args.is_empty()
+            && self.is_applied_in_place(*def)
+        {
+            return self.apply_definition(*def, scope, args, expr, env);
+        }
         let keep_lazy = std::mem::replace(&mut env.keep_lazy, true);
         let function = self.eval(func, env);
         env.keep_lazy = keep_lazy;
@@ -127,7 +148,86 @@ impl Evaluator {
             [arg] => self.eval(arg, env)?,
             _ => Value::tuple(self.eval_all(args, env)?),
         };
+        if let Value::LazyFunc(lazy) = &function
+            && lazy
+                .source
+                .as_ref()
+                .and_then(|source| source.downcast_ref::<Lambda>())
+                .is_some_and(|lambda| bounds_binders(lambda.bounds.get()) == 1)
+        {
+            if !lazy.domain.contains(&argument).at(self, env, expr)? {
+                return Err(self.error(env, expr, lambda_domain_error(&function, &argument)));
+            }
+            return (lazy.apply)(&argument).at(self, env, expr);
+        }
         function.apply(&argument).at(self, env, expr)
+    }
+
+    /// Whether applying `def` evaluates its body at the argument in place: `def` is a function
+    /// definition the evaluator builds lazily, a recursive one or one in a `LET`, which nothing
+    /// replaces.
+    fn is_applied_in_place(&self, def: DefId) -> bool {
+        matches!(self.spec.def(def).body, DefBody::Function { .. })
+            && (self.is_recursive[def.index()] || self.spec.def(def).depth > 0)
+            && self.overrides[def.index()].is_none()
+            && self.natives[def.index()].is_none()
+            && !self.is_computed_once(def)
+    }
+
+    /// `f[args]` for a function definition `f[x \in S] == body` that the evaluator builds lazily.
+    /// It evaluates the body at the argument as the lazy function would, without building the
+    /// function, which a recursive definition would otherwise do at each step of its recursion.
+    fn apply_definition(
+        &self,
+        def: DefId,
+        scope: &Scope,
+        args: &[Expr],
+        expr: &Expr,
+        env: &mut Env<'_>,
+    ) -> Result<Value> {
+        let info = self.spec.def(def);
+        let DefBody::Function { bounds, body } = &info.body else {
+            unreachable!("only a function definition is applied in place")
+        };
+        if is_stack_low() {
+            return Err(self.error(env, expr, STACK_OVERFLOW));
+        }
+        let parent = self.scope_frame(scope, env)?;
+        let frame = Arc::new(Frame::new(Vec::new(), info.frame_size, parent));
+        // As in the lazy function, which keeps the state and the laziness of its application.
+        let mut inner = Env {
+            frame,
+            module: info.module,
+            state: env.state,
+            next: env.next,
+            keep_lazy: true,
+            enabled: env.enabled,
+        };
+        let mut factors = Vec::new();
+        for bound in bounds {
+            let set = self.eval(&bound.set, &mut inner)?;
+            factors.extend(binders(&bound.pattern).map(|_| set.clone()));
+        }
+        let domain = match <[Value; 1]>::try_from(factors) {
+            Ok([set]) => set,
+            Err(factors) => Value::lazy(LazySet::Product(factors.into())),
+        };
+        let argument = match args {
+            [arg] => self.eval(arg, env)?,
+            _ => Value::tuple(self.eval_all(args, env)?),
+        };
+        if !domain.contains(&argument).at(self, env, expr)? {
+            let message = if bounds_binders(bounds) == 1 {
+                // The function the evaluator would have built, which TLC prints.
+                let function = self.call(def, scope, &[], expr, env)?;
+                lambda_domain_error(&function, &argument)
+            } else {
+                format!("Attempted to apply a function to {argument}, which is not in its domain")
+            };
+            return Err(self.error(env, expr, message));
+        }
+        bind_argument(bounds, &argument, &mut inner.frame).at(self, env, expr)?;
+        self.eval(body, &mut inner).map_err(|error| self.error(env, expr, error.message))
     }
 
     /// `r.field`.
@@ -210,13 +310,39 @@ impl Evaluator {
     }
 }
 
+/// The number of variables `bounds` binds, a tuple pattern counting as one.
+fn bounds_binders(bounds: &[Bound]) -> usize {
+    bounds.iter().map(|bound| binders(&bound.pattern).count()).sum()
+}
+
+/// TLC's error for applying a function it keeps lazy, a `FcnLambdaValue` of one variable, to an
+/// argument outside its domain.
+#[cold]
+fn lambda_domain_error(function: &Value, argument: &Value) -> String {
+    format!(
+        "In applying the function\n{},\nthe first argument is:\n{}\nwhich is not in its domain.\n",
+        pretty_print(&function.to_string()),
+        pretty_print(&argument.to_string())
+    )
+}
+
 /// Binds the argument a lazy function is applied to: a value for one bound variable, or a
 /// tuple with a component for each.
-fn bind_argument(bounds: &[Bound], argument: &Value, env: &mut Env<'_>) -> tla_value::Result<()> {
+pub(super) fn bind_argument(
+    bounds: &[Bound],
+    argument: &Value,
+    frame: &mut Arc<Frame>,
+) -> tla_value::Result<()> {
+    if let [bound] = bounds
+        && let mut single = binders(&bound.pattern)
+        && let (Some(binder), None) = (single.next(), single.next())
+    {
+        return bind_frame(binder, argument.clone(), frame);
+    }
     let binders: Vec<Binder<'_>> =
         bounds.iter().flat_map(|bound| binders(&bound.pattern)).collect();
     if let [binder] = binders[..] {
-        return bind(binder, argument.clone(), env);
+        return bind_frame(binder, argument.clone(), frame);
     }
     let Some(items) = tuple_items(argument).filter(|items| items.len() >= binders.len()) else {
         return Err(Error(
@@ -224,7 +350,7 @@ fn bind_argument(bounds: &[Bound], argument: &Value, env: &mut Env<'_>) -> tla_v
         ));
     };
     for (binder, item) in binders.into_iter().zip(items.iter()) {
-        bind(binder, item.clone(), env)?;
+        bind_frame(binder, item.clone(), frame)?;
     }
     Ok(())
 }

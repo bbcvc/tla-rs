@@ -4,19 +4,27 @@
 //! and the current and next states. Errors are worded as TLC words them, following tla-ts, and
 //! located at the innermost expression that failed.
 
+mod action;
 mod analysis;
 mod bound;
 mod builtin;
 mod call;
+mod constants;
 mod function;
 
 use tla_ast::{Quantifier, Span};
-use tla_resolve::{DefId, Expr, ExprKind, Local, VarId};
+use tla_resolve::{DefId, Expr, ExprKind, Local, ModuleId, VarId};
 use tla_value::{LazySet, Symbol, Value};
 
-pub(crate) use self::analysis::{normalizing_evaluations, recursive_functions, tlc_eval};
+pub use self::action::NextAction;
+pub(crate) use self::analysis::{
+    InstanceEnabled, cached_lets, cached_state_definitions, has_wide_string_literal,
+    instance_enabled, is_wide, let_reads, mentions_variables, normalizing_evaluations,
+    reads_next_state, recursive_constructions, recursive_functions, tlc_eval,
+};
 use self::builtin::describe;
-use crate::env::{Env, Slot};
+pub(crate) use self::constants::constant_definitions;
+use crate::env::{Enabled, Env, Slot, StateRef};
 use crate::{EvalError, Evaluator, Result, State};
 
 /// Converts the error of a value operation into an [`EvalError`] at the expression that failed.
@@ -31,6 +39,21 @@ impl<T> At<T> for tla_value::Result<T> {
 }
 
 const TEMPORAL_ERROR: &str = "TLC cannot evaluate a temporal formula in a state";
+
+/// What TLC reports for a Java StackOverflowError, which a recursion too deep for its stack
+/// raises, such as an incorrect recursive definition.
+pub(crate) const STACK_OVERFLOW: &str = "This was a Java StackOverflowError. It was probably the result\nof an incorrect recursive function definition that caused TLC to enter\nan infinite loop when trying to compute the function or its application\nto an element in its putative domain.";
+
+/// The stack an evaluating thread keeps when it cuts off a recursion, enough to fail with
+/// [`STACK_OVERFLOW`] instead of overflowing.
+const STACK_RESERVE: usize = 256 * 1024;
+
+/// Whether the thread is close enough to the end of its stack that the evaluation stops, as TLC
+/// stops at a StackOverflowError. Every unbounded recursion goes through a call of a definition,
+/// the application of a lazy function, or the reading of an argument, which check it.
+pub(crate) fn is_stack_low() -> bool {
+    stacker::remaining_stack().is_some_and(|remaining| remaining < STACK_RESERVE)
+}
 
 impl Evaluator {
     /// Evaluates a module-level definition without parameters.
@@ -51,7 +74,13 @@ impl Evaluator {
         if let Some(message) = problem {
             return Err(EvalError::at(&self.spec, info.module, info.span, message));
         }
-        self.call_def(def, None, Vec::new(), state, next)
+        self.call_def(
+            def,
+            None,
+            Vec::new(),
+            state.map(StateRef::Complete),
+            next.map(StateRef::Complete),
+        )
     }
 
     pub(crate) fn error(
@@ -71,6 +100,15 @@ impl Evaluator {
             ExprKind::Var(id) => self.var(*id, expr, env),
             ExprKind::Const(id) => self.constant(*id, expr, env),
             ExprKind::Local(local) => self.local(*local, expr, env),
+            // A primed variable of an instantiated module, in the operand of its ENABLED, that
+            // the instance substitutes an expression for.
+            ExprKind::Call { .. }
+                if env.enabled == Enabled::Primed
+                    && let Some(&(slot, name)) =
+                        self.instance_enabled.variables.get(&(expr as *const Expr as usize)) =>
+            {
+                self.instance_variable(slot, name, expr, env)
+            }
             ExprKind::Call { def, scope, args } => self.call(*def, scope, args, expr, env),
             ExprKind::CallParam { param, args } => self.call_param(*param, args, expr, env),
             ExprKind::CallConst { id, args } => self.call_const(*id, args, expr, env),
@@ -103,7 +141,11 @@ impl Evaluator {
             ExprKind::Record(fields) => self.record(fields, env),
             ExprKind::RecordSet(fields) => self.record_set(fields, env),
             ExprKind::FuncSet { domain, range } => self.function_set(domain, range, env),
-            ExprKind::Function { bounds, body } => self.function(bounds, body, expr, env, false),
+            ExprKind::Function { bounds, body } => {
+                let is_lazy =
+                    self.recursive_constructions.contains(&(expr as *const Expr as usize));
+                self.function(bounds, body, expr, env, is_lazy)
+            }
             ExprKind::FuncApp { func, args } => self.apply(func, args, expr, env),
             ExprKind::Dot { record, field } => self.dot(record, *field, expr, env),
             ExprKind::Except { base, updates } => self.except(base, updates, expr, env),
@@ -134,9 +176,14 @@ impl Evaluator {
     /// Where an expression is, as SANY describes a location in TLC's messages:
     /// `line 1, col 2 to line 3, col 4 of module M`, the end being the last character.
     pub(crate) fn range(&self, env: &Env<'_>, expr: &Expr) -> String {
-        let module = &self.spec.modules[env.module.index()];
-        let (line, column) = expr.span.line_column(&module.source);
-        let last = expr.span.end.saturating_sub(1).max(expr.span.start) as usize;
+        self.range_of(env.module, expr.span)
+    }
+
+    /// Where `span` of `module` is, as [`Evaluator::range`] describes it.
+    pub(crate) fn range_of(&self, module: ModuleId, span: Span) -> String {
+        let module = &self.spec.modules[module.index()];
+        let (line, column) = span.line_column(&module.source);
+        let last = span.end.saturating_sub(1).max(span.start) as usize;
         let (end_line, end_column) = Span::new(last, last + 1).line_column(&module.source);
         format!(
             "line {line}, col {column} to line {end_line}, col {end_column} of module {}",
@@ -232,6 +279,13 @@ impl Evaluator {
     }
 
     fn var(&self, id: VarId, expr: &Expr, env: &Env<'_>) -> Result<Value> {
+        // A primed variable of an instantiated module in the operand of its ENABLED.
+        if env.enabled == Enabled::Primed
+            && let Some(&(slot, name)) =
+                self.instance_enabled.variables.get(&(expr as *const Expr as usize))
+        {
+            return self.instance_variable(slot, name, expr, env);
+        }
         match env.state.and_then(|state| state.get(id.index())) {
             Some(value) => Ok(value.clone()),
             None => {
@@ -245,6 +299,30 @@ impl Evaluator {
                     ),
                 ))
             }
+        }
+    }
+
+    /// The variable `name` of an instantiated module, which the operand of its ENABLED binds
+    /// in `slot` of the state being assigned, which `env` reads as its state under the prime.
+    #[cold]
+    fn instance_variable(
+        &self,
+        slot: usize,
+        name: Symbol,
+        expr: &Expr,
+        env: &Env<'_>,
+    ) -> Result<Value> {
+        match env.state.and_then(|state| state.get(slot)) {
+            Some(value) => Ok(value.clone()),
+            // tla-ts names the module's variable apart from the spec's.
+            None => Err(self.error(
+                env,
+                expr,
+                format!(
+                    "In evaluation, the identifier {name}@ENABLED is either undefined or not an operator.\n{}",
+                    self.range(env, expr)
+                ),
+            )),
         }
     }
 
@@ -357,10 +435,13 @@ impl Evaluator {
             );
             return Err(self.error(env, expr, message));
         };
-        let state = env.state;
+        let (state, enabled) = (env.state, env.enabled);
         (env.state, env.next) = (Some(next), None);
+        if enabled == Enabled::Inside {
+            env.enabled = Enabled::Primed;
+        }
         let value = self.eval(operand, env);
-        (env.state, env.next) = (state, Some(next));
+        (env.state, env.next, env.enabled) = (state, Some(next), enabled);
         value
     }
 

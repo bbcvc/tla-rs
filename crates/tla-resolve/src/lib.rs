@@ -14,6 +14,7 @@ mod expr;
 mod ir;
 mod levels;
 mod module;
+mod order;
 mod selection;
 mod stdlib;
 
@@ -21,6 +22,7 @@ use std::collections::{HashMap, HashSet};
 use std::rc::Rc;
 
 pub use ir::*;
+pub use order::{tlc_string_order, tlc_variable_order};
 use tla_ast::{Span, Symbol};
 
 use crate::expr::FrameScope;
@@ -81,6 +83,10 @@ pub fn resolve(source: &str, loader: &mut dyn ModuleLoader) -> Result<Spec> {
             assumptions: Vec::new(),
             root: HashMap::new(),
             levels: Vec::new(),
+            instance_variables: HashMap::new(),
+            param_names: HashMap::new(),
+            qualified_names: HashMap::new(),
+            instance_spans: HashMap::new(),
         },
         parsed: HashMap::new(),
         parameters: HashMap::new(),
@@ -97,12 +103,14 @@ pub fn resolve(source: &str, loader: &mut dyn ModuleLoader) -> Result<Spec> {
         inner_origins: HashMap::new(),
         layout: Layout::default(),
         qualifier: None,
+        instance_span: None,
         is_instantiating: false,
         instantiated: HashSet::new(),
         sections: 0,
         elabs: 0,
         elab_contexts: HashMap::new(),
         origins: HashMap::new(),
+        statements: HashSet::new(),
         replaying: 0,
     };
     let root = resolver.add_file(modules, source.into(), false);
@@ -182,6 +190,9 @@ pub(crate) struct Resolver<'l> {
     layout: Layout,
     /// `I!J!` while elaborating the module of the named instance `J` in that of `I`.
     qualifier: Option<Rc<str>>,
+    /// The outermost `INSTANCE` with substitutions being elaborated, which the definitions it
+    /// makes record.
+    instance_span: Option<(ModuleId, Span)>,
     /// Whether a module is being elaborated under the substitutions of an `INSTANCE`.
     is_instantiating: bool,
     /// The modules elaborated under the substitutions of an `INSTANCE`.
@@ -197,6 +208,8 @@ pub(crate) struct Resolver<'l> {
     /// Whether a subexpression reference is resolving part of a definition again, whose names
     /// may hide later ones without conflict.
     replaying: usize,
+    /// The definitions of named theorems and assumptions, which a `HIDE` may cite.
+    statements: HashSet<DefId>,
 }
 
 /// Whether TLC bundles a module of this name. A loader shouldn't supply one from a library

@@ -4,11 +4,11 @@ use std::sync::Arc;
 
 use tla_ast::Quantifier;
 use tla_resolve::{Bound, Expr, ExprKind, Pattern};
-use tla_value::{Error, LazySet, Predicate, Value, bail};
+use tla_value::{Enumeration, Error, LazySet, Predicate, Value, bail};
 
 use super::builtin::is_overridden;
 use super::{At, TEMPORAL_ERROR};
-use crate::env::{Env, SpecRef};
+use crate::env::{Env, Frame, Slot, SpecRef};
 use crate::{Evaluator, Result};
 
 /// How a bound variable takes an element: into one slot, or destructured into a slot per
@@ -30,8 +30,17 @@ pub(super) fn binders(pattern: &Pattern) -> impl Iterator<Item = Binder<'_>> {
 
 /// Writes `value` into the slots of `binder`.
 pub(super) fn bind(binder: Binder<'_>, value: Value, env: &mut Env<'_>) -> tla_value::Result<()> {
+    bind_frame(binder, value, &mut env.frame)
+}
+
+/// Writes `value` into the slots of `binder` in `frame`.
+pub(super) fn bind_frame(
+    binder: Binder<'_>,
+    value: Value,
+    frame: &mut Arc<Frame>,
+) -> tla_value::Result<()> {
     match binder {
-        Binder::Slot(slot) => env.set(slot, value),
+        Binder::Slot(slot) => Arc::make_mut(frame).set(slot, Slot::Value(value)),
         Binder::Tuple(slots) => {
             let Some(items) = tuple_items(&value).filter(|items| items.len() == slots.len()) else {
                 bail!(
@@ -39,8 +48,9 @@ pub(super) fn bind(binder: Binder<'_>, value: Value, env: &mut Env<'_>) -> tla_v
                     slots.len()
                 )
             };
+            let frame = Arc::make_mut(frame);
             for (&slot, item) in slots.iter().zip(items.iter()) {
-                env.set(slot, item.clone());
+                frame.set(slot, Slot::Value(item.clone()));
             }
         }
     }
@@ -58,37 +68,10 @@ pub(super) fn tuple_items(value: &Value) -> Option<Arc<[Value]>> {
     }
 }
 
-/// The elements a bound variable ranges over.
-#[derive(Clone)]
-pub(super) enum Elements {
-    /// An interval, which TLC keeps as one, so that it can stop at the first witness in a large
-    /// interval without listing it.
-    Interval(i32, i32),
-    List(Arc<[Value]>),
-}
-
-impl Elements {
-    fn len(&self) -> usize {
-        match self {
-            Elements::Interval(low, high) => {
-                (i64::from(*high) - i64::from(*low) + 1).max(0) as usize
-            }
-            Elements::List(elements) => elements.len(),
-        }
-    }
-
-    pub fn get(&self, index: usize) -> Value {
-        match self {
-            Elements::Interval(low, _) => Value::Int(low + index as i32),
-            Elements::List(elements) => elements[index].clone(),
-        }
-    }
-}
-
 /// One variable of a list of bounds, with the elements it ranges over.
 pub(super) struct Variable<'e> {
     pub binder: Binder<'e>,
-    pub elements: Elements,
+    pub elements: Enumeration,
     /// The expression of the set, where a failure to bind an element of it is reported.
     pub set: &'e Expr,
 }
@@ -111,21 +94,22 @@ impl Evaluator {
         Ok(variables)
     }
 
-    /// The elements of the set of a bound, which TLC must be able to enumerate.
+    /// The elements of the set of a bound, which TLC must be able to enumerate. TLC keeps an
+    /// interval as one, and enumerates a power set without building it, so a quantifier that
+    /// finds its witness early never lists the rest; so does a large set of functions, records,
+    /// or tuples here.
     pub(super) fn bound_elements(
         &self,
         set: Value,
         expr: &Expr,
         env: &Env<'_>,
-    ) -> Result<Elements> {
-        if let Value::Interval(low, high) = set {
+    ) -> Result<Enumeration> {
+        if let Value::Interval(..) = set {
             set.cardinality().at(self, env, expr)?;
-            return Ok(Elements::Interval(low, high));
-        }
-        if !set.is_set() || is_overridden(&set) {
+        } else if !set.is_set() || is_overridden(&set) {
             return Err(self.error(env, expr, non_enumerable(&set, &self.node(env, expr))));
         }
-        Ok(Elements::List(set.elements().at(self, env, expr)?))
+        set.enumeration().at(self, env, expr)
     }
 
     /// Binds the variables to each combination of their elements, the first variable varying
@@ -136,7 +120,7 @@ impl Evaluator {
         env: &mut Env<'a>,
         mut visit: impl FnMut(&mut Env<'a>, &[usize]) -> Result<bool>,
     ) -> Result<bool> {
-        if variables.iter().any(|variable| variable.elements.len() == 0) {
+        if variables.iter().any(|variable| variable.elements.is_empty()) {
             return Ok(false);
         }
         let mut indexes = vec![0; variables.len()];

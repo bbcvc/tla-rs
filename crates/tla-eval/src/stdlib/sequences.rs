@@ -59,15 +59,15 @@ impl Sequence {
 }
 
 /// The elements of argument `index`, failing with `message` if it isn't a sequence.
-fn sequence(args: &[Arg], index: usize, message: &str) -> Outcome<Arc<[Value]>> {
+fn sequence(args: &[Arg], index: usize, message: impl Fn() -> String) -> Outcome<Arc<[Value]>> {
     let value = arg(args, index)?;
     match sequence_elements(value)? {
         Some(items) => Ok(items),
-        None => fail!("{message}\n{value}"),
+        None => fail!("{}\n{value}", message()),
     }
 }
 
-fn sequence_or_text(args: &[Arg], index: usize, message: &str) -> Outcome<Sequence> {
+fn sequence_or_text(args: &[Arg], index: usize, message: impl Fn() -> String) -> Outcome<Sequence> {
     match arg(args, index)? {
         Value::Str(text) => Ok(Sequence::Text(text.as_str().encode_utf16().collect())),
         _ => Ok(Sequence::Items(sequence(args, index, message)?)),
@@ -87,14 +87,14 @@ fn seq(_: &mut Ctx<'_>, args: &[Arg]) -> Outcome {
 }
 
 fn len(_: &mut Ctx<'_>, args: &[Arg]) -> Outcome {
-    let length = sequence_or_text(args, 0, &not_a_sequence("", "Len"))?.len();
+    let length = sequence_or_text(args, 0, || not_a_sequence("", "Len"))?.len();
     Ok(Value::Int(length as i32))
 }
 
 fn concat(_: &mut Ctx<'_>, args: &[Arg]) -> Outcome {
-    match sequence_or_text(args, 0, &not_of_kind("s \\o t", "sequence"))? {
+    match sequence_or_text(args, 0, || not_of_kind("s \\o t", "sequence"))? {
         Sequence::Items(left) => {
-            let right = sequence(args, 1, &not_of_kind("t \\o s", "sequence"))?;
+            let right = sequence(args, 1, || not_of_kind("t \\o s", "sequence"))?;
             Ok(Value::tuple(left.iter().chain(right.iter()).cloned().collect()))
         }
         Sequence::Text(_) => {
@@ -108,21 +108,21 @@ fn concat(_: &mut Ctx<'_>, args: &[Arg]) -> Outcome {
 }
 
 fn append(_: &mut Ctx<'_>, args: &[Arg]) -> Outcome {
-    let items = sequence(args, 0, &not_of_kind("Append(s, v)", "sequence"))?;
+    let items = sequence(args, 0, || not_of_kind("Append(s, v)", "sequence"))?;
     let mut items = items.to_vec();
     items.push(arg(args, 1)?.clone());
     Ok(Value::tuple(items))
 }
 
 fn head(_: &mut Ctx<'_>, args: &[Arg]) -> Outcome {
-    match sequence(args, 0, &not_a_sequence("", "Head"))?.first() {
+    match sequence(args, 0, || not_a_sequence("", "Head"))?.first() {
         Some(first) => Ok(first.clone()),
         None => fail!("Attempted to apply Head to the empty sequence."),
     }
 }
 
 fn tail(_: &mut Ctx<'_>, args: &[Arg]) -> Outcome {
-    let sequence = sequence_or_text(args, 0, &not_a_sequence("", "Tail"))?;
+    let sequence = sequence_or_text(args, 0, || not_a_sequence("", "Tail"))?;
     if sequence.len() == 0 {
         fail!("Attempted to apply Tail to the empty sequence.");
     }
@@ -130,7 +130,7 @@ fn tail(_: &mut Ctx<'_>, args: &[Arg]) -> Outcome {
 }
 
 fn sub_seq(_: &mut Ctx<'_>, args: &[Arg]) -> Outcome {
-    let sequence = sequence_or_text(args, 0, &not_a_sequence("first ", "SubSeq"))?;
+    let sequence = sequence_or_text(args, 0, || not_a_sequence("first ", "SubSeq"))?;
     let integer = |index: usize| -> Outcome<i32> {
         match arg(args, index)? {
             Value::Int(value) => Ok(*value),
@@ -160,7 +160,7 @@ fn sub_seq(_: &mut Ctx<'_>, args: &[Arg]) -> Outcome {
 
 fn select_seq(ctx: &mut Ctx<'_>, args: &[Arg]) -> Outcome {
     let test = op_arg(args, 1)?;
-    let items = sequence(args, 0, &not_a_sequence("first ", "SelectSeq"))?;
+    let items = sequence(args, 0, || not_a_sequence("first ", "SelectSeq"))?;
     let mut selected = Vec::new();
     for item in items.iter() {
         match ctx.call(test, std::slice::from_ref(item))? {

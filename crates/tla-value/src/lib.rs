@@ -10,17 +10,22 @@
 //! (`1..3 = {1, 2, 3}`) and can fail (`1 = "a"` is an error in TLC). Use [`Value::equals`],
 //! [`Value::compare`], and [`Value::fingerprint`] instead.
 
+mod combinations;
 mod fingerprint;
 mod format;
 mod func;
 mod order;
+mod permute;
 mod set;
+mod stream;
 
 use std::fmt;
-use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, OnceLock};
 
+pub use combinations::{Combinations, Enumeration};
 pub use func::Key;
-pub use tla_intern::Symbol;
+pub use tla_intern::{Symbol, set_order};
 
 /// An evaluation error, worded like TLC's where TLC reports the same problem.
 #[derive(Clone, Debug, PartialEq, Eq, thiserror::Error)]
@@ -74,7 +79,7 @@ pub enum Value {
     Func(Arc<Func>),
     /// `low..high`, empty when `low > high`.
     Interval(i32, i32),
-    Lazy(Arc<LazySet>),
+    Lazy(LazySetRef),
     /// A function TLC applies on demand rather than enumerate, such as `[n \in Nat |-> n + 1]`.
     LazyFunc(Arc<LazyFunc>),
 }
@@ -88,7 +93,7 @@ pub enum Value {
 /// never depend on it.
 #[derive(Clone)]
 pub struct Func {
-    pub keys: Box<[Value]>,
+    pub keys: Arc<[Value]>,
     pub values: Box<[Value]>,
     pub(crate) written: Option<Box<func::WrittenOrder>>,
 }
@@ -97,6 +102,50 @@ pub struct Func {
 pub struct LazyFunc {
     pub domain: Value,
     pub apply: Mapping,
+    /// What the function was built from, for an evaluator that reads it back, as TLC walks the
+    /// body of a function of actions that an action applies. `None` for a function the value
+    /// system builds itself.
+    pub source: Option<Arc<dyn std::any::Any + Send + Sync>>,
+}
+
+/// A shared lazy set, with its elements once enumerated, which TLC keeps, as tla-ts's
+/// `toFiniteSet` does, so that a set enumerated again, such as one a constant definition holds,
+/// isn't recomputed.
+#[derive(Clone)]
+pub struct LazySetRef(Arc<LazySetCell>);
+
+struct LazySetCell {
+    set: LazySet,
+    elements: OnceLock<Arc<[Value]>>,
+    /// Whether TLC has cached the set's elements, after which it streams them in its order
+    /// rather than streaming the sets it combines. See [`Value::streamed_elements`].
+    cached: AtomicBool,
+}
+
+impl LazySetRef {
+    /// The elements, once enumerated.
+    pub(crate) fn elements(&self) -> &OnceLock<Arc<[Value]>> {
+        &self.0.elements
+    }
+
+    /// Marks the set cached, as TLC caches it.
+    pub(crate) fn cache(&self) {
+        if !self.is_cached() {
+            self.0.cached.store(true, Ordering::Relaxed);
+        }
+    }
+
+    pub(crate) fn is_cached(&self) -> bool {
+        self.0.cached.load(Ordering::Relaxed)
+    }
+}
+
+impl std::ops::Deref for LazySetRef {
+    type Target = LazySet;
+
+    fn deref(&self) -> &LazySet {
+        &self.0.set
+    }
 }
 
 /// A set TLC represents symbolically.
@@ -153,7 +202,9 @@ impl Value {
     }
 
     pub fn lazy(set: LazySet) -> Self {
-        Self::Lazy(Arc::new(set))
+        stream::note_lazy(&set);
+        let cell = LazySetCell { set, elements: OnceLock::new(), cached: AtomicBool::new(false) };
+        Self::Lazy(LazySetRef(Arc::new(cell)))
     }
 
     /// The model value `name`, typed if its name is `T_rest`.
@@ -200,9 +251,7 @@ impl Value {
 
 /// The type letter of a model value named `T_rest`.
 pub(crate) fn model_type(name: Symbol) -> Option<char> {
-    let mut chars = name.as_str().chars();
-    let first = chars.next()?;
-    (chars.next() == Some('_') && chars.next().is_some()).then_some(first)
+    name.model_type()
 }
 
 impl fmt::Debug for Value {

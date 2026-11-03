@@ -1,8 +1,8 @@
 //! Lowers the tree-sitter-tlaplus concrete syntax tree into [`tla_ast`] modules and units.
 
 use tla_ast::{
-    Assume, Bound, FunctionDef, Instance, Module, ModuleDef, Name, Op, OpDecl, OperatorDef,
-    Pattern, Span, Substitution, Symbol, Theorem, Unit,
+    Assume, Bound, FunctionDef, Hide, HideFact, Instance, Module, ModuleDef, Name, Op, OpDecl,
+    OperatorDef, Pattern, Span, Substitution, Symbol, Theorem, Unit,
 };
 use tree_sitter::Node;
 
@@ -240,13 +240,68 @@ impl<'a> Lower<'a> {
                 statement: node
                     .child_by_field_name("statement")
                     .and_then(|statement| self.expr(statement).ok()),
+                hides: node
+                    .child_by_field_name("proof")
+                    .map(|proof| self.hides(proof))
+                    .unwrap_or_default(),
                 span: self.span(node),
             }),
             "module" => Unit::Module(self.module(node)?),
-            "use_or_hide" | "single_line" => return Ok(None),
+            "use_or_hide" => match self.hide(node) {
+                Some(hide) => Unit::Hide(hide),
+                None => return Ok(None),
+            },
+            "single_line" => return Ok(None),
             kind => return Err(self.unsupported(node, kind)),
         };
         Ok(Some(unit))
+    }
+
+    /// The facts of a `HIDE`, or `None` for a `USE`.
+    fn hide(&self, node: Node) -> Option<Hide> {
+        if node.child(0)?.kind() != "HIDE" {
+            return None;
+        }
+        let facts = children(node)
+            .into_iter()
+            .flat_map(children)
+            .filter(|part| part.kind() == "use_body_expr")
+            .flat_map(children)
+            .filter_map(|fact| self.hide_fact(fact))
+            .collect();
+        Some(Hide { facts, span: self.span(node) })
+    }
+
+    /// A fact of a `HIDE` that SANY checks.
+    fn hide_fact(&self, node: Node) -> Option<HideFact> {
+        let mut fact = node;
+        while fact.kind() == "parentheses" {
+            fact = *children(fact).first()?;
+        }
+        if self.text(fact).contains('!') {
+            return None;
+        }
+        match fact.kind() {
+            "identifier_ref" => self.name(fact).ok().map(HideFact::Name),
+            // SANY checks the operator a fact applies, and these apply none.
+            "module_ref" | "proof_step_ref" | "nat_number" | "real_number" | "binary_number"
+            | "octal_number" | "hex_number" | "string" | "let_in" => None,
+            _ => Some(HideFact::Expr(self.span(fact))),
+        }
+    }
+
+    /// The `HIDE` steps of a proof.
+    fn hides(&self, proof: Node) -> Vec<Hide> {
+        let mut hides = Vec::new();
+        let mut pending = vec![proof];
+        while let Some(node) = pending.pop() {
+            if node.kind() == "use_or_hide" {
+                hides.extend(self.hide(node));
+                continue;
+            }
+            pending.extend(children(node).into_iter().rev());
+        }
+        hides
     }
 
     /// The declarations in a `CONSTANT` or `RECURSIVE` list.

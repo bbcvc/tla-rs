@@ -36,7 +36,9 @@ None of them targets full TLC conformance with an interpreter, so starting fresh
 
 ## Design revisions
 
-**R1. Value ordering can't be derived.** TLC orders strings and model values by when it first interned their text: configuration values first, then TLC's startup strings, then each module's tokens in the order SANY parses them. It orders sets by size and then element by element, functions by domain size and then keys and values, and intervals by size and then lower bound. `CHOOSE` returns the first element in this order, so a derived `Ord` changes what `CHOOSE` returns and therefore the state count. `Value` gets a hand-written comparison ported from `compareValues` in `values.ts`, and the string order is ported from `getTlcStringOrder` in `tlc/order.ts`. Comparing values of different kinds is an error in TLC, not an ordering.
+**R1. Value ordering can't be derived.** TLC orders strings and model values by when it first interned their text: configuration values first, then TLC's startup strings, then each module's tokens in the order SANY parses them. It orders sets by size and then element by element, functions by domain size and then keys and values, and intervals by size and then lower bound. `CHOOSE` returns the first element in this order, so a derived `Ord` changes what `CHOOSE` returns and therefore the state count. `Value` gets a hand-written comparison ported from `compareValues` in `values.ts`. Comparing values of different kinds is an error in TLC, not an ordering.
+
+The string order is ported from `getTlcStringOrder` in `tlc/order.ts`. `tla_resolve::tlc_string_order` lists the texts TLC interns before it checks a spec, from the source text with a port of tla-ts's lexer. It agrees with tla-ts on all 920 models of the corpus. `set_order` publishes them once per spec as a table of sort keys indexed by intern number, which `Symbol::cmp` reads. Other symbols follow in this process's intern order, as strings TLC creates at runtime follow its startup strings. Comparing two strings costs one more table lookup: sorting 200,000 strings takes 9.2 ms instead of 7.6 ms, and 200,000 records 86 ms instead of 81 ms. The order is process-wide, so a process checks one spec at a time, and sets the order before it builds the spec's values.
 
 **R2. Integers are 32-bit.** TLC's integers are Java `int`s (tla-ts: `MAXIMUM_INTEGER = 2147483647`), and overflow is an error. `Value` stores small integers with TLC's overflow checks and drops `num-bigint`. This is also a large speed win.
 
@@ -49,6 +51,10 @@ Normalization still shows in what TLC prints, so `tla-value` tracks it where it 
 - `TLCEval` normalizes its argument only where TLC computes a constant once: a constant argument, outside every binder, in a module-level definition without parameters, and not in a module that an `INSTANCE` substitutes into. Elsewhere it applies its definition, `TLCEval(v) == v`.
 
 **R4. Successor generation uses continuations.** The `Vec<PartialNextState>` sketch materializes every branch and clones the environment for each one. It also has no case for `\E` and treats non-Boolean guards as `FALSE`. The evaluator instead passes a continuation and assigns primed slots in place with undo, which is the shape of TLC's `getNextStates`. Non-Boolean guards and incompletely specified successors are errors, as in TLC.
+
+`Evaluator::init_states` and `Evaluator::next_states` implement this, ported from tla-ts `successors.ts`. The walk carries the state being assigned as a vector of optional values, and expressions read it through a view in which an unassigned variable is undefined. What remains to walk after a conjunct is a continuation built on the stack, so `\/`, `\E`, and `x' \in S` assign a variable, run the continuation, and undo the assignment. The walk enters calls of definitions, arguments that are actions, and instances. Once every variable has a value, the conjuncts left are predicates, as in TLC, which decides how many states a later disjunction generates. `ENABLED` runs the same walk and stops at the first successor.
+
+Three more things decide the states generated. `x' \in S` takes the elements of `S` as TLC's `Enumerator` streams them: a lazy `UNION` or `\cup` yields the elements of each set it combines, duplicates included, until TLC caches the set. TLC caches a set as the receiver of `equals`, `compareTo`, `size`, and `fingerPrint`, so tla-value marks a lazy set cached by allocation at those points, and a set kept between evaluations, such as a constant definition's value, stays cached. An argument keeps its value while the state being assigned is unchanged, as tla-ts caches a thunk. A function of actions applied in an action, as `Actions[p]`, is walked at the argument. `Evaluator::next_actions` is TLC's split of the relation into named actions, which words an incomplete successor and labels a step.
 
 **R5. Liveness is part of done.** 66 recorded results are liveness or property violations, and successful runs of specs with `PROPERTY` need the checker too. Liveness becomes its own phase instead of an optional extra.
 
@@ -90,7 +96,7 @@ cargo run --release -p tla-resolve --example resolve_corpus -- $C/.corpora --all
 cargo run --release -p tla-resolve --example resolve_corpus -- $C/.corpora $L --expected $C/expected.json
 ```
 
-The parser and resolver agree with SANY on 1,864 of the 1,873 modules SANY was recorded on. Every one of the 823 models TLC was recorded on that TLC checks resolves.
+The parser and resolver agree with SANY on 1,865 of the 1,873 modules SANY was recorded on. Every one of the 823 models TLC was recorded on that TLC checks resolves.
 
 The 9 disagreements with SANY:
 
@@ -140,9 +146,13 @@ What the pass leaves out:
 `tla-value` implements TLC's values. Equality and ordering cross representations (`1..3 = {1, 2, 3}`) and fail where TLC fails (`1 = "a"`). Sets and function domains are sorted in TLC's order, and sets TLC keeps symbolic, such as `SUBSET S`, `[S -> T]`, `Nat` and filters over them, stay lazy. Printing and fingerprints follow TLC. `tla-eval` evaluates the resolved program:
 
 - Definition arguments are lazy, as in TLC, so `p'` primes the argument passed for `p`.
-- Recursive and `LET` functions are lazy.
+- Recursive and `LET` functions are lazy. Applying one evaluates its body at the argument, without building the function at each step of the recursion.
+- A `LET` definition without parameters is computed once for the frame the `LET` is evaluated in and the states, as TLC binds it to a `LazyValue`, until a variable it reads is bound again. One that has effects, makes a random choice, applies an operator parameter, or builds a set with `UNION` or `\cup` is computed at each reference.
+- Quantifiers, `CHOOSE` and set filters take a large set of functions, records, or tuples, or a large power set, one element at a time, in TLC's order (`Value::enumeration`), so they stop at the first witness without building the rest. A power set of more than 30 elements, too large to list, is enumerated this way, as TLC enumerates it.
+- Constant definitions are computed once, with TLC's startup random generator, as TLC computes them when it starts, and a lazy set keeps its elements once enumerated.
 - The model configuration binds constants, overrides definitions, and defines operator tables.
-- Native implementations replace the definitions TLC overrides in Java. These are Naturals, Integers, Sequences, FiniteSets, TLC, TLCExt, Bags, Json, Randomization and `_Possible`, plus IOUtils' `Serialize` for NDJSON, which TLC's own Json class writes.
+- Native implementations replace the definitions TLC overrides in Java. These are Naturals, Integers, Sequences, FiniteSets, TLC, TLCExt, Bags, Json, Randomization and `_Possible`, plus IOUtils' `Serialize` for NDJSON, which TLC's own Json class writes. `TLCCache` keeps the value of its expression for each closure.
+- A Java class named after a module beside the spec overrides the module's operators, as TLC loads it, where its methods return constants (`BoolValue.ValTrue`, `IntValue.gen(n)`, a new `StringValue`); one that computes its value is unsupported.
 - `Evaluator::with_community_modules` adds the community module IOUtils, as TLC has it when `CommunityModules-deps.jar` is on its class path. That covers `IOEnv`, `atoi`, the `IOExec` family, and plain text `Serialize` and `Deserialize`. Without the jar, TLC evaluates IOUtils' TLA+ placeholders. The commands only run once `Runtime::allow_exec` allows them. Java's object serialization (`IOSerialize`, `IODeserialize`) isn't ported and fails with an error.
 
 `crates/tla-eval/examples/check_assumptions.rs` checks every model's `ASSUME`s, as TLC does before it explores any state, and compares the outcome with TLC's recorded status. Each model runs in a child process with a timeout. `--outcomes FILE` writes every model's outcome, so two builds can be compared model by model.
@@ -181,10 +191,86 @@ Still missing from evaluation:
 
 | Gap | Effect |
 | --- | --- |
-| `ENABLED` | Needs successor generation, which comes with the model checker. |
 | Natives for the other community modules TLC overrides in Java, such as CSV, and `TLCGet("config").install` | Only matter with `--community-modules`; CSV's writers stay `TRUE`, and `SmokeEWD998_SC`'s command has no jar to run. |
-| Caching constant definitions and lazy sets' enumerations | Values are the same, but chains of lazy sets re-enumerate, and impure natives such as `RandomElement` can differ from TLC. Add it with the checker. |
-| TLC's string order | Strings are ordered by when this process interns them, not as TLC interns them, so `CHOOSE` and printing over strings can differ from TLC. |
-| A graceful error on deep recursion | Each recursion level uses about 2.6 KB of stack in release builds. The checker should evaluate on threads with large stacks. |
-| `PickSuccessor`, `TLCCache`'s caching, and `AssertError`'s check that its message is a string literal | Small; they matter only for the specs that use them. |
-| The intern number of a model value in TLC's FP64 fingerprint | Random choices seeded per state differ from TLC for states containing model values. |
+| TLC's order of computing constant definitions at startup | `Evaluator::evaluate_constant_definitions` goes through the definitions in the resolver's order. TLC goes through the modules in the order SANY finishes them, through each module's definitions in the order of SANY's symbol table (tla-ts `createTlcDefinitionOrder`), and skips the modules an `INSTANCE` gives parameters to. Values are the same; impure natives in several constant definitions, such as `Print` or `RandomElement`, can run in another order. |
+| `PickSuccessor`, and `AssertError`'s check that its message is a string literal | Small; they matter only for the specs that use them. |
+
+## Model checking results
+
+`tla-checker` checks a model as TLC does with `-workers 1`. `check` takes a resolved spec, the model configuration, and a function that gives it the states (`Successors`). The evaluator implements `Successors` with its initial and next state generation. The tests implement it with small hand-written transition systems, so the search is tested apart from successor generation. `check` follows TLC's order:
+
+1. Bind the configuration.
+2. Process the spec.
+3. Check the definitions the configuration substitutes for constants.
+4. Start the runtime and compute the constant definitions.
+5. Check the constant parts of the spec and configuration.
+6. Build the symmetry group.
+7. Check the assumptions.
+8. Build the liveness checker, for a spec with temporal properties.
+9. Search, adding each state to the liveness checker's behavior graphs.
+10. Look for a liveness counterexample in the graphs.
+11. Check the postconditions.
+
+The modules:
+
+- **`plan`** is TLC's `SpecProcessor`. `SPECIFICATION` splits into its initial conjuncts, one `[][Next]_v`, and temporal conjuncts. The split follows zero-arity definitions, those of parameterized instances (`I(y)!Spec`) included. `PROPERTY` splits the same way:
+  - `[]P` with a state predicate `P` is checked like an invariant named after `P`;
+  - `[][A]_v` is checked on every step as `A \/ UNCHANGED v`;
+  - a state predicate is checked on the initial states;
+  - the rest is left to liveness.
+
+  Each part that isn't a zero-arity definition gets a synthesized one, appended to `Spec.defs` with its levels. A part inside a parameterized instance gets a module-level definition that calls into the instance's frame. Constant parts are evaluated when the checker starts. A `TRUE` one is dropped, and the rest are TLC's errors. INIT/NEXT, CONSTRAINT, ACTION_CONSTRAINT, VIEW, `_POSSIBLE`, POSTCONDITION, RL reward and periodic are looked up and rejected with TLC's messages.
+- **`level`** has two notions of level, and TLC uses each where tla-ts does. TLC's level bound (`Spec.getLevelBound`, tla-ts `getLevel`) counts every argument of an operator: it sorts parts and finds constants. SANY's level counts an argument only where the operator uses its parameter: TLC checks invariants (`Ignore(x)` with an unused parameter is a constant to SANY) and the substitutes for constants by it. Both raise TLC's Java overrides that read the checker's state (`TLCGet`, `_Counts`, `RandomSubset`, ...) to state level.
+- **`search`** is the breadth-first search: a set of fingerprints, a FIFO queue, and a parent link and depth per state for traces. Like TLC, it drops a state once it has expanded it, and rebuilds the behavior to a violation from the initial states by the fingerprints along it. It keeps the states only when the spec extends TLCExt, whose `Trace` reads them as the search runs. A state costs about 30 bytes besides the queue: a 128-bit fingerprint (two seeded foldhash lanes over one pass of the values), a parent index, a depth, and a slot in a hashbrown table of indices. Counting:
+  - Every initial state and every successor counts as generated, repeats included.
+  - An initial state that the constraints keep and that was seen already is skipped.
+  - Invariants are checked on any successor that isn't a stored state, so a state the constraints exclude is still checked.
+  - Implied actions are checked on every step.
+  - A state with no successors is a deadlock when `CHECK_DEADLOCK` is on.
+
+  The runtime's statistics are published as each state is found, so `TLCGet("distinct")` already counts a new state while its invariants are checked. `TLCGet("level")` is the depth of the state being checked. `TLCSet("exit", TRUE)` stops the search between expansions.
+- **`fingerprint`** tells states apart by the variables or by the `VIEW`. With a `SYMMETRY`, it closes the permutations under composition and takes the smallest fingerprint over the orbit.
+- **`liveness`** is TLC's liveness checking with `-lncheck final`, ported from tla-ts `liveness.ts`, `tableau.ts` and `liveness-checker.ts`:
+  - Spec processing makes each temporal part of the properties and of the spec a module-level definition, and adds a definition `ENABLED <<A>>_v` beside each fairness condition. When the checker is built, it translates them as tla-ts `toLiveExpression` does, with values at hand: it expands the definitions a formula applies in the frames of their calls, recursive ones included, decides `IF`s with constant conditions, unrolls quantifiers over constant sets, and takes each part below temporal level as one formula it evaluates in its frames. tla-eval's scope API (`scope.rs`: `module_frames`, `call_frames`, `bind`, `eval_in`) keeps those frames.
+  - The negated properties, conjoined with the fairness, go to disjunctive normal form. Each disjunct is sorted into conditions on a cycle (`<>[]A`, `[]<>S`, `[]<>A`) and a temporal rest, whose tableau the behavior graph is the product with.
+  - The search adds each new initial state, and each expanded state with its successors in the model, to the behavior graph of each solution, with the results of the solution's checks. The successors go in the order TLC's `SetOfStates` iterates them, by TLC's fingerprint of each state over its variables in TLC's order.
+  - Once the search is done, a Tarjan search finds a strongly connected component that satisfies a model, and the lasso TLC prints through it, whose length TLC reports with the stuttering step at the end of a one-state cycle.
+  - It evaluates less than TLC where the outcome can't differ: a fairness condition on the spec's next-state relation holds on every step of the graph that changes its subscript, since the search found the step as a successor; and without a `VIEW` or `SYMMETRY`, the results of the state predicates are kept by the state's index in the search.
+- **`postcondition`** runs after a search that finds no violation. A postcondition TLC computed at startup is an error. A `_POSSIBLE` predicate that no state or step in the model witnessed is a violation, and so is a postcondition that is false or fails. TLC exits as for a violated assumption in both cases.
+
+`crates/tla-checker/examples/conformance/` checks every recorded model and compares it with TLC the way tla-ts's `compareOutcome` does: status, violation name, states generated, distinct states, depth, and trace length. Each model runs in a child process, because TLC's string order is the process's, on a thread with a 1 GB stack and under a timeout. `--filter` selects models and `--outcomes FILE` writes each model's outcome with the milliseconds its child process ran. The run ends with the time against TLC's recorded time on the models that match: the median ratio, how many are faster, and the slowest ratios.
+
+```shell
+C=../tla-ts/packages/tla-ts/tests/conformance
+cargo run --release -p tla-checker --example conformance -- $C/.corpora \
+  --library $C/.corpora/tlapm/library --library $C/.corpora/community/modules \
+  --expected $C/expected.json --timeout 60 --jobs 8
+```
+
+| Run | Match | Mismatch | Unsupported | No verdict | Timeout | Crash |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| First full run | 636 | 44 | 60 | | 82 | 1 |
+| Safety only | 653 | 18 | 70 | 51 | 30 | 1 |
+| With liveness | 708 | 31 | 0 | 51 | 32 | 1 |
+| ENABLED under INSTANCE, scope API | 750 | 0 | 0 | 51 | 22 | 0 |
+| Now | 755 | 0 | 0 | 51 | 17 | 0 |
+
+All 823 models run in 10 minutes on 8 jobs. 755 of the 772 models with a TLC verdict match, and none disagrees: the other 17 time out. On the matches, the median ratio of the checker's wall time to TLC's is 0.019, the checker is faster on 746, and the total is 774 s against TLC's 2,243 s (TLC's times include starting the JVM, so small models flatter the checker).
+
+- **No verdict (51)** are models where TLC stopped with an error after more than 20 s. That is TLC running out of memory or disk on a state space too large for it, and tla-ts's runner leaves these out too.
+- **Timeouts (17)** are all models TLC took more than 60 s on. With a 600 s timeout, 4 at a time, 18 of the 19 models TLC finishes in 60–290 s match TLC's counts; `TLCSailfish1` (TLC 77 s) still times out, in membership tests over tuples and records. `cf1s_folklore` (TLC 271 s) spends its time evaluating its fairness action, a part of its next-state relation, on every step of the behavior graph.
+- **Slower than TLC:** `MCTxnsMoveRange`, `MCMoveRange` and `S2C` take about twice TLC's time, mostly in the action walk, and so do some of the long models (`VR_STATE_TRANSFER`, `VR_APP_STATE`, `BufferAsWAL`, `S2CFencing`, `MCCheckpointCoordination`).
+
+All 70 models liveness checking decides match. TLC's liveness counterexamples depend on TLC's order of the variables, the reverse of the root module's SANY `Context` enumeration (`tla_resolve::tlc_variable_order`, which agrees with tla-ts on all 912 models both read): it decides TLC's fingerprint of a state, which orders a state's successors in the behavior graph.
+
+The first run found these; they are fixed:
+
+- VIEW and SYMMETRY (nine models).
+- `_POSSIBLE` and POSTCONDITION.
+- TLC's level bound for operator arguments (`ModuleOverwrites`), next to SANY's levels for invariants (`operator_arguments`).
+- Specifications through parameterized instances (`test61`).
+- Rejecting a substitute for a constant that fails without a state (`etest7`, `TLCGetNamedUndefined`).
+- Publishing statistics as states are found (`EWD998Chan` stops on `TLCGet("distinct") > 500`).
+- Liveness checking, which also settles `InitialLivenessEvaluationError`: TLC fails evaluating `ENABLED` on the initial state as it adds it to the behavior graph.
+
+The last nine, `ENABLED` of a fairness condition of an instance whose variables are substituted by definitions, as a refinement property `TD!Spec` has, are fixed: the resolved spec records where an instantiated module refers to its own variables, and `ENABLED` in the instance gives each of them a slot of its own when primed.

@@ -66,6 +66,8 @@ pub enum Unit {
     Assume(Assume),
     Theorem(Theorem),
     Module(Module),
+    /// A `HIDE` at the top level of a module.
+    Hide(Hide),
 }
 
 /// A declared operator: a constant, a `RECURSIVE` declaration, or an operator parameter.
@@ -125,14 +127,33 @@ pub struct Assume {
     pub is_axiom: bool,
 }
 
-/// A theorem. TLC doesn't check theorems, so the proof isn't kept. A named theorem defines its
-/// name as its statement.
+/// A theorem. TLC doesn't check theorems, so the proof isn't kept, apart from the `HIDE`s SANY
+/// checks. A named theorem defines its name as its statement.
 #[derive(Clone, Debug, PartialEq)]
 pub struct Theorem {
     pub name: Option<Name>,
     /// The statement, unless it is an `ASSUME ... PROVE`.
     pub statement: Option<Expr>,
+    /// The `HIDE` steps of the proof.
+    pub hides: Vec<Hide>,
     pub span: Span,
+}
+
+/// `HIDE` with the facts SANY checks: it allows only the names of theorems, assumptions, and
+/// proof steps. Facts that are allowed whatever they name, such as `<1>2`, `MODULE M`, a
+/// number, or a name with `!`, are left out.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Hide {
+    pub facts: Vec<HideFact>,
+    pub span: Span,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub enum HideFact {
+    /// A name, which must name a theorem or an assumption.
+    Name(Name),
+    /// An expression, which SANY rejects.
+    Expr(Span),
 }
 
 #[cfg(test)]
