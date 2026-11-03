@@ -557,6 +557,13 @@ impl Resolver<'_> {
                 format!("Unknown operator: `{}'.", name.symbol),
             ));
         };
+        // A variable of the module an instance substitutes into, replaced here.
+        if entry.kind == SymbolKind::Variable
+            && matches!(entry.binding, Binding::Inline(_) | Binding::Def(_))
+            && args.is_empty()
+        {
+            self.spec.instance_variables.insert((elab.module, span), name.symbol);
+        }
         let check_arity = |resolver: &Self, expected: usize| {
             if expected == args.len() {
                 return Ok(());

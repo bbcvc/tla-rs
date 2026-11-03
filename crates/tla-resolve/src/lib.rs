@@ -83,6 +83,7 @@ pub fn resolve(source: &str, loader: &mut dyn ModuleLoader) -> Result<Spec> {
             assumptions: Vec::new(),
             root: HashMap::new(),
             levels: Vec::new(),
+            instance_variables: HashMap::new(),
         },
         parsed: HashMap::new(),
         parameters: HashMap::new(),

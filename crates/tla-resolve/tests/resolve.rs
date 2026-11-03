@@ -358,3 +358,21 @@ fn hides_only_theorems_assumptions_and_steps() {
     let proof = "THEOREM T == TRUE\n<1>1. HIDE F\n<1>2. QED";
     assert_eq!(error(&module(proof), &[]), message);
 }
+
+#[test]
+fn records_where_an_instantiated_module_refers_to_its_variables() {
+    let inner = "---- MODULE Inner ----\nVARIABLES u, v\nA == u' = v\n====\n";
+    let root =
+        "---- MODULE M ----\nVARIABLE x\nI == INSTANCE Inner WITH u <- x, v <- x\nJ == I!A\n====\n";
+    let spec = spec(root, &[("Inner", inner)]);
+    let mut recorded: Vec<(String, String)> = spec
+        .instance_variables
+        .iter()
+        .map(|((module, span), name)| {
+            let source = &spec.modules[module.index()].source;
+            (source[span.start as usize..span.end as usize].to_owned(), name.to_string())
+        })
+        .collect();
+    recorded.sort();
+    assert_eq!(recorded, [("u".to_owned(), "u".to_owned()), ("v".to_owned(), "v".to_owned())]);
+}

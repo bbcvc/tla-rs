@@ -50,6 +50,11 @@ pub struct Spec {
     pub root: HashMap<Symbol, RootName>,
     /// The levels of each definition, by [`DefId`], as SANY computes them.
     pub levels: Vec<DefLevels>,
+    /// Where a module an `INSTANCE` substitutes into refers to one of its own variables, which
+    /// resolution replaces with what the instance substitutes, by the module and the span of
+    /// the reference, with the variable's name. TLC's ENABLED binds such a variable, primed,
+    /// by its name rather than priming what is substituted for it.
+    pub instance_variables: HashMap<(ModuleId, Span), Symbol>,
 }
 
 impl Spec {
