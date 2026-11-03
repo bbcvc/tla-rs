@@ -1,5 +1,7 @@
 //! Parses every `.tla` and `.cfg` file under the given directories and summarizes the failures:
 //! `cargo run --release -p tla-parser --example parse_corpus -- DIR...`
+//!
+//! Every failure is also written to stderr as `path<TAB>message`, for scripts.
 
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
@@ -31,6 +33,7 @@ fn main() {
         let count = counts.entry(if extension == "tla" { "tla" } else { "cfg" }).or_default();
         count.0 += 1;
         if let Some((message, location)) = failure {
+            eprintln!("{}\t{message}", path.display());
             count.1 += 1;
             failures.entry(message).or_default().push(location);
         }
