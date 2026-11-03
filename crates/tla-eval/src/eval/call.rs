@@ -178,17 +178,12 @@ impl Evaluator {
         match self.constants.get(id.index()) {
             Some(ConstBinding::Value(value)) => Ok(value.clone()),
             Some(ConstBinding::Def(def)) => self.call(*def, &Scope::Global, &[], expr, env),
-            None => {
-                let name = self.spec.constants[id.index()].name;
-                let message = format!(
-                    "The constant parameter {name} is not assigned a value by the configuration file."
-                );
-                Err(self.error(env, expr, message))
-            }
+            None => Err(self.error(env, expr, self.unbound(id))),
         }
     }
 
-    /// `F(args)` for a constant operator `F`, which the configuration replaces by a definition.
+    /// `F(args)` for a constant operator `F`. The configuration replaces it by a definition, or
+    /// gives it a value, which TLC takes as the value of `F` applied to any arguments.
     #[inline(never)]
     pub(super) fn call_const(
         &self,
@@ -199,13 +194,14 @@ impl Evaluator {
     ) -> Result<Value> {
         match self.constants.get(id.index()) {
             Some(ConstBinding::Def(def)) => self.call(*def, &Scope::Global, args, expr, env),
-            _ => Err(self.error(env, expr, self.unreplaced(id))),
+            Some(ConstBinding::Value(value)) => Ok(value.clone()),
+            None => Err(self.error(env, expr, self.unbound(id))),
         }
     }
 
-    fn unreplaced(&self, id: ConstId) -> String {
+    fn unbound(&self, id: ConstId) -> String {
         let name = self.spec.constants[id.index()].name;
-        format!("The constant operator {name} is not replaced by a definition.")
+        format!("The constant parameter {name} is not assigned a value by the configuration file.")
     }
 
     /// The frame a definition called with `scope` captures.
@@ -286,7 +282,11 @@ impl Evaluator {
             }
             OpRef::Const(id) => match self.constants.get(id.index()) {
                 Some(ConstBinding::Def(def)) => OperatorKind::Def { def: *def, parent: None },
-                _ => return Err(self.error(env, expr, self.unreplaced(*id))),
+                Some(ConstBinding::Value(value)) => {
+                    let value = value.clone();
+                    return Ok(Operator::closure(move |_, _| Ok(value.clone())));
+                }
+                None => return Err(self.error(env, expr, self.unbound(*id))),
             },
             OpRef::Builtin(builtin) => OperatorKind::Builtin(*builtin),
         };

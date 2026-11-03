@@ -166,6 +166,12 @@ fn reads_constants_from_the_model() {
     let evaluator = Evaluator::new(Arc::new(spec), constants);
     assert_eq!(eval(&evaluator, "Expr").unwrap().to_string(), "<<{1, 2}, {1, 2}>>");
     assert_eq!(eval(&evaluator, "Set").unwrap().to_string(), "{0, 1, 2}");
+    let valued = evaluator_with(
+        "CONSTANT F(_)\nApply(G(_)) == G(2)\nExpr == <<F(1), Apply(F)>>",
+        &[],
+        vec![ConstBinding::Value(ints(&[7]))],
+    );
+    assert_eq!(eval(&valued, "Expr").unwrap().to_string(), "<<{7}, {7}>>");
     let unbound = evaluator_with("CONSTANT N\nExpr == N", &[], Vec::new());
     assert_eq!(
         eval(&unbound, "Expr").unwrap_err().message,
