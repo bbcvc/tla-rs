@@ -120,7 +120,9 @@ impl Value {
                 }
                 Ok(low.cmp(other_low))
             }
-            _ if self.is_function() && other.is_function() => compare_functions(self, other),
+            _ if self.is_function() && other.is_function() => {
+                compare_functions(self, other, "compare")
+            }
             _ if self.is_set() && other.is_set() => {
                 if overridden(self).is_some() || overridden(other).is_some() {
                     return compare_overridden(self, other, "compare");
@@ -152,7 +154,7 @@ impl Value {
                 bail!("Attempted to check equality of {kind} {self} with non-{kind}:\n{other}")
             }
             _ if self.is_function() && other.is_function() => {
-                Ok(compare_functions(self, other)? == Ordering::Equal)
+                Ok(compare_functions(self, other, "check equality of")? == Ordering::Equal)
             }
             _ if self.is_set() && other.is_set() => set_equals(self, other),
             _ => bail!(
@@ -178,15 +180,23 @@ fn compare_elements(left: &[Value], right: &[Value]) -> Result<Ordering> {
 }
 
 /// Compares two functions: by domain size, then keys, then values.
-fn compare_functions(left: &Value, right: &Value) -> Result<Ordering> {
+fn compare_functions(left: &Value, right: &Value, verb: &str) -> Result<Ordering> {
     match (left, right) {
         (Value::Tuple(left), Value::Tuple(right)) => compare_elements(left, right),
-        (Value::LazyFunc(_), _) => compare_functions(&left.materialize()?, right),
-        (_, Value::LazyFunc(_)) => compare_functions(left, &right.materialize()?),
+        (Value::LazyFunc(_), _) => compare_functions(&left.materialize()?, right, verb),
+        (_, Value::LazyFunc(_)) => compare_functions(left, &right.materialize()?, verb),
         _ => {
             let (left_keys, left_values) = left.entries();
             let (right_keys, right_values) = right.entries();
-            if left_keys.len() != right_keys.len() {
+            // TLC compares a record only with another record.
+            let is_record = |keys: &[Value]| keys.iter().all(|key| matches!(key, Value::Str(_)));
+            let is_mismatch = !left_keys.is_empty()
+                && !right_keys.is_empty()
+                && is_record(&left_keys) != is_record(&right_keys);
+            if is_mismatch && is_record(&left_keys) {
+                bail!("Attempted to {verb} record:\n{left}\nwith non-record\n{right}");
+            }
+            if left_keys.len() != right_keys.len() && !is_mismatch {
                 return Ok(left_keys.len().cmp(&right_keys.len()));
             }
             for (left, right) in left_keys.iter().zip(right_keys.iter()) {
@@ -194,6 +204,9 @@ fn compare_functions(left: &Value, right: &Value) -> Result<Ordering> {
                 if ordering != Ordering::Equal {
                     return Ok(ordering);
                 }
+            }
+            if left_keys.len() != right_keys.len() {
+                return Ok(left_keys.len().cmp(&right_keys.len()));
             }
             compare_elements(&left_values, &right_values)
         }

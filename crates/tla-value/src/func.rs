@@ -147,6 +147,25 @@ impl Value {
         path: &[Key],
         update: &mut dyn FnMut(&Value) -> Result<Value>,
     ) -> Result<Value> {
+        self.except_with(path, update, false)
+    }
+
+    /// `[self EXCEPT !path = update(@)]` where the result is applied at once, as in
+    /// `[f EXCEPT ![1] = 2][1]`: TLC keeps a lazy function lazy then, whatever its domain.
+    pub fn except_kept_lazy(
+        &self,
+        path: &[Key],
+        update: &mut dyn FnMut(&Value) -> Result<Value>,
+    ) -> Result<Value> {
+        self.except_with(path, update, true)
+    }
+
+    fn except_with(
+        &self,
+        path: &[Key],
+        update: &mut dyn FnMut(&Value) -> Result<Value>,
+        is_kept_lazy: bool,
+    ) -> Result<Value> {
         let Some((first, rest)) = path.split_first() else { return update(self) };
         let key = match first {
             Key::Apply(arg) => arg.clone(),
@@ -181,7 +200,7 @@ impl Value {
                 Err(_) => Ok(self.clone()),
             },
             Value::LazyFunc(lazy) => {
-                if lazy.domain.is_enumerable() {
+                if !is_kept_lazy && lazy.domain.is_enumerable() {
                     return self.materialize()?.except(path, update);
                 }
                 if !lazy.domain.contains(&key)? {
@@ -192,7 +211,7 @@ impl Value {
                 Ok(Value::LazyFunc(Arc::new(LazyFunc {
                     domain: lazy.domain.clone(),
                     apply: Arc::new(move |arg| {
-                        if arg.equals(&key)? { Ok(updated.clone()) } else { previous(arg) }
+                        if key.equals(arg)? { Ok(updated.clone()) } else { previous(arg) }
                     }),
                 })))
             }

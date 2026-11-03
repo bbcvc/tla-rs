@@ -465,7 +465,19 @@ impl Value {
     /// `value \in self`.
     pub fn contains(&self, value: &Value) -> Result<bool> {
         match self {
-            Value::Set(elements) => Ok(search(elements, value)?.is_ok()),
+            // TLC tests membership in a set enumeration it hasn't normalized member by member,
+            // so a comparison that fails fails as the equality of a member with the value.
+            Value::Set(elements) => match search(elements, value) {
+                Ok(found) => Ok(found.is_ok()),
+                Err(error) => {
+                    for element in elements.iter() {
+                        if element.equals(value)? {
+                            return Ok(true);
+                        }
+                    }
+                    Err(error)
+                }
+            },
             Value::MixedSet(elements) => {
                 for element in elements.iter() {
                     if element.equals(value)? {
@@ -1038,5 +1050,21 @@ mod tests {
         );
         let enumerated = Value::set(vec![ints(&[3, 1]), ints(&[2])]).unwrap().union().unwrap();
         assert_eq!(format(&enumerated), "{1, 2, 3}");
+    }
+
+    /// tla-ts's EmptySetEq and Normalization cases: TLC compares a record only with a record,
+    /// and tests membership in a set enumeration member by member when a comparison fails.
+    #[test]
+    fn fails_where_tlc_compares_unlike_values() {
+        let record = Value::record(vec![(crate::Symbol::intern("n1"), Value::str("a"))]);
+        let pair = Value::tuple(vec![Value::str("a"), Value::str("a")]);
+        assert_eq!(
+            message(record.equals(&pair)),
+            "Attempted to check equality of record:\n[n1 |-> \"a\"]\nwith non-record\n<<\"a\", \"a\">>"
+        );
+        assert_eq!(
+            message(ints(&[1]).contains(&Value::str("a"))),
+            "Attempted to check equality of integer 1 with non-integer:\n\"a\""
+        );
     }
 }
