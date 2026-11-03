@@ -32,10 +32,28 @@ impl Value {
                         values: values.into(),
                         written: func.written.clone(),
                     }))),
-                    (keys, values) => {
-                        let keys = keys.unwrap_or_else(|| func.keys.to_vec());
+                    (Some(images), values) => {
                         let values = values.unwrap_or_else(|| func.values.to_vec());
-                        Some(Value::function(keys.into_iter().zip(values).collect())?)
+                        // A permutation that maps the domain onto itself keeps it: the value at
+                        // each key is that of the key it is the image of.
+                        let sources: Option<Vec<usize>> = func
+                            .keys
+                            .iter()
+                            .map(|key| images.iter().position(|image| is_same_model(image, key)))
+                            .collect();
+                        match sources {
+                            Some(sources) => Some(Value::Func(Arc::new(Func {
+                                keys: func.keys.clone(),
+                                values: sources
+                                    .into_iter()
+                                    .map(|source| values[source].clone())
+                                    .collect(),
+                                written: func.written.clone(),
+                            }))),
+                            None => {
+                                Some(Value::function(images.into_iter().zip(values).collect())?)
+                            }
+                        }
                     }
                 }
             }
@@ -166,6 +184,11 @@ fn permuted_sources(
     Ok(Some(sources))
 }
 
+/// Whether two values are the same model value.
+fn is_same_model(left: &Value, right: &Value) -> bool {
+    matches!((left, right), (Value::Model(left), Value::Model(right)) if left == right)
+}
+
 /// The permuted values, or `None` when the permutation leaves each as it is.
 fn permuted_all(
     values: &[Value],
@@ -220,6 +243,20 @@ mod tests {
         let expected =
             Value::function(vec![(b.clone(), Value::Int(1)), (c.clone(), a.clone())]).unwrap();
         assert!(function.permute(&swap).unwrap().equals(&expected).unwrap());
+        // A domain the permutation maps onto itself.
+        let closed = Value::function(vec![
+            (a.clone(), Value::Int(1)),
+            (b.clone(), Value::Int(2)),
+            (c.clone(), a.clone()),
+        ])
+        .unwrap();
+        let expected = Value::function(vec![
+            (b.clone(), Value::Int(1)),
+            (a.clone(), Value::Int(2)),
+            (c.clone(), b.clone()),
+        ])
+        .unwrap();
+        assert!(closed.permute(&swap).unwrap().equals(&expected).unwrap());
         let tuple = Value::tuple(vec![Value::Int(1), a.clone()]);
         assert_eq!(
             tuple.permute(&swap).unwrap().to_string(),
