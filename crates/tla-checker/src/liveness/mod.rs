@@ -10,3 +10,47 @@ pub mod lasso;
 pub mod live;
 pub mod tableau;
 pub mod template;
+
+#[cfg(test)]
+mod tests {
+    use crate::Status;
+    use crate::testing::{System, run};
+
+    const SPEC: &str = "Init == x = 0\nNext == x < 3 /\\ x' = x + 1\n\
+        Spec == Init /\\ [][Next]_x\nFair == Spec /\\ WF_x(Next)\n\
+        Reach == <>(x = 3)\nOften == []<>(x = 0)\nStays == <>[](x = 3)";
+
+    fn counter(x: i32) -> Vec<i32> {
+        if x < 3 { vec![x + 1] } else { Vec::new() }
+    }
+
+    fn check(config: &str) -> crate::Outcome {
+        let config = format!("{config}\nCHECK_DEADLOCK FALSE");
+        run(SPEC, &config, System { init: vec![0], next: counter })
+    }
+
+    // The outcomes tla-ts gives, as TLC.
+    #[test]
+    fn finds_behaviors_that_violate_temporal_properties() {
+        // Without fairness, the behavior may stop short of 3. The search finds it stuttering in
+        // 2, which TLC prints with the stuttering step.
+        let outcome = check("SPECIFICATION Spec\nPROPERTY Reach");
+        assert_eq!((outcome.status, outcome.trace_length), (Status::LivenessViolation, Some(4)));
+        // Weak fairness makes it count to 3, where it stays.
+        assert_eq!(check("SPECIFICATION Fair\nPROPERTY Reach").status, Status::Success);
+        assert_eq!(check("SPECIFICATION Fair\nPROPERTY Stays").status, Status::Success);
+        let outcome = check("SPECIFICATION Fair\nPROPERTY Often");
+        assert_eq!((outcome.status, outcome.trace_length), (Status::LivenessViolation, Some(5)));
+        // The counts are those of the search.
+        let outcome = check("SPECIFICATION Fair\nPROPERTY Reach Stays");
+        assert_eq!((outcome.generated, outcome.distinct), (Some(4), Some(4)));
+    }
+
+    #[test]
+    fn rejects_tautologies() {
+        let body = format!("{SPEC}\nTaut == <>(x = 1) \\/ TRUE");
+        let config = "SPECIFICATION Spec\nPROPERTY Taut\nCHECK_DEADLOCK FALSE";
+        let outcome = run(&body, config, System { init: vec![0], next: counter });
+        assert_eq!(outcome.status, Status::Error);
+    }
+}
