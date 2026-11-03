@@ -93,7 +93,7 @@ impl Evaluator {
         }
         let info = self.spec.def(def);
         if let Some(native) = self.natives[def.index()] {
-            return self.call_native(native, &info.params, args, expr, env);
+            return self.call_native(native, def, args, expr, env);
         }
         if args.len() != info.params.len() {
             return Err(self.arity_error(def, args.len(), env, expr));
@@ -119,15 +119,20 @@ impl Evaluator {
     fn call_native(
         &self,
         native: Native,
-        params: &[usize],
+        def: DefId,
         args: &[Expr],
         expr: &Expr,
         env: &mut Env<'_>,
     ) -> Result<Value> {
-        let args = params
+        let takes_expressions = self.takes_expressions[def.index()];
+        let args = self
+            .spec
+            .def(def)
+            .params
             .iter()
             .zip(args)
             .map(|(&arity, arg)| match (arity, &arg.kind) {
+                (0, _) if takes_expressions => Ok(Arg::Op(self.deferred(arg, env))),
                 (0, _) => Ok(Arg::Value(self.eval(arg, env)?)),
                 (_, ExprKind::OpArg(op)) => Ok(Arg::Op(self.operator(op, arg, env)?)),
                 _ => Err(self.error(env, arg, "Expected an operator as this argument")),
@@ -270,6 +275,18 @@ impl Evaluator {
             captured: env.capture(),
             value: OnceLock::new(),
         }))
+    }
+
+    /// An argument a native evaluates itself, if at all: an operator without parameters that
+    /// evaluates the expression where the call is.
+    fn deferred(&self, arg: &Expr, env: &Env<'_>) -> Operator {
+        let evaluator = self.clone();
+        // SAFETY: every expression this evaluator evaluates is part of its spec.
+        let arg = unsafe { SpecRef::new(&self.spec, arg) };
+        let captured = env.capture();
+        Operator::closure(move |_, _| {
+            evaluator.eval(arg.get(), &mut captured.env()).map_err(|error| Error(error.message))
+        })
     }
 
     /// The value of an argument a parameter holds, in the states of `env`.

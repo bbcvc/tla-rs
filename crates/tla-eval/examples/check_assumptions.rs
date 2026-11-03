@@ -4,7 +4,7 @@
 //!
 //! ```text
 //! cargo run --release -p tla-eval --example check_assumptions -- DIR [--library DIR]...
-//!     [--expected expected.json] [--timeout SECONDS] [--jobs N]
+//!     [--expected expected.json] [--timeout SECONDS] [--jobs N] [--outcomes FILE]
 //! ```
 //!
 //! A model TLC records as an `assumption-violation` should violate an assumption here, and a
@@ -20,10 +20,10 @@ use std::process::{Command, Stdio};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
-use tla_eval::{Evaluator, bind_model};
+use tla_eval::{CheckerOptions, Evaluator, bind_model};
 
 const USAGE: &str = "usage: check_assumptions DIR [--library DIR]... [--expected FILE] \
-                     [--timeout SECONDS] [--jobs N]";
+                     [--timeout SECONDS] [--jobs N] [--outcomes FILE]";
 
 enum Outcome {
     Satisfied,
@@ -99,6 +99,9 @@ fn check(spec_path: &Path, library: &HashMap<String, PathBuf>) -> Outcome {
     let has_postconditions = !config.postconditions.is_empty() || !config.possible.is_empty();
     let assumptions = spec.assumptions.clone();
     let evaluator = Evaluator::new(Arc::new(spec), model.constants).with_overrides(model.overrides);
+    // TLC creates its model checker, whose options TLCGet("config") reads, before it checks the
+    // assumptions. The options TLC takes from its command line keep their defaults.
+    evaluator.runtime().start(CheckerOptions::for_config(&config));
     for def in assumptions {
         match evaluator.eval_def(def, None) {
             Ok(value) if value.as_bool() == Some(true) => {}
@@ -178,12 +181,14 @@ fn main() {
     let mut library = HashMap::new();
     let mut library_args = Vec::new();
     let mut expected = None;
+    let mut outcomes_path = None;
     let mut timeout = Duration::from_secs(10);
     let mut jobs = std::thread::available_parallelism().map_or(4, |count| count.get());
     while let Some(flag) = args.next() {
         let value = args.next().expect(USAGE);
         match flag.as_str() {
             "--expected" => expected = Some(PathBuf::from(value)),
+            "--outcomes" => outcomes_path = Some(PathBuf::from(value)),
             "--timeout" => timeout = Duration::from_secs_f64(value.parse().expect(USAGE)),
             "--jobs" => jobs = value.parse().expect(USAGE),
             "--library" => {
@@ -244,6 +249,12 @@ fn main() {
         count(|outcome| matches!(outcome, Outcome::Timeout)),
         started.elapsed()
     );
+
+    if let Some(path) = outcomes_path {
+        let lines: String =
+            outcomes.iter().map(|(id, outcome)| format!("{id}\t{}\n", outcome.encode())).collect();
+        std::fs::write(path, lines).unwrap();
+    }
 
     let Some(expected) = expected else { return };
     let records: Vec<serde_json::Value> =
