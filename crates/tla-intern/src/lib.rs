@@ -71,7 +71,13 @@ pub fn set_order<'a>(texts: impl IntoIterator<Item = &'a str>) {
 
 /// The texts [`Symbol::as_str`] has resolved, by intern index, in chunks that double in size:
 /// chunk `c` holds the indexes from `FIRST_CHUNK * (2^c - 1)`.
-static TEXTS: [OnceLock<Box<[OnceLock<&'static str>]>>; 40] = [const { OnceLock::new() }; 40];
+static TEXTS: [OnceLock<Box<[OnceLock<Text>]>>; 40] = [const { OnceLock::new() }; 40];
+
+/// A text, and what [`Symbol::model_type`] tells of it.
+struct Text {
+    text: &'static str,
+    model_type: Option<char>,
+}
 
 const FIRST_CHUNK: usize = 1024;
 
@@ -117,6 +123,15 @@ impl Symbol {
     }
 
     pub fn as_str(self) -> &'static str {
+        self.text().text
+    }
+
+    /// The type TLC gives a model value of this name: `T` for a name of the form `T_rest`.
+    pub fn model_type(self) -> Option<char> {
+        self.text().model_type
+    }
+
+    fn text(self) -> &'static Text {
         // Resolving a symbol through the shared interner takes a lock, and a text never changes
         // once interned, so each text is resolved once into a table without locks.
         let index = self.0.into_usize();
@@ -124,7 +139,13 @@ impl Symbol {
         let start = FIRST_CHUNK * ((1 << chunk) - 1);
         let texts = TEXTS[chunk]
             .get_or_init(|| (0..FIRST_CHUNK << chunk).map(|_| OnceLock::new()).collect());
-        texts[index - start].get_or_init(|| interner().resolve(&self.0))
+        texts[index - start].get_or_init(|| {
+            let text = interner().resolve(&self.0);
+            let mut chars = text.chars();
+            let model_type =
+                chars.next().filter(|_| chars.next() == Some('_') && chars.next().is_some());
+            Text { text, model_type }
+        })
     }
 
     /// The number TLC's interner gives the text, from 1: its place in the order [`set_order`]
@@ -173,6 +194,15 @@ mod tests {
         assert_eq!(first, Symbol::intern("participant"));
         assert_eq!(first.as_str(), "participant");
         assert_ne!(first, Symbol::intern("coordinator"));
+    }
+
+    #[test]
+    fn tells_the_type_of_a_model_value_name() {
+        let model_type = |text: &str| Symbol::intern(text).model_type();
+        assert_eq!(model_type("T_a"), Some('T'));
+        assert_eq!(model_type("a"), None);
+        assert_eq!(model_type("T_"), None);
+        assert_eq!(model_type("ab_c"), None);
     }
 
     #[test]

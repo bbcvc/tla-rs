@@ -251,9 +251,7 @@ impl Value {
 
 /// The type letter of a model value named `T_rest`.
 pub(crate) fn model_type(name: Symbol) -> Option<char> {
-    let mut chars = name.as_str().chars();
-    let first = chars.next()?;
-    (chars.next() == Some('_') && chars.next().is_some()).then_some(first)
+    name.model_type()
 }
 
 impl fmt::Debug for Value {
