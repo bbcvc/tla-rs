@@ -29,7 +29,7 @@ impl Evaluator {
             }
             Builtin::Prime => self.prime(&args[0], expr, env),
             Builtin::Unchanged => self.unchanged(&args[0], expr, env).map(Value::Bool),
-            Builtin::Enabled => unsupported("ENABLED is not supported yet"),
+            Builtin::Enabled => self.is_enabled(&args[0], expr, env).map(Value::Bool),
             Builtin::Always | Builtin::Eventually => self.fail_at(env, expr, TEMPORAL_ERROR),
             Builtin::LeadsTo => {
                 unsupported("TLC cannot evaluate a temporal formula such as ~> in a state")

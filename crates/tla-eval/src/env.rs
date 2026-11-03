@@ -94,6 +94,9 @@ impl<'a> StateRef<'a> {
 pub(crate) enum OwnedState {
     Complete(State),
     Partial(Arc<[Option<Value>]>),
+    /// A state being assigned that a thunk doesn't keep, since it reads the state of the
+    /// expression that forces it.
+    Changing,
 }
 
 impl OwnedState {
@@ -101,6 +104,7 @@ impl OwnedState {
         match self {
             OwnedState::Complete(state) => StateRef::Complete(state),
             OwnedState::Partial(state) => StateRef::Partial(state),
+            OwnedState::Changing => StateRef::Partial(&[]),
         }
     }
 }
@@ -172,6 +176,22 @@ impl Env<'_> {
             module: self.module,
             state: self.state.map(StateRef::to_owned),
             next: self.next.map(StateRef::to_owned),
+            keep_lazy: self.keep_lazy,
+        }
+    }
+
+    /// What a thunk keeps: the frame and the complete states, which tell when its value can be
+    /// cached, but not a copy of a state being assigned.
+    pub fn capture_scope(&self) -> Captured {
+        let keep = |state: StateRef<'_>| match state {
+            StateRef::Complete(state) => OwnedState::Complete(state.clone()),
+            StateRef::Partial(_) => OwnedState::Changing,
+        };
+        Captured {
+            frame: self.frame.clone(),
+            module: self.module,
+            state: self.state.map(keep),
+            next: self.next.map(keep),
             keep_lazy: self.keep_lazy,
         }
     }

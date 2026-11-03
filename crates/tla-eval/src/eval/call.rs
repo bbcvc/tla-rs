@@ -265,7 +265,7 @@ impl Evaluator {
     }
 
     /// The frame a definition called with `scope` captures.
-    fn scope_frame(&self, scope: &Scope, env: &Env<'_>) -> Result<Option<Arc<Frame>>> {
+    pub(super) fn scope_frame(&self, scope: &Scope, env: &Env<'_>) -> Result<Option<Arc<Frame>>> {
         Ok(match scope {
             Scope::Global => None,
             Scope::Up(hops) => Some(env.frame.up(*hops).clone()),
@@ -280,7 +280,7 @@ impl Evaluator {
 
     /// What the parameter an argument is passed to holds: the operator it stands for, the value
     /// of a literal or of a slot already evaluated, or else a thunk.
-    fn arg_slot(&self, arg: &Expr, env: &Env<'_>) -> Result<Slot> {
+    pub(super) fn arg_slot(&self, arg: &Expr, env: &Env<'_>) -> Result<Slot> {
         Ok(match &arg.kind {
             ExprKind::OpArg(op) => Slot::Op(self.operator(op, arg, env)?),
             ExprKind::Bool(value) => Slot::Value(Value::Bool(*value)),
@@ -299,7 +299,7 @@ impl Evaluator {
         Slot::Thunk(Arc::new(Thunk {
             // SAFETY: every expression this evaluator evaluates is part of its spec.
             expr: unsafe { SpecRef::new(&self.spec, arg) },
-            captured: env.capture(),
+            captured: env.capture_scope(),
             value: OnceLock::new(),
         }))
     }

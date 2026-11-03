@@ -4,6 +4,7 @@
 //! and the current and next states. Errors are worded as TLC words them, following tla-ts, and
 //! located at the innermost expression that failed.
 
+mod action;
 mod analysis;
 mod bound;
 mod builtin;

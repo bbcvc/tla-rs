@@ -8,7 +8,7 @@ use tla_value::{Error, LazySet, Predicate, Value, bail};
 
 use super::builtin::is_overridden;
 use super::{At, TEMPORAL_ERROR};
-use crate::env::{Env, SpecRef};
+use crate::env::{Env, Frame, Slot, SpecRef};
 use crate::{Evaluator, Result};
 
 /// How a bound variable takes an element: into one slot, or destructured into a slot per
@@ -30,8 +30,17 @@ pub(super) fn binders(pattern: &Pattern) -> impl Iterator<Item = Binder<'_>> {
 
 /// Writes `value` into the slots of `binder`.
 pub(super) fn bind(binder: Binder<'_>, value: Value, env: &mut Env<'_>) -> tla_value::Result<()> {
+    bind_frame(binder, value, &mut env.frame)
+}
+
+/// Writes `value` into the slots of `binder` in `frame`.
+pub(super) fn bind_frame(
+    binder: Binder<'_>,
+    value: Value,
+    frame: &mut Arc<Frame>,
+) -> tla_value::Result<()> {
     match binder {
-        Binder::Slot(slot) => env.set(slot, value),
+        Binder::Slot(slot) => Arc::make_mut(frame).slots[slot] = Slot::Value(value),
         Binder::Tuple(slots) => {
             let Some(items) = tuple_items(&value).filter(|items| items.len() == slots.len()) else {
                 bail!(
@@ -39,8 +48,9 @@ pub(super) fn bind(binder: Binder<'_>, value: Value, env: &mut Env<'_>) -> tla_v
                     slots.len()
                 )
             };
+            let frame = Arc::make_mut(frame);
             for (&slot, item) in slots.iter().zip(items.iter()) {
-                env.set(slot, item.clone());
+                frame.slots[slot] = Slot::Value(item.clone());
             }
         }
     }
@@ -68,7 +78,7 @@ pub(super) enum Elements {
 }
 
 impl Elements {
-    fn len(&self) -> usize {
+    pub fn len(&self) -> usize {
         match self {
             Elements::Interval(low, high) => {
                 (i64::from(*high) - i64::from(*low) + 1).max(0) as usize

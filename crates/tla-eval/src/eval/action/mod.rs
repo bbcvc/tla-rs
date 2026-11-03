@@ -1,0 +1,461 @@
+//! Successor generation: the states an initial predicate or an action allows, enumerated as TLC's
+//! `getInitStates` and `getNextStates` enumerate them, ported from tla-ts's `successors.ts`.
+//!
+//! The walk follows the structure of the predicate. A conjunction walks its conjuncts left to
+//! right, a disjunction or `\E` walks each branch in turn, and `x' = e`, `x' \in S`, and
+//! `UNCHANGED x` assign a variable the first time the walk meets it and test it after. Any other
+//! conjunct is a guard. What remains to walk after a conjunct is a continuation, [`Rest`], so a
+//! branch assigns variables in place and undoes them when it returns, instead of copying the
+//! state for each branch.
+
+mod assign;
+mod run;
+
+use std::sync::Arc;
+
+use tla_ast::Quantifier;
+use tla_resolve::{Builtin, DefBody, DefId, Expr, ExprKind, ModuleId, Scope};
+use tla_value::{Symbol, Value};
+
+pub(crate) use self::run::Computation;
+use self::run::{Run, env};
+use super::bound::{Variable, bind_frame};
+use super::describe;
+use crate::env::{Frame, Slot};
+use crate::native::OperatorKind;
+use crate::{ConstBinding, EvalError, Evaluator, Result};
+
+/// Where an action expression is: the frame it reads its parameters and bound variables from,
+/// and the module whose text holds it.
+#[derive(Clone)]
+pub(super) struct Site {
+    pub frame: Arc<Frame>,
+    pub module: ModuleId,
+}
+
+/// The action TLC names a successor after: the last definition the walk called outside a
+/// conjunction. A conjunct keeps the name of the conjunction.
+#[derive(Clone, Copy, Default)]
+pub(super) struct Action {
+    pub name: Option<Symbol>,
+    is_fixed: bool,
+}
+
+impl Action {
+    fn called(self, name: Symbol) -> Self {
+        if self.is_fixed { self } else { Self { name: Some(name), is_fixed: false } }
+    }
+
+    fn fixed(self) -> Self {
+        Self { is_fixed: true, ..self }
+    }
+}
+
+/// What the walk does once the predicate it walks holds: the continuation of a conjunct.
+pub(super) enum Rest<'a> {
+    /// The state is complete: report it.
+    Done,
+    /// Walk `conjuncts` in `site`, then `rest`.
+    Conjuncts { conjuncts: &'a [Expr], site: &'a Site, rest: &'a Rest<'a> },
+    /// Walk the bodies of the zero-arity definitions `defs`, each in its own frame, then `rest`.
+    Defs { defs: &'a [DefId], rest: &'a Rest<'a> },
+    /// Walk `body` in each of `sites`, as `\A` does in an action, then `rest`.
+    Each { body: &'a Expr, sites: &'a [Site], is_first: bool, rest: &'a Rest<'a> },
+    /// Continue with `rest` only if `sub` changed, as `<<A>>_sub` requires after `A`.
+    Changed { sub: &'a Expr, site: &'a Site, rest: &'a Rest<'a> },
+    /// Keep the variables of the parts `items` of the subscript of an `UNCHANGED`, then `rest`.
+    Kept { items: &'a [Expr], site: &'a Site, rest: &'a Rest<'a> },
+}
+
+impl Evaluator {
+    /// Continues the walk with `rest`.
+    fn resume(&self, run: &mut Run<'_>, action: Action, rest: &Rest<'_>) -> Result<()> {
+        if run.is_stopped {
+            return Ok(());
+        }
+        match *rest {
+            Rest::Done => self.complete(run, action),
+            Rest::Conjuncts { conjuncts, site, rest } => {
+                let Some((first, others)) = conjuncts.split_first() else {
+                    return self.resume(run, action, rest);
+                };
+                // Once every variable has a value, TLC evaluates the conjuncts left as
+                // predicates, so a disjunction among them yields one state rather than one for
+                // each disjunct that holds.
+                if run.is_complete() && run.computation != Computation::Enabled {
+                    for conjunct in conjuncts {
+                        if !self.holds(conjunct, site, run, false)? {
+                            return Ok(());
+                        }
+                    }
+                    return self.resume(run, action, rest);
+                }
+                let rest = Rest::Conjuncts { conjuncts: others, site, rest };
+                self.act(first, site, run, action.fixed(), &rest)
+            }
+            Rest::Defs { defs, rest } => match defs.split_first() {
+                None => self.resume(run, action, rest),
+                Some((&first, others)) => {
+                    self.enter_definition(first, run, action, &Rest::Defs { defs: others, rest })
+                }
+            },
+            Rest::Each { body, sites, is_first, rest } => {
+                let Some((first, others)) = sites.split_first() else {
+                    return self.resume(run, action, rest);
+                };
+                if !is_first && run.computation == Computation::Init && run.is_complete() {
+                    for site in sites {
+                        if !self.holds(body, site, run, true)? {
+                            return Ok(());
+                        }
+                    }
+                    return self.resume(run, action, rest);
+                }
+                let rest = Rest::Each { body, sites: others, is_first: false, rest };
+                self.act(body, first, run, action.fixed(), &rest)
+            }
+            Rest::Kept { items, site, rest } => match items.split_first() {
+                None => self.resume(run, action, rest),
+                Some((first, others)) => self.keep(
+                    first,
+                    site,
+                    run,
+                    action,
+                    &Rest::Kept { items: others, site, rest },
+                    0,
+                ),
+            },
+            Rest::Changed { sub, site, rest } => {
+                let mut env = env(site, run);
+                if self.unchanged(sub, sub, &mut env)? {
+                    return Ok(());
+                }
+                self.resume(run, action, rest)
+            }
+        }
+    }
+
+    /// Walks the predicate `expr` of `site`, continuing with `rest` for each way it holds.
+    fn act(
+        &self,
+        expr: &Expr,
+        site: &Site,
+        run: &mut Run<'_>,
+        action: Action,
+        rest: &Rest<'_>,
+    ) -> Result<()> {
+        if run.is_stopped {
+            return Ok(());
+        }
+        match &expr.kind {
+            ExprKind::And(items) | ExprKind::Builtin { op: Builtin::And, args: items } => {
+                match items.split_first() {
+                    None => self.resume(run, action, rest),
+                    Some((first, others)) => {
+                        let rest = Rest::Conjuncts { conjuncts: others, site, rest };
+                        self.act(first, site, run, action.fixed(), &rest)
+                    }
+                }
+            }
+            ExprKind::Or(items) | ExprKind::Builtin { op: Builtin::Or, args: items } => {
+                for item in items {
+                    self.act(item, site, run, action, rest)?;
+                    if run.is_stopped {
+                        break;
+                    }
+                }
+                Ok(())
+            }
+            ExprKind::If { cond, then, otherwise } => {
+                let branch = match self.evaluate_in(cond, site, run)? {
+                    Value::Bool(true) => then,
+                    Value::Bool(false) => otherwise,
+                    value => return Err(self.if_error(expr, &value, site, run)),
+                };
+                self.act(branch, site, run, action, rest)
+            }
+            ExprKind::Case { arms, other } => {
+                for (guard, body) in arms {
+                    match self.evaluate_in(guard, site, run)? {
+                        Value::Bool(true) => return self.act(body, site, run, action, rest),
+                        Value::Bool(false) => {}
+                        value => {
+                            let env = env(site, run);
+                            let space =
+                                if run.computation == Computation::Enabled { "" } else { " " };
+                            let message = format!(
+                                "In computing {}, a non-boolean expression{space}({}) was used as a guard condition of a CASE.\n{}",
+                                run.computation.name(),
+                                describe(&value),
+                                self.node(&env, body)
+                            );
+                            return Err(self.error(&env, guard, message));
+                        }
+                    }
+                }
+                match other {
+                    Some(other) => self.act(other, site, run, action, rest),
+                    None => {
+                        let env = env(site, run);
+                        let message = format!(
+                            "In computing {}, TLC encountered a CASE with no conditions true.\n{}",
+                            run.computation.name(),
+                            self.range(&env, expr)
+                        );
+                        Err(self.error(&env, expr, message))
+                    }
+                }
+            }
+            ExprKind::Quant { quantifier: Quantifier::Exists, bounds, body } => {
+                let variables = self.variables(bounds, &mut env(site, run))?;
+                self.for_each_site(&variables, site, run, |evaluator, run, bound| {
+                    evaluator.act(body, bound, run, action, rest)
+                })
+            }
+            ExprKind::Quant { quantifier: Quantifier::Forall, bounds, body } => {
+                let variables = self.variables(bounds, &mut env(site, run))?;
+                let mut sites = Vec::new();
+                self.for_each_site(&variables, site, run, |_, _, bound| {
+                    sites.push(bound.clone());
+                    Ok(())
+                })?;
+                // TLC walks the first binding, then the others from the last.
+                if sites.len() > 1 {
+                    sites[1..].reverse();
+                }
+                self.resume(run, action, &Rest::Each { body, sites: &sites, is_first: true, rest })
+            }
+            ExprKind::Builtin {
+                op: op @ (Builtin::Eq | Builtin::In | Builtin::SubsetEq),
+                args,
+            } => match self.target(&args[0], site, run)? {
+                Some(var) => self.assign(var, *op, &args[1], expr, site, run, action, rest),
+                None => self.guard(expr, site, run, action, rest),
+            },
+            ExprKind::Builtin { op: Builtin::Unchanged, args } => {
+                self.unchanged_action(&args[0], expr, site, run, action, rest)
+            }
+            ExprKind::Builtin { op: Builtin::Implies, args } => {
+                match self.evaluate_in(&args[0], site, run)? {
+                    Value::Bool(false) => self.resume(run, action, rest),
+                    Value::Bool(true) => self.act(&args[1], site, run, action, rest),
+                    value => {
+                        let env = env(site, run);
+                        let message = format!(
+                            "Expected the left side of => at {} to be a boolean but found {value}",
+                            self.location(&env, &args[0])
+                        );
+                        Err(self.error(&env, &args[0], message))
+                    }
+                }
+            }
+            ExprKind::BoxAction { action: inner, sub } => {
+                self.act(inner, site, run, action, rest)?;
+                if run.is_stopped {
+                    return Ok(());
+                }
+                self.unchanged_action(sub, expr, site, run, action, rest)
+            }
+            ExprKind::AngleAction { action: inner, sub } => {
+                self.act(inner, site, run, action, &Rest::Changed { sub, site, rest })
+            }
+            ExprKind::Call { def, scope, args } => {
+                self.act_call(*def, scope, args, expr, site, run, action, rest)
+            }
+            ExprKind::CallConst { id, args } => match self.constants.get(id.index()) {
+                Some(ConstBinding::Def(def)) => {
+                    self.act_call(*def, &Scope::Global, args, expr, site, run, action, rest)
+                }
+                _ => self.guard(expr, site, run, action, rest),
+            },
+            ExprKind::CallParam { param, args } => {
+                let operator = match &site.frame.up(param.hops).slots[param.slot] {
+                    Slot::Op(op) => op.clone(),
+                    _ => return self.guard(expr, site, run, action, rest),
+                };
+                match &operator.0 {
+                    OperatorKind::Def { def, parent } if self.is_walked(*def) => {
+                        let callee = self.callee(*def, parent.clone(), args, site, run)?;
+                        let DefBody::Expr(body) = &self.spec.def(*def).body else { unreachable!() };
+                        let name = self.spec.def(*def).name;
+                        self.act(body, &callee, run, action.called(name), rest)
+                    }
+                    _ => self.guard(expr, site, run, action, rest),
+                }
+            }
+            ExprKind::Local(local) => {
+                // An argument that is an action, as `A` in `Op(A) == A /\ ...`, is walked where
+                // the call wrote it.
+                let thunk = match &site.frame.up(local.hops).slots[local.slot] {
+                    Slot::Thunk(thunk) if Arc::ptr_eq(thunk.expr.spec(), &self.spec) => {
+                        thunk.clone()
+                    }
+                    _ => return self.guard(expr, site, run, action, rest),
+                };
+                let origin =
+                    Site { frame: thunk.captured.frame.clone(), module: thunk.captured.module };
+                self.act(thunk.expr.get(), &origin, run, action, rest)
+            }
+            _ => self.guard(expr, site, run, action, rest),
+        }
+    }
+
+    /// Whether the walk enters the body of `def` rather than evaluate a call of it: a
+    /// definition of the spec, which no native or configuration replaces.
+    fn is_walked(&self, def: DefId) -> bool {
+        self.natives[def.index()].is_none()
+            && self.overrides[def.index()].is_none()
+            && self.tlc_eval != Some(def)
+            && matches!(self.spec.def(def).body, DefBody::Expr(_))
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn act_call(
+        &self,
+        def: DefId,
+        scope: &Scope,
+        args: &[Expr],
+        expr: &Expr,
+        site: &Site,
+        run: &mut Run<'_>,
+        action: Action,
+        rest: &Rest<'_>,
+    ) -> Result<()> {
+        let info = self.spec.def(def);
+        if !self.is_walked(def) || args.len() != info.params.len() {
+            return self.guard(expr, site, run, action, rest);
+        }
+        let parent = self.scope_frame(scope, &env(site, run))?;
+        let callee = self.callee(def, parent, args, site, run)?;
+        let DefBody::Expr(body) = &info.body else { unreachable!("a walked definition") };
+        self.act(body, &callee, run, action.called(info.name), rest)
+    }
+
+    /// The site of the body of `def` called with `args` of `site`, in a frame whose parent is
+    /// `parent`.
+    fn callee(
+        &self,
+        def: DefId,
+        parent: Option<Arc<Frame>>,
+        args: &[Expr],
+        site: &Site,
+        run: &Run<'_>,
+    ) -> Result<Site> {
+        let info = self.spec.def(def);
+        let env = env(site, run);
+        let slots = args.iter().map(|arg| self.arg_slot(arg, &env)).collect::<Result<Vec<_>>>()?;
+        Ok(Site {
+            frame: Arc::new(Frame::new(slots, info.frame_size, parent)),
+            module: info.module,
+        })
+    }
+
+    /// Binds the variables to each combination of their elements in a copy of the frame of
+    /// `site`, the first variable varying fastest, and visits each.
+    fn for_each_site(
+        &self,
+        variables: &[Variable<'_>],
+        site: &Site,
+        run: &mut Run<'_>,
+        mut visit: impl FnMut(&Self, &mut Run<'_>, &Site) -> Result<()>,
+    ) -> Result<()> {
+        if variables.iter().any(|variable| variable.elements.len() == 0) {
+            return Ok(());
+        }
+        let mut bound = site.clone();
+        let bind = |bound: &mut Site, variable: &Variable<'_>, index: usize| {
+            bind_frame(variable.binder, variable.elements.get(index), &mut bound.frame)
+                .map_err(|error| EvalError::at(&self.spec, site.module, variable.set.span, error.0))
+        };
+        let mut indexes = vec![0; variables.len()];
+        for variable in variables.iter().rev() {
+            bind(&mut bound, variable, 0)?;
+        }
+        loop {
+            if run.is_stopped {
+                return Ok(());
+            }
+            visit(self, run, &bound)?;
+            let mut position = 0;
+            loop {
+                let Some(variable) = variables.get(position) else { return Ok(()) };
+                indexes[position] += 1;
+                if indexes[position] < variable.elements.len() {
+                    bind(&mut bound, variable, indexes[position])?;
+                    break;
+                }
+                indexes[position] = 0;
+                bind(&mut bound, variable, 0)?;
+                position += 1;
+            }
+        }
+    }
+
+    /// Continues with `rest` if the guard `expr` holds.
+    fn guard(
+        &self,
+        expr: &Expr,
+        site: &Site,
+        run: &mut Run<'_>,
+        action: Action,
+        rest: &Rest<'_>,
+    ) -> Result<()> {
+        if self.holds(expr, site, run, true)? { self.resume(run, action, rest) } else { Ok(()) }
+    }
+
+    /// Whether `expr` holds. `is_walked` tells a conjunct the walk reached from one it evaluates
+    /// because every variable already has a value, which TLC words differently when it isn't a
+    /// boolean.
+    fn holds(&self, expr: &Expr, site: &Site, run: &Run<'_>, is_walked: bool) -> Result<bool> {
+        let mut env = env(site, run);
+        match self.eval(expr, &mut env)? {
+            Value::Bool(value) => Ok(value),
+            value => {
+                let node = self.node(&env, expr);
+                let is_literal = matches!(expr.kind, ExprKind::Int(_) | ExprKind::Str(_));
+                let message = match run.computation {
+                    Computation::Enabled if is_walked && is_literal => {
+                        format!("Attempted to compute ENABLED on a non-boolean expression.\n{node}")
+                    }
+                    computation if is_walked && is_literal => {
+                        let relation =
+                            if computation == Computation::Init { "init" } else { "next" };
+                        format!(
+                            "The {relation} state relation is not a boolean expression.\n{node}"
+                        )
+                    }
+                    computation => format!(
+                        "In computing {}, TLC expected a boolean expression,\nbut instead found {value}.\n{node}",
+                        computation.name()
+                    ),
+                };
+                Err(self.error(&env, expr, message))
+            }
+        }
+    }
+
+    fn evaluate_in(&self, expr: &Expr, site: &Site, run: &Run<'_>) -> Result<Value> {
+        self.eval(expr, &mut env(site, run))
+    }
+
+    fn if_error(&self, expr: &Expr, value: &Value, site: &Site, run: &Run<'_>) -> EvalError {
+        let env = env(site, run);
+        let (kind, range) = (describe(value), self.range(&env, expr));
+        let message = match run.computation {
+            Computation::Enabled => format!(
+                "In computing ENABLED, a non-boolean expression({kind}) was used as the guard condition of an IF.\n{range}"
+            ),
+            computation => {
+                let separator = if computation == Computation::Init { "\n" } else { "" };
+                format!(
+                    "In computing {}, a non-boolean expression ({kind}) was used as the condition of an IF.{separator}{range}",
+                    computation.name()
+                )
+            }
+        };
+        self.error(&env, expr, message)
+    }
+}
+
+#[cfg(test)]
+mod tests;

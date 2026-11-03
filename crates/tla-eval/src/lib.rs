@@ -19,7 +19,7 @@ pub use config::{Model, OperatorTable, bind_model, config_value};
 pub use native::{Arg, Ctx, Native, Operator};
 pub use runtime::{CheckerOptions, Registers, Runtime, Statistics};
 use tla_ast::{Span, Symbol};
-use tla_resolve::{DefId, ModuleId, Spec};
+use tla_resolve::{DefId, ModuleId, Spec, VarId};
 pub use tla_value::{self as value, Value};
 
 /// An evaluation error at a place in a module.
@@ -31,6 +31,20 @@ pub struct EvalError {
     pub span: Span,
     pub line: usize,
     pub column: usize,
+    /// The state, when an initial predicate or an action leaves variables of it unassigned,
+    /// which TLC reports with the partial state.
+    pub incomplete: Option<Box<Incomplete>>,
+}
+
+/// A state an initial predicate or an action leaves with variables unassigned.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Incomplete {
+    /// The action that assigned the next state, as TLC names it, or `None` for an initial state.
+    pub action: Option<Symbol>,
+    /// The variables left unassigned.
+    pub missing: Vec<VarId>,
+    /// The value of each variable as TLC prints it, or `None` where it is unassigned.
+    pub state: Vec<Option<String>>,
 }
 
 impl EvalError {
@@ -42,7 +56,7 @@ impl EvalError {
     ) -> Self {
         let info = &spec.modules[module.index()];
         let (line, column) = span.line_column(&info.source);
-        Self { message: message.into(), module: info.name, span, line, column }
+        Self { message: message.into(), module: info.name, span, line, column, incomplete: None }
     }
 }
 
@@ -171,5 +185,27 @@ impl Evaluator {
     /// the step from `state` to `next`, which primed expressions read.
     pub fn eval_action(&self, def: DefId, state: &State, next: &State) -> Result<Value> {
         self.eval_zero_arity(def, Some(state), Some(next))
+    }
+
+    /// Each state satisfying the conjunction of the zero-arity definitions `init`, in TLC's
+    /// order, repeats included. `found` returns `Ok(false)` to stop the enumeration.
+    pub fn init_states(
+        &self,
+        init: &[DefId],
+        found: &mut dyn FnMut(State) -> Result<bool>,
+    ) -> Result<()> {
+        self.enumerate_init(init, found)
+    }
+
+    /// Each successor of `state` under the zero-arity action definition `next`, in TLC's order,
+    /// repeats included, as TLC counts them in "states generated". `found` returns `Ok(false)` to
+    /// stop the enumeration.
+    pub fn next_states(
+        &self,
+        next: DefId,
+        state: &State,
+        found: &mut dyn FnMut(State) -> Result<bool>,
+    ) -> Result<()> {
+        self.enumerate_next(next, state, found)
     }
 }
