@@ -221,7 +221,9 @@ fn compare_functions(left: &Value, right: &Value, verb: &str) -> Result<Ordering
                     "Attempted to {verb} record:\n{left}\nwith non-record\n{right}"
                 );
             }
-            if left_keys.len() != right_keys.len() && !is_mismatch {
+            // Any other function compares its size first, as TLC's FcnRcdValue does, so a tuple
+            // differs from a record of another size without comparing their keys.
+            if left_keys.len() != right_keys.len() {
                 return Ok(left_keys.len().cmp(&right_keys.len()));
             }
             for (left, right) in left_keys.iter().zip(right_keys.iter()) {
@@ -229,9 +231,6 @@ fn compare_functions(left: &Value, right: &Value, verb: &str) -> Result<Ordering
                 if ordering != Ordering::Equal {
                     return Ok(ordering);
                 }
-            }
-            if left_keys.len() != right_keys.len() {
-                return Ok(left_keys.len().cmp(&right_keys.len()));
             }
             compare_elements(&left_values, &right_values)
         }
