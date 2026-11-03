@@ -46,3 +46,16 @@ fn orders_model_values_as_the_configuration_writes_them() {
         ["{p2, p1}", "p2"]
     );
 }
+
+/// TLC's fingerprint of a model value includes its place in TLC's intern order, which seeds the
+/// random choices TLC makes in each state.
+#[test]
+fn fingerprints_model_values_by_their_intern_number() {
+    let _order = ORDER.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+    let body = "EXTENDS TLCExt\nCONSTANT Procs\nFP1 == TLCFP(CHOOSE p \\in Procs : TRUE)\nFP2 == TLCFP(<<Procs>>)";
+    // The values tla-ts's getTlcFingerprint gives under the same order.
+    assert_eq!(
+        evaluate_in_tlc_order(body, "CONSTANT Procs = {p2, p1}", &["FP1", "FP2"]),
+        ["-887695703", "1692085849"]
+    );
+}

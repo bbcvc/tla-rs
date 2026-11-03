@@ -114,8 +114,17 @@ impl Symbol {
         interner().resolve(&self.0)
     }
 
-    /// The symbol's place in the order [`set_order`] last gave, from 0, if it has one. TLC's
-    /// fingerprint of a model value counts from 1 in this order.
+    /// The number TLC's interner gives the text, from 1: its place in the order [`set_order`]
+    /// last gave, or after those for a text not in it, in the order this process interned it.
+    /// TLC's fingerprint of a model value includes it.
+    pub fn tlc_number(self) -> u32 {
+        match ranks() {
+            Some(ranks) => ranks.key(self),
+            None => self.0.into_usize() as u32 + 1,
+        }
+    }
+
+    /// The symbol's place in the order [`set_order`] last gave, from 0, if it has one.
     pub fn rank(self) -> Option<u32> {
         let ranks = ranks()?;
         let key = ranks.key(self);
