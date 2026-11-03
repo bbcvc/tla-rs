@@ -3,7 +3,7 @@
 //! from each state to the one it was found from, for traces. It counts the states generated,
 //! repeats and initial states included, and the distinct states, as TLC does.
 //!
-//! Like TLC, it keeps no state once it has expanded it ([`store`]), and rebuilds the behavior to
+//! Like TLC, it keeps no state once it has expanded it (`store`), and rebuilds the behavior to
 //! a violation from the initial states by the fingerprints along it.
 
 mod live;

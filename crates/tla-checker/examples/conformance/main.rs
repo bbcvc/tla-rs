@@ -17,10 +17,8 @@
 //!
 //! The comparison follows `compareOutcome`: an error matches an error, and otherwise the status
 //! must agree, then the violated invariant or property, the states generated, the distinct
-//! states, the depth, and the length of the trace, where TLC's record has them. Liveness isn't
-//! checked yet, so a model whose safety part holds where TLC found a liveness violation is
-//! unsupported, and one TLC checked successfully is compared on its counts, which liveness
-//! checking doesn't change.
+//! states, the depth, and the length of the trace, where TLC's record has them. A model TLC
+//! stopped on with an error after its time limit has no verdict to compare with.
 
 use std::collections::{BTreeMap, HashMap};
 use std::io::Read;
@@ -78,6 +76,7 @@ fn check(spec_path: &Path, config_path: &Path, library: &HashMap<String, PathBuf
     tla_checker::check(spec, &config, &options, |evaluator| evaluator.clone())
 }
 
+/// Checks one model in this process, on a thread with a large stack.
 fn check_one(spec_path: PathBuf, config_path: PathBuf, library: HashMap<String, PathBuf>) {
     std::panic::set_hook(Box::new(|_| {}));
     let outcome = std::thread::Builder::new()

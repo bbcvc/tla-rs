@@ -4,8 +4,8 @@
 //! as TLC's `SpecProcessor` does ([`plan`]), checks the assumptions, explores the states breadth
 //! first ([`search`]), and reports what TLC would: success with the states generated, the
 //! distinct states, and the depth of the search, or the violation and the behavior that leads to
-//! it. Liveness isn't checked yet: a model's temporal properties are left out, and its safety
-//! part is checked.
+//! it. It checks the temporal properties as TLC does with `-lncheck final`, once the search is
+//! done.
 
 mod fingerprint;
 mod level;
@@ -112,8 +112,6 @@ pub struct Outcome {
     pub depth: Option<u64>,
     /// The error, or what the model uses that isn't supported.
     pub message: Option<String>,
-    /// Whether the model has temporal properties the checker left out.
-    pub has_liveness: bool,
 }
 
 impl Outcome {
@@ -126,7 +124,6 @@ impl Outcome {
             distinct: None,
             depth: None,
             message: None,
-            has_liveness: false,
         }
     }
 

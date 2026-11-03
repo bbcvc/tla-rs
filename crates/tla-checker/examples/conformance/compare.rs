@@ -12,7 +12,6 @@ pub struct Reported {
     pub distinct: Option<u64>,
     pub depth: Option<u64>,
     pub message: Option<String>,
-    pub has_liveness: bool,
 }
 
 /// The text `Reported::encode` escaped.
@@ -43,7 +42,6 @@ impl Reported {
             distinct: outcome.distinct,
             depth: outcome.depth,
             message: outcome.message.clone(),
-            has_liveness: outcome.has_liveness,
         }
     }
 
@@ -59,14 +57,13 @@ impl Reported {
             number(self.distinct),
             number(self.depth),
             self.message.as_deref().map(escape).unwrap_or_default(),
-            if self.has_liveness { "liveness".into() } else { String::new() },
         ]
         .join("\t")
     }
 
     pub fn decode(line: &str) -> Option<Self> {
         let fields: Vec<&str> = line.split('\t').collect();
-        if fields.len() != 8 {
+        if fields.len() != 7 {
             return None;
         }
         let unescape = |text: &str| (!text.is_empty()).then(|| unescape(text));
@@ -79,12 +76,10 @@ impl Reported {
             distinct: number(fields[4]),
             depth: number(fields[5]),
             message: unescape(fields[6]),
-            has_liveness: fields[7] == "liveness",
         })
     }
 }
 
-/// Checks one model in this process, on a thread with a large stack.
 /// tla-ts's record of TLC's result for a model.
 pub struct Expected {
     pub status: String,
@@ -146,21 +141,10 @@ impl Verdict {
     }
 }
 
-/// tla-ts's `compareOutcome`, with liveness left out: what differs, if anything.
+/// tla-ts's `compareOutcome`: what differs, if anything.
 pub fn compare(expected: &Expected, actual: &Reported) -> (Verdict, Option<String>) {
     if actual.status == Status::Unsupported.name() {
         return (Verdict::Unsupported, actual.message.clone());
-    }
-    // TLC's liveness checker reports a violated temporal property as either, and fails on a
-    // temporal property it can't evaluate. TLC checks the temporal properties before the
-    // postconditions.
-    let is_liveness_left_out = ["liveness-violation", "property-violation", "error"]
-        .contains(&expected.status.as_str())
-        && [Status::Success.name(), Status::PostconditionViolation.name()]
-            .contains(&actual.status.as_str())
-        && actual.has_liveness;
-    if is_liveness_left_out {
-        return (Verdict::Unsupported, Some("liveness checking".into()));
     }
     if expected.status == "error" {
         return match actual.status.as_str() {
@@ -217,7 +201,6 @@ mod tests {
             distinct: None,
             depth: None,
             message: None,
-            has_liveness: false,
         }
     }
 
@@ -231,7 +214,6 @@ mod tests {
             violation: Some("Inv".into()),
             trace_length: Some(3),
             message: Some("a\tb\nc \\n".into()),
-            has_liveness: true,
             ..reported(Status::InvariantViolation)
         };
         let line = outcome.encode();
@@ -239,7 +221,7 @@ mod tests {
         let decoded = Reported::decode(&line).unwrap();
         assert_eq!(decoded.encode(), line);
         assert_eq!(decoded.message.as_deref(), Some("a\tb\nc \\n"));
-        assert!(decoded.has_liveness && decoded.generated.is_none());
+        assert!(decoded.generated.is_none());
     }
 
     #[test]
@@ -263,13 +245,12 @@ mod tests {
             Reported { trace_length: Some(0), ..reported(Status::PostconditionViolation) };
         let record = serde_json::json!({ "status": "assumption-violation", "traceLength": 0 });
         assert_eq!(compare(&expected(record), &postcondition).0, Verdict::Match);
-        // What liveness checking would find is left out.
         let record = serde_json::json!({ "status": "liveness-violation", "traceLength": 2 });
+        let live = Reported { trace_length: Some(2), ..reported(Status::LivenessViolation) };
         assert_eq!(compare(&expected(record.clone()), &success).0, Verdict::Mismatch);
-        let live = Reported { has_liveness: true, ..success };
-        assert_eq!(compare(&expected(record), &live).0, Verdict::Unsupported);
+        assert_eq!(compare(&expected(record), &live).0, Verdict::Match);
         let record = serde_json::json!({ "status": "error" });
-        assert_eq!(compare(&expected(record.clone()), &live).0, Verdict::Unsupported);
+        assert_eq!(compare(&expected(record.clone()), &success).0, Verdict::Mismatch);
         assert_eq!(compare(&expected(record), &reported(Status::Error)).0, Verdict::Match);
     }
 
