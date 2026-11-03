@@ -17,10 +17,13 @@ use tla_resolve::{DefId, Expr, ExprKind, Local, ModuleId, VarId};
 use tla_value::{LazySet, Symbol, Value};
 
 pub use self::action::NextAction;
-pub(crate) use self::analysis::{normalizing_evaluations, recursive_functions, tlc_eval};
+pub(crate) use self::analysis::{
+    InstanceEnabled, instance_enabled, normalizing_evaluations, recursive_constructions,
+    recursive_functions, tlc_eval,
+};
 use self::builtin::describe;
 pub(crate) use self::constants::constant_definitions;
-use crate::env::{Env, Slot, StateRef};
+use crate::env::{Enabled, Env, Slot, StateRef};
 use crate::{EvalError, Evaluator, Result, State};
 
 /// Converts the error of a value operation into an [`EvalError`] at the expression that failed.
@@ -35,6 +38,21 @@ impl<T> At<T> for tla_value::Result<T> {
 }
 
 const TEMPORAL_ERROR: &str = "TLC cannot evaluate a temporal formula in a state";
+
+/// What TLC reports for a Java StackOverflowError, which a recursion too deep for its stack
+/// raises, such as an incorrect recursive definition.
+pub(crate) const STACK_OVERFLOW: &str = "This was a Java StackOverflowError. It was probably the result\nof an incorrect recursive function definition that caused TLC to enter\nan infinite loop when trying to compute the function or its application\nto an element in its putative domain.";
+
+/// The stack an evaluating thread keeps when it cuts off a recursion, enough to fail with
+/// [`STACK_OVERFLOW`] instead of overflowing.
+const STACK_RESERVE: usize = 256 * 1024;
+
+/// Whether the thread is close enough to the end of its stack that the evaluation stops, as TLC
+/// stops at a StackOverflowError. Every unbounded recursion goes through a call of a definition,
+/// the application of a lazy function, or the reading of an argument, which check it.
+pub(crate) fn is_stack_low() -> bool {
+    stacker::remaining_stack().is_some_and(|remaining| remaining < STACK_RESERVE)
+}
 
 impl Evaluator {
     /// Evaluates a module-level definition without parameters with some slots of its frame set.
@@ -64,7 +82,7 @@ impl Evaluator {
             slots,
             state.map(StateRef::Complete),
             next.map(StateRef::Complete),
-            false,
+            Default::default(),
         )
     }
 
@@ -144,7 +162,11 @@ impl Evaluator {
             ExprKind::Record(fields) => self.record(fields, env),
             ExprKind::RecordSet(fields) => self.record_set(fields, env),
             ExprKind::FuncSet { domain, range } => self.function_set(domain, range, env),
-            ExprKind::Function { bounds, body } => self.function(bounds, body, expr, env, false),
+            ExprKind::Function { bounds, body } => {
+                let is_lazy =
+                    self.recursive_constructions.contains(&(expr as *const Expr as usize));
+                self.function(bounds, body, expr, env, is_lazy)
+            }
             ExprKind::FuncApp { func, args } => self.apply(func, args, expr, env),
             ExprKind::Dot { record, field } => self.dot(record, *field, expr, env),
             ExprKind::Except { base, updates } => self.except(base, updates, expr, env),
@@ -278,10 +300,24 @@ impl Evaluator {
     }
 
     fn var(&self, id: VarId, expr: &Expr, env: &Env<'_>) -> Result<Value> {
-        match env.state.and_then(|state| state.get(id.index())) {
+        let mut index = id.index();
+        let mut is_instance = false;
+        // A primed variable of an instantiated module in the operand of its ENABLED.
+        if env.enabled == Enabled::Primed
+            && let Some(&slot) =
+                self.instance_enabled.variables.get(&(expr as *const Expr as usize))
+        {
+            (index, is_instance) = (slot, true);
+        }
+        match env.state.and_then(|state| state.get(index)) {
             Some(value) => Ok(value.clone()),
             None => {
-                let name = self.spec.variables[id.index()].name;
+                // tla-ts names the module's variable apart from the spec's.
+                let source = &self.spec.modules[env.module.index()].source;
+                let name = match source.get(expr.span.start as usize..expr.span.end as usize) {
+                    Some(text) if is_instance => format!("{text}@ENABLED"),
+                    _ => self.spec.variables[id.index()].name.to_string(),
+                };
                 Err(self.error(
                     env,
                     expr,
@@ -403,10 +439,13 @@ impl Evaluator {
             );
             return Err(self.error(env, expr, message));
         };
-        let state = env.state;
+        let (state, enabled) = (env.state, env.enabled);
         (env.state, env.next) = (Some(next), None);
+        if enabled == Enabled::Inside {
+            env.enabled = Enabled::Primed;
+        }
         let value = self.eval(operand, env);
-        (env.state, env.next) = (state, Some(next));
+        (env.state, env.next, env.enabled) = (state, Some(next), enabled);
         value
     }
 

@@ -353,6 +353,19 @@ fn branches_until_every_variable_has_a_value() {
 }
 
 #[test]
+fn walks_an_assigned_action_on_with_warnings_off() {
+    let actions = evaluator(ACTIONS);
+    actions.runtime().set_warnings(false);
+    let current = state(vec![Value::Int(0), Value::Int(0)]);
+    assert_eq!(next_states(&actions, "Settled", &current).unwrap(), ["1, 2", "1, 2"]);
+    // TLC's getInitStates takes the shortcut regardless.
+    let init = "---- MODULE M ----\nVARIABLE x\nInit == x = 0 /\\ (TRUE \\/ TRUE)\n====\n";
+    let init = evaluator(init);
+    init.runtime().set_warnings(false);
+    assert_eq!(init_states(&init, "Init").unwrap(), ["0"]);
+}
+
+#[test]
 fn enumerates_choices_in_tlc_order() {
     assert_eq!(successors("Ordered", 0, 0), ["1, 0", "2, 0", "3, 0"]);
     assert_eq!(successors("Members", 0, 0), ["1, 6", "1, 7", "3, 6", "3, 7"]);
@@ -783,4 +796,123 @@ fn walks_a_definition_substituted_in_an_instantiated_module() {
     assert_eq!(next_states(&plain, "Next", &current).unwrap(), ["2, 1", "1, 2", "2, 1", "2, 101"]);
     let scoped = configured(source, &[("Inner", inner)], "CONSTANTS Step <- [Inner] Fast");
     assert_eq!(next_states(&scoped, "Next", &current).unwrap(), ["101, 101"]);
+}
+
+#[test]
+fn computes_enabled_in_an_initial_state_once_assigned() {
+    let source = "---- MODULE M ----\nEXTENDS Naturals\nVARIABLE x\nInit == x \\in {0, 1} /\\ ENABLED (x < 1 /\\ x' = x + 1)\nEarly == ENABLED (x' = 1) /\\ x = 0\n====\n";
+    let evaluator = evaluator(source);
+    assert_eq!(init_states(&evaluator, "Init").unwrap(), ["0"]);
+    let error = init_states(&evaluator, "Early").unwrap_err();
+    assert_eq!(error.message, "ENABLED needs a complete state at line 5, column 10");
+}
+
+#[test]
+fn reads_the_level_after_the_current_state_in_the_state_being_assigned() {
+    let source = "---- MODULE M ----\nEXTENDS TLC\nVARIABLES x, y\nNext == x' = TLCGet(\"level\") /\\ y' = TLCGet(\"level\")'\n====\n";
+    let evaluator = evaluator(source);
+    let current = state(vec![Value::Int(0), Value::Int(0)]);
+    let expanded = current.clone();
+    evaluator.runtime().on_level(move |state| if Arc::ptr_eq(state, &expanded) { 3 } else { 4 });
+    assert_eq!(next_states(&evaluator, "Next", &current).unwrap(), ["3, 4"]);
+}
+
+#[test]
+fn applies_operators_of_actions_passed_as_arguments() {
+    let source = r#"---- MODULE M ----
+EXTENDS Naturals
+VARIABLES x, y
+Keep(Foo(_)) == Foo(y)
+Primed(Foo(_)) == Foo(x) = x + 1
+Enabled(Foo(_)) == Foo(x' = x + 1)
+Next == x' = x + 1 /\ Keep(UNCHANGED)
+Step == x' = x + 1 /\ y' = y /\ Primed(') /\ Enabled(ENABLED)
+====
+"#;
+    let evaluator = evaluator(source);
+    let current = state(vec![Value::Int(1), Value::Int(5)]);
+    assert_eq!(next_states(&evaluator, "Next", &current).unwrap(), ["2, 5"]);
+    assert_eq!(next_states(&evaluator, "Step", &current).unwrap(), ["2, 5"]);
+}
+
+#[test]
+fn fails_as_tlc_does_on_a_recursion_too_deep_for_the_stack() {
+    let source = r#"---- MODULE M ----
+EXTENDS Naturals
+VARIABLE x
+RECURSIVE R(_), A(_)
+R(n) == R(n + 1)
+A(n) == A(n + 1)
+f[n \in Nat] == f[n + 1]
+g[n \in Nat] == [m \in {n} |-> g[n + 1][n + 1]]
+Value == x' = R(0)
+Function == x' = f[0]
+Constructed == x' = g[0][0]
+Walked == A(0)
+====
+"#;
+    let evaluator = evaluator(source);
+    let current = state(vec![Value::Int(0)]);
+    for name in ["Value", "Function", "Constructed", "Walked"] {
+        let error = next_states(&evaluator, name, &current).unwrap_err();
+        assert!(
+            error.message.starts_with("This was a Java StackOverflowError."),
+            "{name}: {error}"
+        );
+    }
+}
+
+#[test]
+fn builds_lazily_a_function_that_applies_the_recursive_function_around_it() {
+    let source = r#"---- MODULE M ----
+EXTENDS Naturals
+VARIABLE x
+f[i \in 0..5] == [j \in 0..5 |->
+                    IF j = 0
+                      THEN [k \in 0..i |-> IF k = 0 THEN i ELSE f[i][1] + 1]
+                      ELSE IF i = 0 THEN j ELSE f[i-1][j] + 1]
+Next == x' = <<f[4][3], f[4][0][2], DOMAIN f[5][0]>>
+====
+"#;
+    let evaluator = evaluator(source);
+    let current = state(vec![Value::Int(0)]);
+    assert_eq!(next_states(&evaluator, "Next", &current).unwrap(), ["<<7, 6, 0..5>>"]);
+}
+
+#[test]
+fn takes_the_primed_variables_of_an_instance_apart_in_its_enabled() {
+    let inner = r#"---- MODULE Inner ----
+EXTENDS Naturals
+VARIABLES u, v
+A == (u' = u) /\ (v' = v + 1)
+B(d) == ENABLED d
+C == B(A)
+D == ENABLED A
+F == ENABLED (u' = 0 /\ v' = 1)
+G == ENABLED (u # v /\ u' = 0 /\ v' = 1)
+H == ENABLED <<u' = u + 1>>_<<u, v>>
+K == ENABLED (UNCHANGED u /\ v' = v + 1)
+L == ENABLED (u' = 1 /\ v' = 2 /\ <<u, v>>' = <<1, 2>>)
+====
+"#;
+    let source = r#"---- MODULE M ----
+VARIABLE x
+I == INSTANCE Inner WITH u <- x, v <- x
+Values == <<I!B(I!A), I!C, I!D, I!F, I!G, I!K, I!L, ENABLED I!A>>
+Unassigned == I!H
+====
+"#;
+    let spec =
+        tla_resolve::resolve(source, &mut |name: &str| (name == "Inner").then(|| inner.to_owned()))
+            .unwrap();
+    let evaluator = Evaluator::new(Arc::new(spec), Vec::new());
+    let current = state(vec![Value::Int(1)]);
+    // As tla-ts finds: inside the module, u and v are primed apart, while an action passed in,
+    // or one of the module's under an ENABLED of the root module, primes x for both.
+    let value = evaluator.eval_def(def(&evaluator, "Values"), Some(&current)).unwrap();
+    assert_eq!(value.to_string(), "<<FALSE, FALSE, TRUE, TRUE, FALSE, TRUE, TRUE, FALSE>>");
+    let error = evaluator.eval_def(def(&evaluator, "Unassigned"), Some(&current)).unwrap_err();
+    assert!(
+        error.message.starts_with("In evaluation, the identifier v@ENABLED is either undefined")
+    );
 }

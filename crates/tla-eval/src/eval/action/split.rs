@@ -15,7 +15,7 @@ use tla_value::{Symbol, Value};
 
 use super::run::{Computation, Run};
 use super::{Action, Rest, Site};
-use crate::env::{Env, Frame, Slot, SpecRef};
+use crate::env::{Enabled, Env, Frame, Slot, SpecRef};
 use crate::eval::analysis::is_constant;
 use crate::{Evaluator, Result, State};
 
@@ -105,6 +105,7 @@ impl Evaluator {
         let site = Site {
             frame: Arc::new(Frame::new(Vec::new(), info.frame_size, None)),
             module: info.module,
+            enabled: Enabled::Outside,
         };
         let DefBody::Expr(body) = &info.body else { unreachable!("a walked definition") };
         let mut actions = Vec::new();
@@ -203,6 +204,7 @@ impl Evaluator {
         let callee = Site {
             frame: Arc::new(Frame::new(slots, info.frame_size, parent)),
             module: info.module,
+            enabled: site.enabled,
         };
         let closure = Closure { name: info.name, params: info.params.len() };
         self.split(body, &callee, &closure, next, actions);
@@ -277,5 +279,6 @@ fn constant_env(site: &Site) -> Env<'static> {
         state: None,
         next: None,
         keep_lazy: false,
+        enabled: Enabled::Outside,
     }
 }

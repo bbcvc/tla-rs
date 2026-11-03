@@ -7,7 +7,7 @@ use tla_resolve::{DefBody, DefId, Expr, VarId};
 use tla_value::{Symbol, Value};
 
 use super::{Action, Rest, Site};
-use crate::env::{Env, Frame, StateRef, Version};
+use crate::env::{Enabled, Env, Frame, StateRef, Version};
 use crate::{EvalError, Evaluator, Incomplete, Result, State};
 
 /// What TLC computes when it walks a predicate.
@@ -42,6 +42,9 @@ pub(crate) struct Run<'r> {
     /// The number of versions made so far.
     versions: u64,
     pub is_stopped: bool,
+    /// Whether, once every variable has a value, the conjuncts left are evaluated rather than
+    /// walked, as TLC's `getInitStates` does, and its `getNextStates` with warnings on.
+    pub is_shortcut: bool,
     /// The definition being enumerated, where an incomplete state is reported.
     def: DefId,
     found: Option<&'r mut dyn FnMut(State) -> Result<bool>>,
@@ -55,7 +58,11 @@ impl<'r> Run<'r> {
         def: DefId,
         found: Option<&'r mut dyn FnMut(State) -> Result<bool>>,
     ) -> Self {
-        let variables = evaluator.spec.variables.len();
+        // ENABLED in an instantiated module may bind its variables apart from the spec's.
+        let variables = match computation {
+            Computation::Enabled => evaluator.instance_enabled.slots,
+            _ => evaluator.spec.variables.len(),
+        };
         Self {
             computation,
             current,
@@ -64,6 +71,11 @@ impl<'r> Run<'r> {
             version: Version::first(),
             versions: 0,
             is_stopped: false,
+            is_shortcut: match computation {
+                Computation::Init => true,
+                Computation::Next => evaluator.runtime.warnings(),
+                Computation::Enabled => false,
+            },
             def,
             found,
         }
@@ -108,7 +120,14 @@ impl<'r> Run<'r> {
 /// Builds an [`Env`] for an expression of `site` that reads the states of `run`.
 pub(super) fn env<'a>(site: &Site, run: &'a Run<'_>) -> Env<'a> {
     let (state, next) = run.views();
-    Env { frame: site.frame.clone(), module: site.module, state, next, keep_lazy: false }
+    Env {
+        frame: site.frame.clone(),
+        module: site.module,
+        state,
+        next,
+        keep_lazy: false,
+        enabled: site.enabled,
+    }
 }
 
 impl Evaluator {
@@ -140,13 +159,31 @@ impl Evaluator {
     /// `ENABLED action`: whether the action, evaluated where `env` is, has a successor of the
     /// state `env` reads. TLC stops at the first successor, and doesn't require it complete.
     pub(crate) fn is_enabled(&self, action: &Expr, expr: &Expr, env: &Env<'_>) -> Result<bool> {
-        let Some(state) = env.state.and_then(StateRef::complete) else {
-            let message = format!("ENABLED needs a complete state at {}", self.location(env, expr));
-            return Err(self.error(env, expr, message));
+        // A state being assigned will do once every variable has a value, as where an initial
+        // predicate conjoins ENABLED after its assignments.
+        let assigned: State;
+        let state = match env.state {
+            Some(StateRef::Complete(state)) => state,
+            Some(StateRef::Partial(values, _)) if values.iter().all(Option::is_some) => {
+                assigned = values.iter().map(|value| value.clone().expect("assigned")).collect();
+                &assigned
+            }
+            _ => {
+                let message =
+                    format!("ENABLED needs a complete state at {}", self.location(env, expr));
+                return Err(self.error(env, expr, message));
+            }
         };
         let def = DefId(0);
         let mut run = Run::new(self, Computation::Enabled, Some(state), def, None);
-        let site = Site { frame: env.frame.clone(), module: env.module };
+        // In an instantiated module, TLC takes the module's primed variables in the operand for
+        // variables of their own.
+        let is_instance = self.instance_enabled.enabled.contains(&(expr as *const Expr as usize));
+        let enabled = match env.enabled {
+            Enabled::Outside if !is_instance => Enabled::Outside,
+            _ => Enabled::Inside,
+        };
+        let site = Site { frame: env.frame.clone(), module: env.module, enabled };
         self.act(action, &site, &mut run, Action::default(), &Rest::Done)?;
         Ok(run.is_stopped)
     }
@@ -169,6 +206,7 @@ impl Evaluator {
             let site = Site {
                 frame: Arc::new(Frame::new(Vec::new(), info.frame_size, None)),
                 module: info.module,
+                enabled: Enabled::Outside,
             };
             let DefBody::Expr(body) = &info.body else { unreachable!("a walked definition") };
             return self.act(body, &site, run, action.called(info.name), rest);
