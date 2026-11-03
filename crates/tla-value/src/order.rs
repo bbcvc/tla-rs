@@ -1,7 +1,7 @@
 //! TLC's ordering and equality, ported from tla-ts `compareValues` and `valuesEqual`.
 //!
 //! The order sorts sets and function domains, and so decides what `CHOOSE` returns: model
-//! values first, then integers by value, strings by when they were first interned, `FALSE`
+//! values first, then integers by value, strings by when TLC first interns them (see [`crate::set_order`]), `FALSE`
 //! before `TRUE`, sets by size and then element by element, and functions by domain size, then
 //! keys, then values. Values of kinds TLC can't compare, such as an integer and a string, are an
 //! error rather than an order.

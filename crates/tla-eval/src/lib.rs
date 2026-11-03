@@ -13,7 +13,7 @@ mod runtime;
 mod stdlib;
 
 use std::collections::{HashMap, HashSet};
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, OnceLock};
 
 pub use config::{Model, OperatorTable, bind_model, config_value};
 pub use eval::NextAction;
@@ -95,6 +95,10 @@ pub struct Evaluator {
     pub(crate) runtime: Arc<Runtime>,
     /// Whether each definition is a function definition that refers to itself, by [`DefId`].
     pub(crate) is_recursive: Arc<[bool]>,
+    /// Whether each definition is a constant TLC computes once, by [`DefId`], and its value once
+    /// computed.
+    pub(crate) is_constant_definition: Arc<[bool]>,
+    pub(crate) constant_values: Arc<[OnceLock<Value>]>,
     /// TLC's `TLCEval`, and the applications of it whose argument TLC normalizes, by address.
     pub(crate) tlc_eval: Option<DefId>,
     pub(crate) normalizing_evaluations: Arc<HashSet<usize>>,
@@ -126,6 +130,8 @@ impl Evaluator {
             .collect();
         let overrides = vec![None; spec.defs.len()].into();
         let is_recursive = eval::recursive_functions(&spec).into();
+        let is_constant_definition = eval::constant_definitions(&spec).into();
+        let constant_values = (0..spec.defs.len()).map(|_| OnceLock::new()).collect();
         let tlc_eval = eval::tlc_eval(&spec);
         let normalizing_evaluations = Arc::new(
             tlc_eval.map(|def| eval::normalizing_evaluations(&spec, def)).unwrap_or_default(),
@@ -138,6 +144,8 @@ impl Evaluator {
             overrides,
             runtime: Arc::default(),
             is_recursive,
+            is_constant_definition,
+            constant_values,
             tlc_eval,
             normalizing_evaluations,
             next_actions: Arc::default(),

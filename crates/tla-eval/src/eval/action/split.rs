@@ -180,7 +180,7 @@ impl Evaluator {
             actions.push(call(values.unwrap_or_default()));
             return;
         }
-        if !are_constant || self.is_constant_definition(def) {
+        if !are_constant || self.is_constant_value(def) {
             actions.push(call(Vec::new()));
             return;
         }
@@ -209,15 +209,12 @@ impl Evaluator {
     }
 
     /// Whether `def` is a definition TLC computes as a constant when it starts, which it
-    /// doesn't split.
-    fn is_constant_definition(&self, def: DefId) -> bool {
-        let info = self.spec.def(def);
-        info.depth == 0
-            && info.params.is_empty()
-            && matches!(&info.body, DefBody::Expr(body)
-                if !matches!(body.kind, ExprKind::Int(_) | ExprKind::Str(_)))
-            && self.spec.level(def) == tla_resolve::Level::Constant
-            && self.call_def(def, None, Vec::new(), None, None).is_ok()
+    /// doesn't split: tla-ts's `isConstantValue`.
+    fn is_constant_value(&self, def: DefId) -> bool {
+        matches!(&self.spec.def(def).body, DefBody::Expr(body)
+            if !matches!(body.kind, ExprKind::Int(_) | ExprKind::Str(_)))
+            && self.is_computed_once(def)
+            && self.constant_value(def).is_ok()
     }
 
     /// The action `expr` of `site` in `closure`, named after the closure.

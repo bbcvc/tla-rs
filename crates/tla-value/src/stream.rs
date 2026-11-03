@@ -4,14 +4,13 @@
 //! order of its parts.
 //!
 //! TLC caches a set's elements as the receiver of `compareTo`, `equals`, `size`, and
-//! `fingerPrint`, and keeps the cache with the object for as long as it lives. A value here is
-//! cached when the same allocation went through one of those, so a set built anew at each
-//! evaluation starts out uncached, and one kept between evaluations, such as the value of a
-//! constant definition or a variable, stays cached once cached.
+//! `fingerPrint`, and keeps the cache with the object for as long as it lives. A lazy set here
+//! carries the mark with its allocation, so a set built anew at each evaluation starts out
+//! uncached, and one kept between evaluations, such as the value of a constant definition or a
+//! variable, stays cached once cached.
 
-use std::collections::BTreeMap;
+use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Arc, Mutex, PoisonError, Weak};
 
 use crate::set::{is_overridden, is_tlc_enumerable, union_set, union_sets};
 use crate::{LazySet, Result, Value};
@@ -19,18 +18,6 @@ use crate::{LazySet, Result, Value};
 /// Whether a lazy `\cup`, `\cap`, `\`, or `UNION` has been built. Without one, every set streams
 /// its elements in TLC's order, so tracking what TLC caches can wait for the first.
 static IS_STREAMED: AtomicBool = AtomicBool::new(false);
-
-/// The lazy sets TLC has cached the elements of, by address. Each entry holds a weak reference,
-/// which keeps the allocation, and so the address, from being reused while the entry lasts.
-static CACHED: Mutex<Cached> = Mutex::new(Cached { sets: BTreeMap::new(), limit: MINIMUM_LIMIT });
-
-struct Cached {
-    sets: BTreeMap<usize, Weak<LazySet>>,
-    /// The size past which the table drops the sets no longer alive.
-    limit: usize,
-}
-
-const MINIMUM_LIMIT: usize = 64;
 
 /// Notes a set that can stream apart from its elements in TLC's order.
 pub(crate) fn note_lazy(set: &LazySet) {
@@ -56,10 +43,6 @@ fn is_streaming(set: &LazySet) -> bool {
     )
 }
 
-fn cached() -> std::sync::MutexGuard<'static, Cached> {
-    CACHED.lock().unwrap_or_else(PoisonError::into_inner)
-}
-
 impl Value {
     /// Records that TLC has cached this set's elements, as it does when it compares the set
     /// with another as the receiver, sizes it, or fingerprints it.
@@ -67,15 +50,10 @@ impl Value {
         if !IS_STREAMED.load(Ordering::Relaxed) {
             return;
         }
-        let Value::Lazy(set) = self else { return };
-        if !is_streaming(set) {
-            return;
-        }
-        let mut cached = cached();
-        cached.sets.entry(Arc::as_ptr(set) as usize).or_insert_with(|| Arc::downgrade(set));
-        if cached.sets.len() > cached.limit {
-            cached.sets.retain(|_, set| set.strong_count() > 0);
-            cached.limit = (cached.sets.len() * 2).max(MINIMUM_LIMIT);
+        if let Value::Lazy(set) = self
+            && is_streaming(set)
+        {
+            set.cache();
         }
     }
 
@@ -84,8 +62,7 @@ impl Value {
         if !IS_STREAMED.load(Ordering::Relaxed) {
             return false;
         }
-        let Value::Lazy(set) = self else { return false };
-        is_streaming(set) && cached().sets.contains_key(&(Arc::as_ptr(set) as usize))
+        matches!(self, Value::Lazy(set) if set.is_cached())
     }
 
     /// The elements TLC's `Enumerator` yields for `x' \in self`: those of the sets a lazy set
