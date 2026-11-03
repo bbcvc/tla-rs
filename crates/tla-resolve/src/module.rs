@@ -12,6 +12,8 @@ use crate::ir::{
     Builtin, ConstId, Declaration, Def, DefBody, DefId, Expr, ExprKind, Local, ModuleId,
     ModuleInfo, OpRef, Scope, VarId,
 };
+use crate::levels::join;
+use crate::levels::layout::{DefLayout, FrameLayout, Instantiation, Substituted, SubstitutedValue};
 use crate::{ResolveError, Resolver, Result, stdlib};
 
 /// What a name at module level stands for.
@@ -127,6 +129,7 @@ pub(crate) struct Substitution {
 pub(crate) struct Parameter {
     pub name: Symbol,
     pub arity: usize,
+    pub is_variable: bool,
 }
 
 pub(crate) struct ParsedModule {
@@ -289,12 +292,17 @@ impl Resolver<'_> {
         }
         for unit in &module.ast.units {
             let declared: Vec<Parameter> = match unit {
-                Unit::Variables(names) => {
-                    names.iter().map(|name| Parameter { name: name.symbol, arity: 0 }).collect()
-                }
+                Unit::Variables(names) => names
+                    .iter()
+                    .map(|name| Parameter { name: name.symbol, arity: 0, is_variable: true })
+                    .collect(),
                 Unit::Constants(decls) => decls
                     .iter()
-                    .map(|decl| Parameter { name: decl.name.symbol, arity: decl.arity })
+                    .map(|decl| Parameter {
+                        name: decl.name.symbol,
+                        arity: decl.arity,
+                        is_variable: false,
+                    })
                     .collect(),
                 _ => continue,
             };
@@ -313,9 +321,11 @@ impl Resolver<'_> {
         }
         let frames = std::mem::take(&mut self.frames);
         let visible_from = std::mem::replace(&mut self.visible_from, 0);
+        let is_instantiating = std::mem::replace(&mut self.is_instantiating, false);
         let context = self.elaborate(module, None, 0);
         self.frames = frames;
         self.visible_from = visible_from;
+        self.is_instantiating = is_instantiating;
         let context = context?;
         self.plain.insert(module.id, context.clone());
         Ok(context)
@@ -348,7 +358,13 @@ impl Resolver<'_> {
         }
         self.in_progress.push(module.id);
         let visible_from = std::mem::replace(&mut self.visible_from, self.frames.len());
+        let is_instantiating = self.is_instantiating;
+        self.is_instantiating |= substitution.is_some();
+        if self.is_instantiating {
+            self.instantiated.insert(module.id);
+        }
         let result = self.elaborate_units(module, substitution, depth);
+        self.is_instantiating = is_instantiating;
         self.visible_from = visible_from;
         self.in_progress.pop();
         result.map(Rc::new)
@@ -491,7 +507,7 @@ impl Resolver<'_> {
                 self.function(elab, def, definition)?;
             }
             Unit::Instance(instance) => {
-                let context = self.instantiate(elab, instance)?;
+                let context = self.instantiate(elab, instance, instance.span)?;
                 for (name, entry) in &context.names {
                     let is_exported =
                         matches!(entry.kind, SymbolKind::Operator | SymbolKind::Module);
@@ -554,10 +570,10 @@ impl Resolver<'_> {
     ) -> Result<DefId> {
         let name = name.unwrap_or(Name { symbol: Symbol::intern("ASSUME"), span: expr.span });
         let def = self.new_def(elab.module, name, Vec::new(), elab.depth);
-        self.frames.push(FrameScope::default());
+        self.push_frame(Vec::new());
         let body = self.expr(elab, expr);
         let frame = self.frames.pop().unwrap();
-        self.finish_def(def, DefBody::Expr(body?), frame.slots);
+        self.finish_def(def, DefBody::Expr(body?), frame);
         Ok(def)
     }
 
@@ -594,16 +610,36 @@ impl Resolver<'_> {
             frame_size: 0,
             depth,
         });
+        self.layout.defs.push(DefLayout {
+            qualifier: self.qualifier.clone(),
+            is_instantiated: self.is_instantiating,
+            ..DefLayout::default()
+        });
         let id = DefId(self.spec.defs.len() as u32 - 1);
         self.pending.insert(id);
         id
     }
 
-    pub(crate) fn finish_def(&mut self, def: DefId, body: DefBody, frame_size: usize) {
+    /// Gives `def` its body, and the frame that holds its parameters and bound variables.
+    pub(crate) fn finish_def(&mut self, def: DefId, body: DefBody, frame: FrameScope) {
         let def_mut = &mut self.spec.defs[def.index()];
         def_mut.body = body;
-        def_mut.frame_size = frame_size;
+        def_mut.frame_size = frame.slots;
+        self.layout.frames[frame.id].params = def_mut.params.clone();
+        let layout = &mut self.layout.defs[def.index()];
+        layout.frame = Some(frame.id);
+        layout.lets = frame.lets;
+        layout.let_bodies = frame.let_bodies;
         self.pending.remove(&def);
+    }
+
+    /// Starts a frame inside the current one. `params` are the arities of the parameters of a
+    /// parameterized instance whose frame it is.
+    pub(crate) fn push_frame(&mut self, params: Vec<usize>) {
+        let id = self.layout.frames.len();
+        let parent = self.frames.last().map(|frame| frame.id);
+        self.layout.frames.push(FrameLayout { parent, params });
+        self.frames.push(FrameScope { id, ..FrameScope::default() });
     }
 
     pub(crate) fn declare_recursive(
@@ -612,16 +648,32 @@ impl Resolver<'_> {
         decl: &OpDecl,
         depth: usize,
     ) -> DefId {
+        let section = self.pending_section(module).unwrap_or_else(|| {
+            self.sections += 1;
+            self.sections
+        });
         let def = self.new_def(module, decl.name, vec![0; decl.arity], depth);
         self.recursive.insert((module, decl.name.symbol, depth), def);
+        let layout = &mut self.layout.defs[def.index()];
+        layout.is_recursive = true;
+        layout.section = Some(section);
         def
     }
 
+    /// The `RECURSIVE` section of `module` whose operators aren't all defined yet. SANY checks
+    /// the definitions made until they are with them.
+    pub(crate) fn pending_section(&self, module: ModuleId) -> Option<usize> {
+        let mut pending = self.recursive.iter().filter(|((pending, ..), _)| *pending == module);
+        pending.next().and_then(|(_, def)| self.layout.defs[def.index()].section)
+    }
+
     /// Instantiates the module an `INSTANCE` names, with its definitions at the current depth.
+    /// `span` is the whole `INSTANCE`, or `I == INSTANCE ...`.
     pub(crate) fn instantiate(
         &mut self,
         elab: &Elab,
         instance: &tla_ast::Instance,
+        span: Span,
     ) -> Result<Rc<Context>> {
         let target = self.load(instance.module, elab.module)?;
         let parameters = self.parameters(&target)?;
@@ -669,6 +721,27 @@ impl Resolver<'_> {
         if parameters.is_empty() {
             return self.shared(&target);
         }
+        let substitutions = parameters
+            .iter()
+            .map(|parameter| Substituted {
+                name: parameter.name,
+                is_variable: parameter.is_variable,
+                arity: parameter.arity,
+                value: match &substitution[&parameter.name] {
+                    Binding::Inline(expr) => SubstitutedValue::Inline((**expr).clone()),
+                    Binding::Def(def) => SubstitutedValue::Def(*def),
+                    _ => unreachable!("a substitution is a definition or an inlined value"),
+                },
+            })
+            .collect();
+        self.layout.instantiations.push(Instantiation {
+            module: target.id,
+            instancer: elab.module,
+            span,
+            substitutions,
+            is_instantiated: self.is_instantiating,
+            order: self.spec.defs.len(),
+        });
         self.substitutions += 1;
         let substitution = Substitution { id: self.substitutions, names: substitution };
         self.elaborate(&target, Some(Rc::new(substitution)), depth)
@@ -684,7 +757,7 @@ impl Resolver<'_> {
         value: &tla_ast::Expr,
         depth: usize,
     ) -> Result<Binding> {
-        self.frames.push(FrameScope::default());
+        self.push_frame(Vec::new());
         let resolved = if arity == 0 {
             self.expr(elab, value)
         } else {
@@ -718,7 +791,8 @@ impl Resolver<'_> {
             _ => {}
         }
         let def = self.new_def(elab.module, name, vec![0; arity], depth);
-        self.finish_def(def, DefBody::Expr(resolved), frame.slots);
+        self.layout.defs[def.index()].is_substitution = true;
+        self.finish_def(def, DefBody::Expr(resolved), frame);
         Ok(Binding::Def(def))
     }
 
@@ -730,12 +804,17 @@ impl Resolver<'_> {
         let depth = self.frames.len();
         let has_params = !definition.params.is_empty();
         if has_params {
-            self.frames.push(Default::default());
+            self.push_frame(definition.params.iter().map(|param| param.arity).collect());
             for param in &definition.params {
                 self.bind_slot(elab, param.name, param.arity)?;
             }
         }
-        let context = self.instantiate(elab, &definition.instance);
+        let outer = self.qualifier.clone();
+        let qualifier = format!("{}{}!", outer.as_deref().unwrap_or(""), definition.name.symbol);
+        self.qualifier = Some(qualifier.into());
+        let span = join(definition.name.span, definition.instance.span);
+        let context = self.instantiate(elab, &definition.instance, span);
+        self.qualifier = outer;
         if has_params {
             self.frames.pop();
         }

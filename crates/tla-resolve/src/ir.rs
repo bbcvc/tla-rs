@@ -48,6 +48,8 @@ pub struct Spec {
     pub assumptions: Vec<DefId>,
     /// The names visible at the top level of the root module, which the configuration refers to.
     pub root: HashMap<Symbol, RootName>,
+    /// The levels of each definition, by [`DefId`], as SANY computes them.
+    pub levels: Vec<DefLevels>,
 }
 
 impl Spec {
@@ -57,6 +59,63 @@ impl Spec {
 
     pub fn lookup(&self, name: &str) -> Option<RootName> {
         Symbol::get(name).and_then(|symbol| self.root.get(&symbol).copied())
+    }
+
+    /// The level of a definition's body, taking each parameter to be a constant.
+    pub fn level(&self, id: DefId) -> Level {
+        self.levels[id.index()].level
+    }
+
+    pub fn def_levels(&self, id: DefId) -> &DefLevels {
+        &self.levels[id.index()]
+    }
+}
+
+/// What an expression can mention, which decides where TLA+ allows it.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub enum Level {
+    /// No variable: a constant.
+    #[default]
+    Constant,
+    /// Unprimed variables: a state predicate or state function.
+    State,
+    /// Primed variables, as in an action.
+    Action,
+    /// Temporal operators, as in `[]P` or `WF_v(A)`.
+    Temporal,
+}
+
+impl Level {
+    /// The number SANY's messages print for the level.
+    pub fn number(self) -> u8 {
+        self as u8
+    }
+}
+
+/// SANY's level information for a definition: its level, and how an application of it treats each
+/// argument.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct DefLevels {
+    pub level: Level,
+    /// For each parameter, the highest level an argument may have.
+    pub max_levels: Vec<Level>,
+    /// For each parameter, whether the level of an argument counts toward the level of the
+    /// application: SANY's weights.
+    pub weights: Vec<bool>,
+    /// For each parameter that takes an operator, the lowest level the operator passed for it must
+    /// allow for each of its own arguments.
+    pub min_max_levels: Vec<Vec<Level>>,
+    /// For each parameter, whether the definition is Leibniz in it: it uses the parameter outside
+    /// primes, `ENABLED`, `UNCHANGED`, and temporal operators, so equal arguments give equal
+    /// results.
+    pub leibniz: Vec<bool>,
+}
+
+impl DefLevels {
+    /// The level of an application of the definition to arguments of the given levels.
+    pub fn applied(&self, args: &[Level]) -> Level {
+        let weighted = args.iter().zip(&self.weights).filter(|(_, weight)| **weight);
+        weighted.map(|(level, _)| *level).fold(self.level, Level::max)
     }
 }
 
