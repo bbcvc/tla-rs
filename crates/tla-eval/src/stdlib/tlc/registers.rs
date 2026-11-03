@@ -69,14 +69,17 @@ fn runtime_value(ctx: &Ctx<'_>, key: &str) -> Outcome {
             ("duration", duration),
             ("worker", Value::Int(0)),
         ]),
-        "config" => record(vec![
-            ("mode", Value::str("bfs")),
-            ("deadlock", Value::Bool(runtime.checks_deadlock())),
-            ("worker", Value::Int(1)),
-            ("seed", Value::str(&runtime.seed().to_string())),
-            ("fingerprint", Value::str("0")),
-            ("install", Value::str("unknown")),
-        ]),
+        "config" => {
+            let options = runtime.options();
+            record(vec![
+                ("mode", Value::str(&options.mode)),
+                ("deadlock", Value::Bool(options.check_deadlock)),
+                ("worker", Value::Int(options.workers)),
+                ("seed", Value::str(&runtime.seed().to_string())),
+                ("fingerprint", Value::str(&options.fingerprint.to_string())),
+                ("install", Value::str(&options.install)),
+            ])
+        }
         "revision" => revision(runtime),
         "spec" => runtime.spec().unwrap_or_else(|| record(Vec::new())),
         "action" => action_record(),
@@ -299,15 +302,14 @@ mod tests {
             format!("{TLC_GET_EVAL}TLCGet(distinct) was undefined.")
         );
         evaluator.runtime().set_seed(-42);
-        evaluator.runtime().start(false);
+        let options = crate::CheckerOptions { check_deadlock: false, ..Default::default() };
+        evaluator.runtime().start(options);
         evaluator.runtime().update_statistics(|statistics| statistics.distinct = 9);
         assert_eq!(tlc(&evaluator, "TLCGet", &[string("distinct")]).unwrap().as_int(), Some(9));
         let config = tlc(&evaluator, "TLCGet", &[string("config")]).unwrap();
         let field = |name: &str| config.field(tla_value::Symbol::intern(name)).unwrap().to_string();
-        assert_eq!(
-            (field("seed"), field("deadlock"), field("mode")),
-            ("\"-42\"".into(), "FALSE".into(), "\"bfs\"".into())
-        );
+        let fields = ["mode", "deadlock", "worker", "seed", "fingerprint", "install"].map(field);
+        assert_eq!(fields, ["\"bfs\"", "FALSE", "1", "\"-42\"", "\"0\"", "\"unknown\""]);
         let action = tlc(&evaluator, "TLCGet", &[string("action")]).unwrap();
         assert_eq!(
             action.field(tla_value::Symbol::intern("name")).unwrap().to_string(),

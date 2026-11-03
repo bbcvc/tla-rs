@@ -1,7 +1,8 @@
 //! What TLC's operators with effects use: printed output, the registers of `TLCSet` and
 //! `TLCGet`, TLC's random generators, and what the model checker reports through `TLCGet`.
 //!
-//! The model checker tells the runtime what it is doing: [`Runtime::start`] once it starts,
+//! The model checker tells the runtime what it is doing: [`Runtime::start`] with its options
+//! once it has processed the spec, before it checks the assumptions,
 //! [`Runtime::update_statistics`] as it counts states, [`Runtime::set_expanding`] for the state
 //! each thread computes successors of, and hooks for the level and the behavior of a state.
 
@@ -40,6 +41,41 @@ pub struct Registers {
     pub possible: BTreeMap<Symbol, i32>,
 }
 
+/// The options of a model-checking run, which `TLCGet("config")` reports. The defaults are
+/// those of TLC's command line, as tla-ts gives them.
+#[derive(Clone, Debug)]
+pub struct CheckerOptions {
+    /// The search mode: `"bfs"`, the only one there is yet.
+    pub mode: String,
+    /// `CHECK_DEADLOCK` of the model configuration, which TLC's `-deadlock` turns off.
+    pub check_deadlock: bool,
+    /// TLC's `-workers`.
+    pub workers: i32,
+    /// TLC's `-fp`: the index of the irreducible polynomial fingerprints use.
+    pub fingerprint: i32,
+    /// The directory TLC is installed in.
+    pub install: String,
+}
+
+impl Default for CheckerOptions {
+    fn default() -> Self {
+        Self {
+            mode: "bfs".to_owned(),
+            check_deadlock: true,
+            workers: 1,
+            fingerprint: 0,
+            install: "unknown".to_owned(),
+        }
+    }
+}
+
+impl CheckerOptions {
+    /// The options for a model configuration, with the defaults of TLC's command line.
+    pub fn for_config(config: &tla_parser::ModelConfig) -> Self {
+        Self { check_deadlock: config.check_deadlock, ..Self::default() }
+    }
+}
+
 /// The counts TLC reports through `TLCGet`.
 #[derive(Clone, Copy, Debug, Default)]
 pub struct Statistics {
@@ -57,7 +93,7 @@ type Hook<T> = Box<dyn Fn(&State) -> T + Send + Sync>;
 struct Checker {
     /// The counts, once the model checker has started.
     statistics: Option<Statistics>,
-    checks_deadlock: bool,
+    options: CheckerOptions,
     level: Option<Hook<i32>>,
     behavior: Option<Hook<Vec<State>>>,
     spec: Option<Value>,
@@ -115,11 +151,13 @@ impl Runtime {
         self.started_at
     }
 
-    /// Records that the model checker has started, so `TLCGet` can read its counts.
-    pub fn start(&self, checks_deadlock: bool) {
+    /// Records that the model checker has started with `options`, so `TLCGet` can read them
+    /// and its counts. TLC creates its model checker once it has processed the spec, before it
+    /// checks the assumptions.
+    pub fn start(&self, options: CheckerOptions) {
         let mut checker = self.checker.write().unwrap();
         checker.statistics = Some(Statistics { diameter: 1, ..Statistics::default() });
-        checker.checks_deadlock = checks_deadlock;
+        checker.options = options;
     }
 
     /// Updates the counts of a started model checker.
@@ -134,8 +172,9 @@ impl Runtime {
         self.checker.read().unwrap().statistics
     }
 
-    pub fn checks_deadlock(&self) -> bool {
-        self.checker.read().unwrap().checks_deadlock
+    /// The options of the model checker, TLC's defaults until it starts.
+    pub fn options(&self) -> CheckerOptions {
+        self.checker.read().unwrap().options.clone()
     }
 
     /// Sets how `TLCGet("level")` finds the level of a state.
@@ -262,12 +301,22 @@ mod tests {
 
     use tla_value::Value;
 
-    use super::Runtime;
+    use super::{CheckerOptions, Runtime};
     use crate::State;
     use crate::stdlib::tlc::{JavaRandom, tlc_fingerprint};
 
     fn draw(runtime: &Runtime) -> i32 {
         runtime.with_random(|random| random.next_int(1000)).unwrap()
+    }
+
+    #[test]
+    fn takes_tlcs_options_from_a_model_configuration() {
+        let config =
+            tla_parser::parse_config("INIT Init\nNEXT Next\nCHECK_DEADLOCK FALSE\n").unwrap();
+        let options = CheckerOptions::for_config(&config);
+        assert!(!options.check_deadlock);
+        assert_eq!((options.mode.as_str(), options.workers, options.fingerprint), ("bfs", 1, 0));
+        assert!(CheckerOptions::for_config(&tla_parser::ModelConfig::default()).check_deadlock);
     }
 
     #[test]
@@ -307,11 +356,12 @@ mod tests {
         assert!(runtime.statistics().is_none());
         runtime.update_statistics(|statistics| statistics.distinct = 4);
         assert!(runtime.statistics().is_none());
-        runtime.start(true);
+        let options = CheckerOptions { check_deadlock: false, ..CheckerOptions::default() };
+        runtime.start(options);
         runtime.update_statistics(|statistics| statistics.distinct = 4);
         let statistics = runtime.statistics().unwrap();
         assert_eq!((statistics.distinct, statistics.diameter), (4, 1));
-        assert!(runtime.checks_deadlock());
+        assert!(!runtime.options().check_deadlock);
         runtime.on_level(|state| state.len() as i32);
         assert_eq!(runtime.level(Some(&Arc::from(vec![Value::TRUE; 2]))), 2);
         assert_eq!(runtime.level(None), 0);

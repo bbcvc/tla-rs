@@ -16,7 +16,7 @@ use std::sync::Arc;
 
 pub use config::{Model, bind_model, config_value};
 pub use native::{Arg, Ctx, Native, Operator};
-pub use runtime::{Registers, Runtime, Statistics};
+pub use runtime::{CheckerOptions, Registers, Runtime, Statistics};
 use tla_ast::{Span, Symbol};
 use tla_resolve::{DefId, ModuleId, Spec};
 pub use tla_value::{self as value, Value};

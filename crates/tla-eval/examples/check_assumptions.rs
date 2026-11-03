@@ -20,7 +20,7 @@ use std::process::{Command, Stdio};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
-use tla_eval::{Evaluator, bind_model};
+use tla_eval::{CheckerOptions, Evaluator, bind_model};
 
 const USAGE: &str = "usage: check_assumptions DIR [--library DIR]... [--expected FILE] \
                      [--timeout SECONDS] [--jobs N]";
@@ -99,6 +99,9 @@ fn check(spec_path: &Path, library: &HashMap<String, PathBuf>) -> Outcome {
     let has_postconditions = !config.postconditions.is_empty() || !config.possible.is_empty();
     let assumptions = spec.assumptions.clone();
     let evaluator = Evaluator::new(Arc::new(spec), model.constants).with_overrides(model.overrides);
+    // TLC creates its model checker, whose options TLCGet("config") reads, before it checks the
+    // assumptions. The options TLC takes from its command line keep their defaults.
+    evaluator.runtime().start(CheckerOptions::for_config(&config));
     for def in assumptions {
         match evaluator.eval_def(def, None) {
             Ok(value) if value.as_bool() == Some(true) => {}
