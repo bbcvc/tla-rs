@@ -15,7 +15,7 @@ use super::{
     sorted_set,
 };
 use crate::{Arg, Ctx, Native};
-pub(crate) use fingerprint::tlc_fingerprint;
+pub use fingerprint::tlc_fingerprint;
 pub(crate) use pretty::pretty_print;
 pub(crate) use print::{normalized_text, strict_text};
 pub(crate) use random::{JavaRandom, random_subset};

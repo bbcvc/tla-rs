@@ -8,6 +8,7 @@
 mod config;
 mod env;
 mod eval;
+mod java;
 mod native;
 mod runtime;
 mod scope;
@@ -18,6 +19,7 @@ use std::sync::{Arc, Mutex, OnceLock};
 
 pub use config::{Model, OperatorTable, bind_model, config_value};
 pub use eval::NextAction;
+pub use java::{JavaOverrideError, java_overrides};
 pub use native::{Arg, Ctx, Native, Operator};
 pub use runtime::{CheckerOptions, Registers, Runtime, Statistics};
 pub use scope::Frames;
@@ -110,10 +112,17 @@ pub struct Evaluator {
     /// Whether each definition is a constant TLC computes once, by [`DefId`], and its value once
     /// computed.
     pub(crate) is_constant_definition: Arc<[bool]>,
+    /// Whether each definition is one of a `LET` whose value is kept for the frame the `LET` is
+    /// evaluated in, by [`DefId`].
+    pub(crate) is_cached_let: Arc<[bool]>,
+    /// The slots of its frame each `LET` definition may read, as bits, by [`DefId`].
+    pub(crate) let_reads: Arc<[u64]>,
     pub(crate) constant_values: Arc<[OnceLock<Value>]>,
     /// TLC's `TLCEval`, and the applications of it whose argument TLC normalizes, by address.
     pub(crate) tlc_eval: Option<DefId>,
     pub(crate) normalizing_evaluations: Arc<HashSet<usize>>,
+    /// TLCExt's `TLCCache`, whose Java override caches the value of its expression.
+    pub(crate) tlc_cache: Option<DefId>,
     /// TLC's split of each next-state relation split so far into actions.
     pub(crate) next_actions: Arc<Mutex<HashMap<DefId, Arc<[NextAction]>>>>,
 }
@@ -124,7 +133,7 @@ impl Evaluator {
             .modules
             .iter()
             .any(|module| module.is_standard && module.name.as_str() == "Integers");
-        let natives = spec
+        let natives: Arc<[Option<Native>]> = spec
             .defs
             .iter()
             .map(|def| {
@@ -144,9 +153,22 @@ impl Evaluator {
         let is_recursive = eval::recursive_functions(&spec).into();
         let recursive_constructions = Arc::new(eval::recursive_constructions(&spec));
         let instance_enabled = Arc::new(eval::instance_enabled(&spec));
-        let is_constant_definition = eval::constant_definitions(&spec).into();
+        let is_constant_definition: Arc<[bool]> = eval::constant_definitions(&spec).into();
+        // A native is computed at each call, even where its definition is a constant.
+        let is_computed_once: Vec<bool> = is_constant_definition
+            .iter()
+            .zip(natives.iter())
+            .map(|(&is_constant, native)| is_constant && native.is_none())
+            .collect();
+        let is_cached_let = eval::cached_lets(&spec, &is_computed_once).into();
+        let let_reads = eval::let_reads(&spec).into();
         let constant_values = (0..spec.defs.len()).map(|_| OnceLock::new()).collect();
         let tlc_eval = eval::tlc_eval(&spec);
+        let tlc_cache = spec.defs.iter().position(|def| {
+            let module = spec.modules[def.module.index()].name.as_str();
+            module == "TLCExt" && def.name.as_str() == "TLCCache"
+        });
+        let tlc_cache = tlc_cache.map(|index| DefId(index as u32));
         let normalizing_evaluations = Arc::new(
             tlc_eval.map(|def| eval::normalizing_evaluations(&spec, def)).unwrap_or_default(),
         );
@@ -161,9 +183,12 @@ impl Evaluator {
             recursive_constructions,
             instance_enabled,
             is_constant_definition,
+            is_cached_let,
+            let_reads,
             constant_values,
             tlc_eval,
             normalizing_evaluations,
+            tlc_cache,
             next_actions: Arc::default(),
         }
     }
@@ -201,6 +226,33 @@ impl Evaluator {
 
     pub fn runtime(&self) -> &Runtime {
         &self.runtime
+    }
+
+    /// Whether a string with a character above U+00FF can reach a state: one the spec writes or
+    /// the configuration binds, or one a JSON deserializer reads. TLC fingerprints a string by
+    /// the low byte of each character, so it counts states whose strings differ only above U+00FF
+    /// as one, and a checker that counts states as TLC does fingerprints them with
+    /// [`tlc_fingerprint`] (tla-ts `hasWideString`).
+    pub fn has_wide_strings(&self) -> bool {
+        fn is_wide_value(value: &Value) -> bool {
+            match value {
+                Value::Str(text) => eval::is_wide(text.as_str()),
+                Value::Set(elements) | Value::MixedSet(elements) => {
+                    elements.iter().any(is_wide_value)
+                }
+                _ => false,
+            }
+        }
+        let is_wide_binding = |binding: &ConstBinding| match binding {
+            ConstBinding::Value(value) => is_wide_value(value),
+            ConstBinding::Table(table) => {
+                table.rows.iter().any(|(args, value)| args.iter().chain([value]).any(is_wide_value))
+            }
+            ConstBinding::Def(_) => false,
+        };
+        self.constants.iter().any(is_wide_binding)
+            || self.overrides.iter().flatten().any(is_wide_binding)
+            || eval::has_wide_string_literal(&self.spec)
     }
 
     /// Evaluates a definition without parameters, such as an `ASSUME` or `Init`, in `state`, or

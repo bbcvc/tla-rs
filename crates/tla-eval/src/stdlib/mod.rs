@@ -184,6 +184,16 @@ pub(crate) fn is_state_level(module: &str, name: &str) -> bool {
     }
 }
 
+/// Whether evaluating the operator `name` of `module` again can show: one with effects, a random
+/// choice, or a state-level operator, as tla-ts's impure builtins are.
+pub(crate) fn is_impure(module: &str, name: &str) -> bool {
+    is_state_level(module, name)
+        || matches!(
+            (module, name),
+            ("TLC", "Print" | "PrintT" | "Assert" | "JavaTime" | "RandomElement") | ("IOUtils", _)
+        )
+}
+
 /// The value of argument `index` of a native that takes its arguments unevaluated, or its value
 /// when the native is applied to values, as an operator argument is.
 fn forced(ctx: &mut crate::Ctx<'_>, args: &[Arg], index: usize) -> Outcome {

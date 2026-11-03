@@ -2,65 +2,194 @@
 //! of the `VIEW`, under the permutations of the `SYMMETRY`, as TLC fingerprints them.
 //!
 //! TLC fingerprints a state of a symmetric spec by a representative of its orbit, the states its
-//! permutations give, so a state and its permutations count once. Any choice of representative
-//! that is the same for the whole orbit counts the same states, so this takes the smallest
-//! fingerprint of the orbit. TLC closes the permutations the `SYMMETRY` gives under
-//! composition, as does this.
+//! permutations give, so a state and its permutations count once: the smallest of them, compared
+//! variable by variable. With a `VIEW`, it permutes the value of the view instead, and takes the
+//! smallest fingerprint. TLC closes the permutations the `SYMMETRY` gives under composition, as
+//! does this.
 
-use std::collections::{BTreeMap, HashMap, HashSet};
+use std::borrow::Cow;
+use std::cmp::Ordering;
+use std::collections::{BTreeMap, HashSet};
 use std::hash::{BuildHasher, Hasher};
-use std::sync::Arc;
 
-use tla_eval::{Evaluator, State};
+use tla_eval::{Evaluator, State, tlc_fingerprint};
 use tla_resolve::{DefId, RootName};
 use tla_value::{Symbol, Value};
 
 use crate::Error;
 
-/// A permutation of model values.
-type Permutation = HashMap<Symbol, Value>;
+/// A permutation of model values: each model value it moves, with its image. It moves few, so
+/// looking one up is a scan.
+type Permutation = Vec<(Symbol, Value)>;
+
+fn error_text(error: tla_value::Error) -> String {
+    error.to_string()
+}
+
+/// The image of each model value the permutation moves.
+fn image(permutation: &Permutation) -> impl Fn(Symbol) -> Option<Value> + '_ {
+    |name| permutation.iter().find(|(from, _)| *from == name).map(|(_, to)| to.clone())
+}
+
+/// The model value the permutation moves to each model value, if any.
+fn preimage(permutation: &Permutation) -> impl Fn(Symbol) -> Option<Symbol> + '_ {
+    |name| {
+        permutation.iter().find_map(|(from, to)| match to {
+            Value::Model(to) if *to == name => Some(*from),
+            _ => None,
+        })
+    }
+}
 
 pub struct Fingerprinter {
     view: Option<DefId>,
+    /// Whether to fingerprint as TLC does, which a spec with strings above U+00FF needs: TLC's
+    /// fingerprints of two such strings that differ only above U+00FF collide.
+    is_tlc: bool,
     /// The permutations other than the identity.
     permutations: Vec<Permutation>,
+    /// The variables in TLC's order, by their index in a state, if not the order they are
+    /// declared in. TLC compares and fingerprints the values of a state in that order.
+    order: Option<Vec<usize>>,
 }
 
 impl Fingerprinter {
-    /// The fingerprinter of a model with the `VIEW` and `SYMMETRY` its configuration names.
+    /// The fingerprinter of a model with the `VIEW` and `SYMMETRY` its configuration names, for
+    /// states whose variables are in TLC's `order` by their index in a state.
     pub fn new(
         evaluator: &Evaluator,
         view: Option<DefId>,
         symmetry: Option<Symbol>,
+        order: &[usize],
     ) -> Result<Self, Error> {
         let permutations = match symmetry {
             Some(name) => symmetry_group(evaluator, name)?,
             None => Vec::new(),
         };
-        Ok(Self { view, permutations })
+        let is_declared = order.iter().enumerate().all(|(position, &index)| position == index);
+        let order = (!is_declared).then(|| order.to_vec());
+        Ok(Self { view, is_tlc: evaluator.has_wide_strings(), permutations, order })
+    }
+
+    /// The values of `state` in TLC's order of the variables.
+    fn in_tlc_order<'a>(&self, state: &'a State) -> Cow<'a, [Value]> {
+        match &self.order {
+            Some(order) => order.iter().map(|&index| state[index].clone()).collect(),
+            None => Cow::Borrowed(&state[..]),
+        }
+    }
+
+    /// The permuted state TLC takes to stand for the state and its permutations: the smallest
+    /// image of the state under the symmetry, comparing its variables in TLC's order, and the
+    /// state itself unless an image is strictly smaller (tla-ts `getRepresentative`). Its
+    /// variables are in the order of `state`.
+    pub fn representative(&self, _evaluator: &Evaluator, state: &State) -> Result<State, String> {
+        if self.permutations.is_empty() {
+            return Ok(state.clone());
+        }
+        let ordered = self.in_tlc_order(state);
+        let Some(smallest) = self.smallest_permutation(&ordered)? else {
+            return Ok(state.clone());
+        };
+        let representative = match &self.order {
+            Some(order) => {
+                let mut values = state.to_vec();
+                for (position, &index) in order.iter().enumerate() {
+                    values[index] = smallest[position].clone();
+                }
+                values
+            }
+            None => smallest,
+        };
+        Ok(representative.into())
     }
 
     /// The fingerprint of `state`.
     pub fn fingerprint(&self, evaluator: &Evaluator, state: &State) -> Result<u128, String> {
-        let mut smallest = self.fingerprint_one(evaluator, state)?;
-        for permutation in &self.permutations {
-            let permuted: Vec<Value> =
-                state.iter().map(|value| permute(value, permutation)).collect::<Result<_, _>>()?;
-            let fingerprint = self.fingerprint_one(evaluator, &Arc::from(permuted))?;
-            smallest = smallest.min(fingerprint);
+        let view;
+        let ordered;
+        let values = match self.view {
+            Some(def) => {
+                view = evaluator.eval_def(def, Some(state)).map_err(|error| error.to_string())?;
+                std::slice::from_ref(&view)
+            }
+            // TLC's own fingerprints, and the representative it picks, follow its order.
+            None if self.is_tlc || !self.permutations.is_empty() => {
+                ordered = self.in_tlc_order(state);
+                &ordered[..]
+            }
+            None => &state[..],
+        };
+        if self.permutations.is_empty() {
+            return self.fingerprint_values(values);
         }
-        Ok(smallest)
+        // With a view, TLC permutes the value of the view and takes the smallest fingerprint. The
+        // smallest permutation of the value stands for its permutations as well, except for the
+        // fingerprints of TLC's own, which collide.
+        if self.view.is_some() && self.is_tlc {
+            let mut smallest = self.fingerprint_values(values)?;
+            for permutation in &self.permutations {
+                let permuted = values[0].permute(&image(permutation)).map_err(error_text)?;
+                smallest = smallest.min(self.fingerprint_values(std::slice::from_ref(&permuted))?);
+            }
+            return Ok(smallest);
+        }
+        match self.smallest_permutation(values)? {
+            Some(smallest) => self.fingerprint_values(&smallest),
+            None => self.fingerprint_values(values),
+        }
     }
 
-    fn fingerprint_one(&self, evaluator: &Evaluator, state: &State) -> Result<u128, String> {
-        match self.view {
-            Some(view) => {
-                let value =
-                    evaluator.eval_def(view, Some(state)).map_err(|error| error.to_string())?;
-                hash(std::slice::from_ref(&value))
+    /// The smallest of the permutations of `values`, compared value by value, if smaller than
+    /// `values`. Comparing a permutation with the smallest so far builds only what the comparison
+    /// needs, of either.
+    fn smallest_permutation(&self, values: &[Value]) -> Result<Option<Vec<Value>>, String> {
+        let mut smallest: Option<&Permutation> = None;
+        let mut least: Vec<Option<Value>> = vec![None; values.len()];
+        for permutation in &self.permutations {
+            let (to, from) = (image(permutation), preimage(permutation));
+            let mut ordering = Ordering::Equal;
+            let mut position = 0;
+            while position < values.len() {
+                let least = match (smallest, &mut least[position]) {
+                    (None, _) => &values[position],
+                    (Some(_), Some(value)) => &*value,
+                    (Some(smallest), slot) => {
+                        let value =
+                            values[position].permute(&image(smallest)).map_err(error_text)?;
+                        &*slot.insert(value)
+                    }
+                };
+                ordering =
+                    values[position].compare_permuted(&to, &from, least).map_err(error_text)?;
+                if ordering != Ordering::Equal {
+                    break;
+                }
+                position += 1;
             }
-            None => hash(state),
+            if ordering == Ordering::Less {
+                // The values before the first that differs are those of the smallest.
+                smallest = Some(permutation);
+                least[position..].fill(None);
+            }
         }
+        let Some(smallest) = smallest else { return Ok(None) };
+        let smallest = least
+            .into_iter()
+            .zip(values)
+            .map(|(value, original)| match value {
+                Some(value) => Ok(value),
+                None => original.permute(&image(smallest)).map_err(error_text),
+            })
+            .collect::<Result<Vec<_>, _>>()?;
+        Ok(Some(smallest))
+    }
+
+    fn fingerprint_values(&self, values: &[Value]) -> Result<u128, String> {
+        if self.is_tlc {
+            return tlc_fingerprint(values).map(u128::from).map_err(|error| error.to_string());
+        }
+        hash(values)
     }
 }
 
@@ -223,36 +352,10 @@ fn is_model(value: &Value, name: Symbol) -> bool {
     matches!(value, Value::Model(found) if *found == name)
 }
 
-/// `value` with each model value the permutation moves replaced by its image.
-fn permute(value: &Value, permutation: &Permutation) -> Result<Value, String> {
-    let error = |error: tla_value::Error| error.to_string();
-    Ok(match value {
-        Value::Model(name) => permutation.get(name).cloned().unwrap_or_else(|| value.clone()),
-        Value::Bool(_) | Value::Int(_) | Value::Str(_) | Value::Interval(..) => value.clone(),
-        Value::Tuple(items) => Value::tuple(
-            items.iter().map(|item| permute(item, permutation)).collect::<Result<_, _>>()?,
-        ),
-        Value::Func(_) | Value::LazyFunc(_) => {
-            let pairs = value.written_pairs().map_err(error)?;
-            let pairs = pairs
-                .iter()
-                .map(|(key, value)| Ok((permute(key, permutation)?, permute(value, permutation)?)))
-                .collect::<Result<Vec<_>, String>>()?;
-            Value::function(pairs).map_err(error)?
-        }
-        _ => {
-            let elements = value.elements().map_err(error)?;
-            let permuted = elements
-                .iter()
-                .map(|element| permute(element, permutation))
-                .collect::<Result<Vec<_>, _>>()?;
-            Value::set(permuted).map_err(error)?
-        }
-    })
-}
-
 #[cfg(test)]
 mod tests {
+    use std::sync::Arc;
+
     use super::*;
     use crate::testing;
 
@@ -276,11 +379,11 @@ mod tests {
     fn tells_states_apart_by_the_view() {
         let evaluator = evaluator("View == x % 2", "");
         let Some(RootName::Def(view)) = evaluator.spec().lookup("View") else { panic!("View") };
-        let fingerprinter = Fingerprinter::new(&evaluator, Some(view), None).unwrap();
+        let fingerprinter = Fingerprinter::new(&evaluator, Some(view), None, &[0]).unwrap();
         let of = |x| fingerprint(&fingerprinter, &evaluator, Value::Int(x));
         assert_eq!(of(0), of(2));
         assert_ne!(of(0), of(1));
-        let plain = Fingerprinter::new(&evaluator, None, None).unwrap();
+        let plain = Fingerprinter::new(&evaluator, None, None, &[0]).unwrap();
         assert_ne!(
             fingerprint(&plain, &evaluator, Value::Int(0)),
             fingerprint(&plain, &evaluator, Value::Int(2))
@@ -292,7 +395,7 @@ mod tests {
         let body = "CONSTANT P\nPerms == Permutations(P)";
         let evaluator = evaluator(body, "CONSTANT P = {p1, p2, p3}\nSYMMETRY Perms");
         let fingerprinter =
-            Fingerprinter::new(&evaluator, None, Some(Symbol::intern("Perms"))).unwrap();
+            Fingerprinter::new(&evaluator, None, Some(Symbol::intern("Perms")), &[0]).unwrap();
         let of = |items: &[&str]| {
             let value = Value::tuple(items.iter().map(|name| model(name)).collect());
             fingerprint(&fingerprinter, &evaluator, value)
@@ -307,6 +410,24 @@ mod tests {
         };
         assert_eq!(set(&["p1"]), set(&["p3"]));
         assert_ne!(set(&["p1"]), set(&["p1", "p2"]));
+    }
+
+    /// The representative is the smallest image of the state, comparing the variables in TLC's
+    /// order, kept in the order of the state.
+    #[test]
+    fn represents_a_state_by_its_smallest_image_in_tlc_order() {
+        let body = "CONSTANT P\nPerms == Permutations(P)";
+        let evaluator = evaluator(body, "CONSTANT P = {p1, p2}\nSYMMETRY Perms");
+        let representative = |order: &[usize]| {
+            let fingerprinter =
+                Fingerprinter::new(&evaluator, None, Some(Symbol::intern("Perms")), order).unwrap();
+            let state: State = Arc::from(vec![model("p2"), model("p1")]);
+            let representative = fingerprinter.representative(&evaluator, &state).unwrap();
+            representative.iter().map(ToString::to_string).collect::<Vec<_>>()
+        };
+        assert_eq!(representative(&[0, 1]), ["p1", "p2"]);
+        // Compared second variable first, the state itself is the smallest.
+        assert_eq!(representative(&[1, 0]), ["p2", "p1"]);
     }
 
     #[test]
