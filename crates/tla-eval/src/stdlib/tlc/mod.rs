@@ -1,18 +1,24 @@
 //! TLC, ported from tla-ts `tlc/tlc-operators.ts`.
 
+mod fingerprint;
 mod pretty;
 mod print;
+mod random;
+mod registers;
 
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use tla_value::{LazySet, Value};
 
 use super::{
-    Outcome, arg, enumerable_elements, function_pairs, op_arg, sequence_elements, sorted_set,
+    Outcome, arg, check_enumerable, enumerable_elements, function_pairs, java_error, op_arg,
+    sequence_elements, sorted_set,
 };
 use crate::{Arg, Ctx, Native};
+pub(crate) use fingerprint::tlc_fingerprint;
 pub(crate) use pretty::pretty_print;
 pub(crate) use print::strict_text;
+pub(crate) use random::{JavaRandom, random_subset};
 
 /// A method of `tlc2.module.TLC` that takes values, as `java.lang.reflect.Method` prints it.
 macro_rules! tlc_method {
@@ -52,18 +58,29 @@ pub(super) fn lookup(name: &str) -> Option<Native> {
         "PrintT" => java!(print_t, tlc_method!("PrintT", 1)),
         "Assert" => java!(assert, tlc_method!("Assert", 2)),
         "JavaTime" => native!(java_time),
-        "TLCGet" => unsupported!("TLCGet"),
-        "TLCSet" => unsupported!("TLCSet"),
+        "TLCGet" => tlc_get(),
+        "TLCSet" => native!(registers::tlc_set),
         ":>" => java!(make_function, tlc_method!("MakeFcn", 2)),
         "@@" => java!(combine_functions, tlc_method!("CombineFcn", 2)),
         "Permutations" => java!(permutations, tlc_method!("Permutations", 1)),
         "SortSeq" => java!(sort_seq, tlc_method!("SortSeq", 2)),
-        "RandomElement" => unsupported!("RandomElement"),
+        "RandomElement" => java!(random_element, tlc_method!("RandomElement", 1)),
         "Any" => native!(|_: &mut Ctx<'_>, _: &[Arg]| -> Outcome { Ok(Value::lazy(LazySet::Any)) }),
         "ToString" => java!(to_string, tlc_method!("ToString", 1)),
         "TLCEval" => java!(tlc_eval, evaluating_method!("TLCEval", "tlcEval")),
         _ => return None,
     })
+}
+
+/// `TLCGet`, which TLC evaluates with its argument in `TLCGetSet.TLCGetEval`, so it reports
+/// every failure as a failure of that method.
+fn tlc_get() -> Native {
+    fn native(ctx: &mut Ctx<'_>, args: &[Arg]) -> tla_value::Result<Value> {
+        registers::tlc_get(ctx, args).map_err(|failure| {
+            java_error(evaluating_method!("TLCGetSet", "TLCGetEval"), &failure.into_error().0)
+        })
+    }
+    native
 }
 
 /// What `Print` and `PrintT` print for a value.
@@ -162,6 +179,12 @@ fn sort_seq(ctx: &mut Ctx<'_>, args: &[Arg]) -> Outcome {
         sorted.insert(position, item.clone());
     }
     Ok(Value::tuple(sorted))
+}
+
+fn random_element(ctx: &mut Ctx<'_>, args: &[Arg]) -> Outcome {
+    let set = arg(args, 0)?;
+    check_enumerable(set, "RandomElement", true)?;
+    Ok(ctx.runtime().with_random(|random| random::random_element(set, random))??)
 }
 
 fn to_string(_: &mut Ctx<'_>, args: &[Arg]) -> Outcome {

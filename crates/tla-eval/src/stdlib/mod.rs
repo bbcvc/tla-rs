@@ -31,7 +31,7 @@ impl From<Error> for Failure {
 }
 
 impl Failure {
-    fn into_error(self) -> Error {
+    pub(crate) fn into_error(self) -> Error {
         match self {
             Self::Module(error) | Self::Eval(error) => error,
         }
@@ -83,19 +83,9 @@ macro_rules! java {
     }};
 }
 
-/// The [`Native`] of an operator that needs what natives don't get, such as unevaluated
-/// arguments or the model checker's state.
-macro_rules! unsupported {
-    ($name:literal) => {{
-        fn native(_: &mut $crate::Ctx<'_>, _: &[$crate::Arg]) -> tla_value::Result<Value> {
-            Err(tla_value::Error(concat!($name, " is not supported yet").to_owned()))
-        }
-        native as $crate::Native
-    }};
-}
-
 mod finite_sets;
 mod naturals;
+mod randomization;
 mod sequences;
 pub(crate) mod tlc;
 
@@ -108,6 +98,7 @@ pub(crate) fn lookup(module: &str, name: &str, uses_integers: bool) -> Option<Na
         "Sequences" => sequences::lookup(name),
         "FiniteSets" => finite_sets::lookup(name),
         "TLC" => tlc::lookup(name),
+        "Randomization" => randomization::lookup(name),
         _ => None,
     }
 }
@@ -210,9 +201,9 @@ fn function_pairs(function: &Value) -> Outcome<Vec<(Value, Value)>> {
     }
 }
 
-/// The elements of a set the operator `name` enumerates. TLC evaluates some operators in its
-/// core, where a wrong argument is a failure of evaluation rather than of the operator.
-fn enumerable_elements(value: &Value, name: &str, is_core: bool) -> Outcome<Arc<[Value]>> {
+/// Fails unless `value` is a set the operator `name` can enumerate. TLC evaluates some operators
+/// in its core, where a wrong argument is a failure of evaluation rather than of the operator.
+fn check_enumerable(value: &Value, name: &str, is_core: bool) -> Outcome<()> {
     let failure = |message: String| {
         if is_core { Failure::Eval(Error(message)) } else { Failure::Module(Error(message)) }
     };
@@ -222,6 +213,12 @@ fn enumerable_elements(value: &Value, name: &str, is_core: bool) -> Outcome<Arc<
     if !value.is_enumerable() {
         return Err(failure(format!("{name} cannot enumerate the non-enumerable set {value}")));
     }
+    Ok(())
+}
+
+/// The elements of a set the operator `name` enumerates.
+fn enumerable_elements(value: &Value, name: &str, is_core: bool) -> Outcome<Arc<[Value]>> {
+    check_enumerable(value, name, is_core)?;
     Ok(value.elements()?)
 }
 
