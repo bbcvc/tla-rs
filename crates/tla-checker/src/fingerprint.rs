@@ -3,13 +3,13 @@
 //!
 //! TLC fingerprints a state of a symmetric spec by a representative of its orbit, the states its
 //! permutations give, so a state and its permutations count once: the smallest of them, compared
-//! variable by variable. TLC closes the permutations the `SYMMETRY` gives under composition, as
+//! variable by variable. With a `VIEW`, it permutes the value of the view instead, and takes the
+//! smallest fingerprint. TLC closes the permutations the `SYMMETRY` gives under composition, as
 //! does this.
 
 use std::cmp::Ordering;
 use std::collections::{BTreeMap, HashSet};
 use std::hash::{BuildHasher, Hasher};
-use std::sync::Arc;
 
 use tla_eval::{Evaluator, State, tlc_fingerprint};
 use tla_resolve::{DefId, RootName};
@@ -20,6 +20,10 @@ use crate::Error;
 /// A permutation of model values: each model value it moves, with its image. It moves few, so
 /// looking one up is a scan.
 type Permutation = Vec<(Symbol, Value)>;
+
+fn error_text(error: tla_value::Error) -> String {
+    error.to_string()
+}
 
 /// The image of each model value the permutation moves.
 fn image(permutation: &Permutation) -> impl Fn(Symbol) -> Option<Value> + '_ {
@@ -61,29 +65,56 @@ impl Fingerprinter {
 
     /// The fingerprint of `state`.
     pub fn fingerprint(&self, evaluator: &Evaluator, state: &State) -> Result<u128, String> {
+        let view;
+        let values = match self.view {
+            Some(def) => {
+                view = evaluator.eval_def(def, Some(state)).map_err(|error| error.to_string())?;
+                std::slice::from_ref(&view)
+            }
+            None => &state[..],
+        };
         if self.permutations.is_empty() {
-            return self.fingerprint_one(evaluator, state);
+            return self.fingerprint_values(values);
         }
-        let error = |error: tla_value::Error| error.to_string();
-        // The permutation that gives the smallest state so far, if smaller than the state, and
-        // those of its values built so far. Comparing a permutation with it builds only what the
-        // comparison needs, of either.
+        // With a view, TLC permutes the value of the view and takes the smallest fingerprint. The
+        // smallest permutation of the value stands for its permutations as well, except for the
+        // fingerprints of TLC's own, which collide.
+        if self.view.is_some() && self.is_tlc {
+            let mut smallest = self.fingerprint_values(values)?;
+            for permutation in &self.permutations {
+                let permuted = values[0].permute(&image(permutation)).map_err(error_text)?;
+                smallest = smallest.min(self.fingerprint_values(std::slice::from_ref(&permuted))?);
+            }
+            return Ok(smallest);
+        }
+        match self.smallest_permutation(values)? {
+            Some(smallest) => self.fingerprint_values(&smallest),
+            None => self.fingerprint_values(values),
+        }
+    }
+
+    /// The smallest of the permutations of `values`, compared value by value, if smaller than
+    /// `values`. Comparing a permutation with the smallest so far builds only what the comparison
+    /// needs, of either.
+    fn smallest_permutation(&self, values: &[Value]) -> Result<Option<Vec<Value>>, String> {
         let mut smallest: Option<&Permutation> = None;
-        let mut least: Vec<Option<Value>> = vec![None; state.len()];
+        let mut least: Vec<Option<Value>> = vec![None; values.len()];
         for permutation in &self.permutations {
             let (to, from) = (image(permutation), preimage(permutation));
             let mut ordering = Ordering::Equal;
             let mut position = 0;
-            while position < state.len() {
+            while position < values.len() {
                 let least = match (smallest, &mut least[position]) {
-                    (None, _) => &state[position],
+                    (None, _) => &values[position],
                     (Some(_), Some(value)) => &*value,
                     (Some(smallest), slot) => {
-                        let value = state[position].permute(&image(smallest)).map_err(error)?;
+                        let value =
+                            values[position].permute(&image(smallest)).map_err(error_text)?;
                         &*slot.insert(value)
                     }
                 };
-                ordering = state[position].compare_permuted(&to, &from, least).map_err(error)?;
+                ordering =
+                    values[position].compare_permuted(&to, &from, least).map_err(error_text)?;
                 if ordering != Ordering::Equal {
                     break;
                 }
@@ -95,27 +126,19 @@ impl Fingerprinter {
                 least[position..].fill(None);
             }
         }
-        let Some(smallest) = smallest else { return self.fingerprint_one(evaluator, state) };
-        let representative = least
+        let Some(smallest) = smallest else { return Ok(None) };
+        let smallest = least
             .into_iter()
-            .zip(state.iter())
+            .zip(values)
             .map(|(value, original)| match value {
                 Some(value) => Ok(value),
-                None => original.permute(&image(smallest)).map_err(error),
+                None => original.permute(&image(smallest)).map_err(error_text),
             })
             .collect::<Result<Vec<_>, _>>()?;
-        self.fingerprint_one(evaluator, &Arc::from(representative))
+        Ok(Some(smallest))
     }
 
-    fn fingerprint_one(&self, evaluator: &Evaluator, state: &State) -> Result<u128, String> {
-        let view;
-        let values = match self.view {
-            Some(def) => {
-                view = evaluator.eval_def(def, Some(state)).map_err(|error| error.to_string())?;
-                std::slice::from_ref(&view)
-            }
-            None => &state[..],
-        };
+    fn fingerprint_values(&self, values: &[Value]) -> Result<u128, String> {
         if self.is_tlc {
             return tlc_fingerprint(values).map(u128::from).map_err(|error| error.to_string());
         }
@@ -284,6 +307,8 @@ fn is_model(value: &Value, name: Symbol) -> bool {
 
 #[cfg(test)]
 mod tests {
+    use std::sync::Arc;
+
     use super::*;
     use crate::testing;
 
