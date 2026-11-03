@@ -131,6 +131,9 @@ impl Value {
                         }
                         Ok(Ordering::Equal)
                     }
+                    None if is_record(&func.keys) == is_record(&others.keys) => {
+                        compare_permuted_function(func, others, image, preimage)
+                    }
                     None => self.permute(image)?.compare(other),
                 }
             }
@@ -182,6 +185,48 @@ impl Value {
             Value::Lazy(_) | Value::LazyFunc(_) => true,
         }
     }
+}
+
+/// `func` permuted, compared with `others`, which has as many keys: by their keys, which the
+/// permutation moves, sorted, and then by the values of the keys in that order.
+fn compare_permuted_function(
+    func: &Func,
+    others: &Func,
+    image: &impl Fn(Symbol) -> Option<Value>,
+    preimage: &impl Fn(Symbol) -> Option<Symbol>,
+) -> Result<Ordering> {
+    let mut keys = func
+        .keys
+        .iter()
+        .enumerate()
+        .map(|(index, key)| Ok((key.permute(image)?, index)))
+        .collect::<Result<Vec<_>>>()?;
+    let mut failure = None;
+    keys.sort_by(|(left, _), (right, _)| {
+        left.compare(right).unwrap_or_else(|error| {
+            failure.get_or_insert(error);
+            Ordering::Equal
+        })
+    });
+    if let Some(error) = failure {
+        return Err(error);
+    }
+    // As comparing the functions does.
+    func.normalize();
+    others.normalize();
+    for ((key, _), other) in keys.iter().zip(others.keys.iter()) {
+        let ordering = key.compare(other)?;
+        if ordering != Ordering::Equal {
+            return Ok(ordering);
+        }
+    }
+    for ((_, index), other) in keys.iter().zip(others.values.iter()) {
+        let ordering = func.values[*index].compare_permuted(image, preimage, other)?;
+        if ordering != Ordering::Equal {
+            return Ok(ordering);
+        }
+    }
+    Ok(Ordering::Equal)
 }
 
 /// Where the permuted function `func` takes the value of each key of `others` from: the index
