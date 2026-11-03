@@ -6,7 +6,10 @@
 //!
 //! TLC reports a failure inside an operator's Java method as a failure of that method, unless the
 //! method raises it itself as an `EvalException`. Natives keep the two kinds apart with
-//! [`Failure`].
+//! [`Failure`], and [`java!`] wraps the second kind in TLC's message for operators TLC implements
+//! with such a method.
+
+use std::sync::Arc;
 
 use tla_value::{Error, LazySet, Value};
 
@@ -31,6 +34,14 @@ impl Failure {
     fn into_error(self) -> Error {
         match self {
             Self::Module(error) | Self::Eval(error) => error,
+        }
+    }
+
+    /// The error TLC reports when this fails inside the Java method `signature`.
+    fn in_java(self, signature: &str) -> Error {
+        match self {
+            Self::Module(error) => error,
+            Self::Eval(error) => java_error(signature, &error.0),
         }
     }
 }
@@ -62,7 +73,19 @@ macro_rules! native {
     }};
 }
 
+/// The [`Native`] of an operator TLC implements with the Java method `signature`.
+macro_rules! java {
+    ($operator:expr, $signature:expr) => {{
+        fn native(ctx: &mut $crate::Ctx<'_>, args: &[$crate::Arg]) -> tla_value::Result<Value> {
+            $operator(ctx, args).map_err(|failure| failure.in_java($signature))
+        }
+        native as $crate::Native
+    }};
+}
+
+mod finite_sets;
 mod naturals;
+mod sequences;
 
 /// The native implementation of `name` in standard module `module`. TLC overrides the arithmetic
 /// of Naturals with that of Integers when the spec loads Integers anywhere.
@@ -70,6 +93,8 @@ pub(crate) fn lookup(module: &str, name: &str, uses_integers: bool) -> Option<Na
     match module {
         "Naturals" => naturals::lookup(name, uses_integers),
         "Integers" => naturals::lookup_integers(name),
+        "Sequences" => sequences::lookup(name),
+        "FiniteSets" => finite_sets::lookup(name),
         _ => None,
     }
 }
@@ -82,11 +107,26 @@ fn arg(args: &[Arg], index: usize) -> Outcome<&Value> {
     }
 }
 
+/// Argument `index`, which must be an operator.
+fn op_arg(args: &[Arg], index: usize) -> Outcome<&crate::Operator> {
+    match args.get(index) {
+        Some(arg) => Ok(arg.op()?),
+        None => fail_eval!("Expected an operator as argument {}", index + 1),
+    }
+}
+
 /// TLC's message for a failure inside the Java method `signature`.
 fn java_error(signature: &str, message: &str) -> Error {
     Error(format!(
         "Attempted to apply the operator overridden by the Java method\n{signature},\nbut it produced the following error:\n{message}"
     ))
+}
+
+/// TLC's `EC.TLC_MODULE_ARGUMENT_ERROR`.
+fn argument_error(position: &str, name: &str, expected: &str, value: &Value) -> Failure {
+    Failure::Module(Error(format!(
+        "The {position} argument of {name} should be a {expected}, but instead it is:\n{value}"
+    )))
 }
 
 /// The Java class TLC represents a value with, as its errors name it.
@@ -121,6 +161,39 @@ fn java_class(value: &Value) -> &'static str {
     }
 }
 
+/// Whether TLC implements this set with a Java class of its own, which it can't enumerate.
+fn is_overridden_set(value: &Value) -> bool {
+    matches!(value, Value::Lazy(set) if matches!(
+        **set,
+        LazySet::Seq(_) | LazySet::Nat | LazySet::Int | LazySet::String | LazySet::Any
+    ))
+}
+
+/// The elements of a sequence, or `None` if the value is not one. A function TLC doesn't
+/// enumerate is enumerated first.
+fn sequence_elements(value: &Value) -> Outcome<Option<Arc<[Value]>>> {
+    match value {
+        Value::Tuple(items) => Ok(Some(items.clone())),
+        Value::LazyFunc(_) => match value.materialize()? {
+            Value::Tuple(items) => Ok(Some(items)),
+            _ => Ok(None),
+        },
+        _ => Ok(None),
+    }
+}
+
+/// The kind of a value as some of TLC's errors name it, which calls every function a function.
+fn kind_name(value: &Value) -> &'static str {
+    match value {
+        Value::Bool(_) => "boolean",
+        Value::Int(_) => "integer",
+        Value::Str(_) => "string",
+        Value::Model(_) => "model value",
+        _ if value.is_set() => "set",
+        _ => "function",
+    }
+}
+
 #[cfg(test)]
 pub(crate) mod testing {
     //! Calls natives in an evaluator for an empty module.
@@ -129,7 +202,7 @@ pub(crate) mod testing {
 
     use tla_value::{Result, Value};
 
-    use crate::{Arg, Ctx, Evaluator};
+    use crate::{Arg, Ctx, Evaluator, Operator};
 
     pub fn evaluator() -> Evaluator {
         let spec = tla_resolve::resolve("---- MODULE T ----\n====\n", &mut |_: &str| None)
@@ -168,7 +241,19 @@ pub(crate) mod testing {
         Value::Int(value)
     }
 
+    pub fn ints(values: &[i32]) -> Value {
+        Value::set(values.iter().copied().map(Value::Int).collect()).unwrap()
+    }
+
+    pub fn tuple(values: &[i32]) -> Value {
+        Value::tuple(values.iter().copied().map(Value::Int).collect())
+    }
+
     pub fn string(text: &str) -> Value {
         Value::str(text)
+    }
+
+    pub fn operator(apply: fn(&[Value]) -> Result<Value>) -> Arg {
+        Arg::Op(Operator::closure(move |_, args| apply(args)))
     }
 }
