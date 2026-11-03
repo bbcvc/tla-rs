@@ -271,6 +271,12 @@ mod tests {
     }
 
     #[test]
+    fn is_shared_by_worker_threads() {
+        fn assert_send_sync<T: Send + Sync>() {}
+        assert_send_sync::<Runtime>();
+    }
+
+    #[test]
     fn draws_from_the_startup_generator_outside_a_state() {
         let runtime = Runtime::default();
         runtime.set_seed(7);
