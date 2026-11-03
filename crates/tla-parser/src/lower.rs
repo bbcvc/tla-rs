@@ -39,6 +39,9 @@ pub(crate) struct Lower<'a> {
     pub source: &'a str,
     /// The tabs expanded in the text tree-sitter parsed, if the source has any.
     pub tabs: &'a [Tab],
+    /// The operator each identifier that masks an operator symbol in the parsed text stands for,
+    /// by its start there.
+    pub masks: &'a [(usize, Op)],
 }
 
 /// A tab that [`expand_tabs`] replaced with spaces.
@@ -147,8 +150,10 @@ impl<'a> Lower<'a> {
 
     /// The name an identifier, operator symbol, or built-in set node spells.
     pub fn name(&self, node: Node) -> Result<Name> {
-        let text = match node.kind() {
-            "identifier" | "identifier_ref" => self.text(node),
+        let mask = self.masks.iter().find(|(start, _)| *start == node.start_byte());
+        let text = match (node.kind(), mask) {
+            ("identifier_ref", Some((_, op))) => op.name(),
+            ("identifier" | "identifier_ref", _) => self.text(node),
             _ => match op_of(node) {
                 Some(op) => op.name(),
                 None => builtin_set_name(node.kind()).ok_or_else(|| {

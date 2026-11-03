@@ -153,3 +153,28 @@ fn shows_selected_values() {
     );
     assert_eq!(printed, ["1..4", "FALSE"]);
 }
+
+const PARTS: &str = r#"
+---- MODULE Parts ----
+CONSTANT A5(_, _, _, _, _)
+Foo(a1, a2, a3, a4, a5) == A5(a1, a2, a3, a4, a5)
+Bar5(a) == {x \in {1} : lab(x) :: LET b ++ c == <<a, b, c, x>> IN 42}
+====
+"#;
+
+#[test]
+fn passes_an_operator_symbol_ending_a_reference_as_an_operator() {
+    // The grammar reads `COp!@!++` only after the parser masks the `++` (TLC's test206).
+    let body = r#"
+COp(q, p) == CHOOSE x : lab(x) :: LET a ++ b == {a, b, q, p, x} IN <<q, 99 ++ p>>
+OOp4(A(_,_,_,_), a, b, c, d) == A(a, b, c, d)
+OOp5(A(_, _, _, _, _), a1, a2, a3, a4, a5) == A(a1, a2, a3, a4, a5)
+Inst == INSTANCE Parts WITH A5 <- COp!@!++
+Inst2(A5(_, _, _, _, _)) == INSTANCE Parts
+A1 == OOp5(COp!@!++, 1, 2, 3, 4, 5) = {2,1, 3, 4, 5}
+A2 == Inst!Foo(1, 2, 3, 4, 5) = {2,1, 3, 4, 5}
+A3 == OOp4(Inst!Bar5!lab!:!++, 1, 2, 3, 4) = <<1, 3, 4, 2>>
+A4 == Inst2(COp!@!++)!Foo(1, 2, 3, 4, 5) = {2,1, 3, 4, 5}
+"#;
+    assert_true(body, &[("Parts", PARTS)], &["A1", "A2", "A3", "A4"]);
+}
