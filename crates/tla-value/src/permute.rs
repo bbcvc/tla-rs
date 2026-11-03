@@ -176,9 +176,10 @@ fn permuted_all(
         match (value.permuted(image)?, &mut changed) {
             (Some(permuted), Some(changed)) => changed.push(permuted),
             (Some(permuted), None) => {
-                let mut values = values[..index].to_vec();
-                values.push(permuted);
-                changed = Some(values);
+                let mut changed_values = Vec::with_capacity(values.len());
+                changed_values.extend_from_slice(&values[..index]);
+                changed_values.push(permuted);
+                changed = Some(changed_values);
             }
             (None, Some(changed)) => changed.push(value.clone()),
             (None, None) => {}

@@ -177,6 +177,12 @@ impl Value {
     pub fn set(elements: Vec<Value>) -> Result<Value> {
         // TLC's `ValueVec.sort` compares each element after the first with those before it.
         elements.iter().skip(1).for_each(Value::cache_elements);
+        // Elements built in order come sorted already.
+        let is_sorted =
+            elements.windows(2).all(|pair| matches!(pair[0].compare(&pair[1]), Ok(Ordering::Less)));
+        if is_sorted {
+            return Ok(Value::Set(elements.into()));
+        }
         match sort_unique(elements.clone()) {
             Ok(sorted) => Ok(Value::Set(sorted.into())),
             Err(_) => Ok(Value::MixedSet(elements.into())),

@@ -7,6 +7,7 @@
 //! error rather than an order.
 
 use std::cmp::Ordering;
+use std::sync::Arc;
 
 use crate::format::printable;
 use crate::{LazySet, Result, Value, fail, model_type};
@@ -210,6 +211,10 @@ fn compare_functions(left: &Value, right: &Value, verb: &str) -> Result<Ordering
     }
     match (left, right) {
         (Value::Tuple(left), Value::Tuple(right)) => compare_elements(left, right),
+        // Functions with the very same keys, as records of one shape share, compare by values.
+        (Value::Func(left), Value::Func(right)) if Arc::ptr_eq(&left.keys, &right.keys) => {
+            compare_elements(&left.values, &right.values)
+        }
         (Value::LazyFunc(_), _) => compare_functions(&left.materialize()?, right, verb),
         (_, Value::LazyFunc(_)) => compare_functions(left, &right.materialize()?, verb),
         _ => {
