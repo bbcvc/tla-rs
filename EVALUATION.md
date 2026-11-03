@@ -80,3 +80,31 @@ None of them targets full TLC conformance with an interpreter, so starting fresh
 Subexpression selectors navigate the syntax tree of a definition, so they belong with resolution in step 2, where tla-ts implements them in `src/sany/selectors.ts`. The AST will need to keep labels and selector paths instead of dropping them.
 
 Two SANY behaviors the grammar doesn't share are handled before lowering. SANY measures a tab as reaching the next multiple of 8 columns, while tree-sitter counts it as one column, so the parser expands tabs and maps spans back to the original text. SANY skips comments, while the grammar parses PlusCal inside them, so errors inside a block comment are ignored.
+
+## Resolution results
+
+`tla-resolve` turns a root module and the modules it uses into a `Spec` whose expressions refer to state variables, constants, local slots, and definitions. TLC's standard modules are bundled as TLA+ source, as TLC bundles them, and the evaluator will replace their placeholder definitions the way TLC's Java overrides do. Each `INSTANCE` substitution becomes a definition in the instance's scope, and a parameterized instance adds a frame, so instantiated definitions are closures like `LET` definitions.
+
+`crates/tla-resolve/examples/resolve_corpus.rs` compares the result with tla-ts's records:
+
+```shell
+C=../tla-ts/packages/tla-ts/tests/conformance
+L="--library $C/.corpora/tlapm/library --library $C/.corpora/community/modules"
+cargo run --release -p tla-resolve --example resolve_corpus -- $C/.corpora --all $L --sany $C/sany.json
+cargo run --release -p tla-resolve --example resolve_corpus -- $C/.corpora $L --expected $C/expected.json
+```
+
+The parser and resolver agree with SANY on 1,849 of the 1,873 modules SANY was recorded on. Of the 823 models TLC was recorded on, 7 fail to resolve although TLC checks them, the same 7 the frontend rejected: all use subexpression selectors.
+
+The 24 disagreements with SANY:
+
+| Cause | Modules | Plan |
+| --- | ---: | --- |
+| Subexpression selectors (`Inv!2`, `Op!:`, labels) | 11 | Resolution needs the definitions' syntax trees and labels. |
+| Level checking (`Level error ...`, an action where a state predicate belongs) | 3 | A level pass after resolution, ported from tla-ts `levels.ts`. |
+| Proof syntax (`DEF`, `HIDE`, `BY`), which TLC ignores | 4 | Out of scope until proofs matter. |
+| SANY reporting a module nested in the file as defined twice when a `LET` instantiates it | 3 | A SANY quirk; emulate only if a model depends on it. |
+| A decimal literal, which SANY accepts and TLC rejects when it checks the model | 1 | Already an error, at an earlier stage than TLC's. |
+| `Operators_test` and `ModuleSemanticsTheorems`, grammar differences in proof syntax | 2 | Out of scope with proofs. |
+
+TLC also requires the root module to be named after its file. The resolver takes source text, so the caller makes that check, as the smoke tool does.
