@@ -8,7 +8,7 @@
 //! composition, as does this.
 
 use std::collections::{BTreeMap, HashMap, HashSet};
-use std::hash::{DefaultHasher, Hasher};
+use std::hash::{BuildHasher, Hasher};
 use std::sync::Arc;
 
 use tla_eval::{Evaluator, State};
@@ -65,16 +65,67 @@ impl Fingerprinter {
 }
 
 /// A fingerprint that agrees with value equality, wide enough that two distinct states don't
-/// share one in practice.
+/// share one in practice: two independently seeded 64-bit hashes of one pass over the values.
 pub fn hash(values: &[Value]) -> Result<u128, String> {
-    let mut halves = [DefaultHasher::new(), DefaultHasher::new()];
-    halves[1].write_u8(0x5a);
-    for hasher in &mut halves {
-        for value in values {
-            value.fingerprint(hasher).map_err(|error| error.to_string())?;
+    let mut hasher = Wide::new();
+    for value in values {
+        value.fingerprint(&mut hasher).map_err(|error| error.to_string())?;
+    }
+    Ok(hasher.finish_wide())
+}
+
+/// Two hashers with different seeds fed the same writes.
+struct Wide {
+    low: foldhash::quality::FoldHasher<'static>,
+    high: foldhash::quality::FoldHasher<'static>,
+}
+
+impl Wide {
+    fn new() -> Self {
+        Self {
+            low: foldhash::quality::FixedState::with_seed(0x243f_6a88_85a3_08d3).build_hasher(),
+            high: foldhash::quality::FixedState::with_seed(0x1319_8a2e_0370_7344).build_hasher(),
         }
     }
-    Ok((u128::from(halves[0].finish()) << 64) | u128::from(halves[1].finish()))
+
+    fn finish_wide(&self) -> u128 {
+        (u128::from(self.high.finish()) << 64) | u128::from(self.low.finish())
+    }
+}
+
+impl Hasher for Wide {
+    fn finish(&self) -> u64 {
+        self.low.finish()
+    }
+
+    fn write(&mut self, bytes: &[u8]) {
+        self.low.write(bytes);
+        self.high.write(bytes);
+    }
+
+    fn write_u8(&mut self, value: u8) {
+        self.low.write_u8(value);
+        self.high.write_u8(value);
+    }
+
+    fn write_u32(&mut self, value: u32) {
+        self.low.write_u32(value);
+        self.high.write_u32(value);
+    }
+
+    fn write_u64(&mut self, value: u64) {
+        self.low.write_u64(value);
+        self.high.write_u64(value);
+    }
+
+    fn write_usize(&mut self, value: usize) {
+        self.low.write_usize(value);
+        self.high.write_usize(value);
+    }
+
+    fn write_i64(&mut self, value: i64) {
+        self.write_u64(value as u64);
+    }
 }
 
 /// The permutations the symmetry definition gives, closed under composition, without the
