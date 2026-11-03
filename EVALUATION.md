@@ -52,7 +52,7 @@ None of them targets full TLC conformance with an interpreter, so starting fresh
 
 **R8. Performance targets are stretch goals.** tla-ts measures 1.1–2.4× faster than TLC. A Rust interpreter with 32-bit integers and interned strings can plausibly beat tla-ts by several times on one thread, but 10–20× TLC is unproven. Measure it after conformance, not before.
 
-**R9. WebAssembly needs an early spike.** tree-sitter is written in C, so a `wasm32-unknown-unknown` build needs a C toolchain that targets WebAssembly. Verify that with a small spike before depending on it.
+**R9. WebAssembly needs a C sysroot.** tree-sitter is written in C. A spike building `tla-parser` for `wasm32-unknown-unknown` fails in the grammar's build script: `src/tree_sitter/parser.h` includes `<stdlib.h>`, which the system clang has no headers for when it targets WebAssembly. The WebAssembly build needs wasi-sdk (or another sysroot) in CI, or a `wasm32-wasip1` target. Decide before the CLI work in step 6.
 
 ## Revised order of work
 
@@ -62,3 +62,21 @@ None of them targets full TLC conformance with an interpreter, so starting fresh
 4. **Model checking**: continuation-based successors, the BFS checker, and a conformance runner over `expected.json`.
 5. **Liveness**: tableau, product graph, and SCC search.
 6. **Scale**: parallel workers, the CLI, and benchmarks against TLC and tla-ts.
+
+## Frontend results
+
+`crates/tla-parser/examples/parse_corpus.rs` parses every `.tla` and `.cfg` file in the 16 conformance corpora (2,052 modules and 1,108 configurations). 1,996 modules and 1,103 configurations parse. Matched against `expected.json` by path, 17 of the failures are the root module or configuration of a recorded model. 10 of those are models TLC also rejects. The other 7 use a feature the frontend doesn't lower yet:
+
+| Model | TLC result | Cause |
+| --- | --- | --- |
+| `examples/.../Paxos/MCPaxos` | success | positional selector `Inv!2` |
+| `examples/.../Paxos/MCVoting` | success | positional selector `Init!1` |
+| `examples/.../ewd998/EWD998ChanTrace` | assumption-violation | selector `QuorumNonEmpty!:` |
+| `tlc/.../suite/test206` | success | labels in subexpression selectors |
+| `tlc/.../suite/test209` | success | positional selector `F(2)!3!1` |
+| `tlc/.../suite/test216` | success | subexpression selector |
+| `tlc/.../suite/test219` | success | selectors such as `COp(1, 2)!(3)!1!>>` |
+
+Subexpression selectors navigate the syntax tree of a definition, so they belong with resolution in step 2, where tla-ts implements them in `src/sany/selectors.ts`. The AST will need to keep labels and selector paths instead of dropping them.
+
+Two SANY behaviors the grammar doesn't share are handled before lowering. SANY measures a tab as reaching the next multiple of 8 columns, while tree-sitter counts it as one column, so the parser expands tabs and maps spans back to the original text. SANY skips comments, while the grammar parses PlusCal inside them, so errors inside a block comment are ignored.
