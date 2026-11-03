@@ -1,6 +1,6 @@
 //! Resolves the spec of every model (a `.cfg` beside a `.tla` of the same name) under a
-//! directory and summarizes the failures:
-//! `cargo run --release -p tla-resolve --example resolve_corpus -- DIR [--library DIR]...`
+//! directory, or every module with `--all`, and summarizes the failures:
+//! `cargo run --release -p tla-resolve --example resolve_corpus -- DIR [--all] [--library DIR]...`
 //!
 //! A module is looked up beside the spec first, then in the library directories. Every failure
 //! is also written to stderr as `path<TAB>message`, for scripts.
@@ -13,7 +13,12 @@ fn main() {
     let mut args = std::env::args().skip(1);
     let root = PathBuf::from(args.next().expect("usage: resolve_corpus DIR [--library DIR]..."));
     let mut library = HashMap::new();
+    let mut is_all = false;
     while let Some(flag) = args.next() {
+        if flag == "--all" {
+            is_all = true;
+            continue;
+        }
         assert_eq!(flag, "--library", "unknown argument {flag}");
         let mut files = Vec::new();
         collect(
@@ -29,15 +34,15 @@ fn main() {
             }
         }
     }
-    let mut configs = Vec::new();
-    collect(&root, "cfg", &mut configs);
-    configs.sort();
+    let mut specs = Vec::new();
+    collect(&root, if is_all { "tla" } else { "cfg" }, &mut specs);
+    specs.sort();
 
     let started = Instant::now();
     let mut resolved = 0;
     let mut failures = BTreeMap::<String, Vec<String>>::new();
-    for config in &configs {
-        let spec_path = config.with_extension("tla");
+    for spec in &specs {
+        let spec_path = spec.with_extension("tla");
         let Ok(source) = std::fs::read_to_string(&spec_path) else { continue };
         let directory = spec_path.parent().unwrap().to_path_buf();
         let mut loader = |name: &str| {
@@ -46,7 +51,17 @@ fn main() {
                 .ok()
                 .or_else(|| library.get(name).and_then(|path| std::fs::read_to_string(path).ok()))
         };
-        match tla_resolve::resolve(&source, &mut loader) {
+        // TLC requires the root module to be named after its file.
+        let stem = spec_path.file_stem().unwrap().to_string_lossy();
+        let result = tla_resolve::resolve(&source, &mut loader).and_then(|spec| {
+            let root = spec.modules[0].name;
+            if root.as_str() == stem {
+                return Ok(spec);
+            }
+            let message = format!("File name '{stem}' does not match the name '{root}' of the top level module it contains.");
+            Err(tla_resolve::ResolveError { message, module: root, span: Default::default(), line: 1, column: 1 })
+        });
+        match result {
             Ok(_) => resolved += 1,
             Err(error) => {
                 eprintln!("{}\t{}", spec_path.display(), error.message.replace('\n', " "));
