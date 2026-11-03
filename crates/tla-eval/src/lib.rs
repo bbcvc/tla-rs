@@ -22,7 +22,7 @@ pub use eval::NextAction;
 pub use java::{JavaOverrideError, java_overrides};
 pub use native::{Arg, Ctx, Native, Operator};
 pub use runtime::{CheckerOptions, Registers, Runtime, Statistics};
-pub use scope::Frames;
+pub use scope::{Frames, SpecExpr};
 use tla_ast::{Span, Symbol};
 use tla_resolve::{DefId, ModuleId, Spec, VarId};
 pub use tla_value::{self as value, Value};

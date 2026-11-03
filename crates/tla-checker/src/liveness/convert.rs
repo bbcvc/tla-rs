@@ -8,7 +8,7 @@ use std::collections::HashMap;
 use std::rc::Rc;
 
 use tla_ast::{Fairness, Quantifier, Span};
-use tla_eval::{Evaluator, Frames, Value};
+use tla_eval::{Evaluator, Frames, SpecExpr, Value};
 use tla_resolve::{Builtin, DefBody, DefId, Expr, ExprKind, Level, Pattern};
 
 use super::live::{Atom, AtomKind, Eval, Live};
@@ -48,7 +48,7 @@ pub struct Translation<'e> {
     next: Option<DefId>,
     levels: Levels,
     /// The expressions the atoms evaluate, by index.
-    pub exprs: Vec<&'e Expr>,
+    pub exprs: Vec<SpecExpr>,
     atoms: usize,
     state_atoms: usize,
     depth: usize,
@@ -98,9 +98,19 @@ impl<'e> Translation<'e> {
         Failure::Fatal(format!("TLC cannot handle the temporal formula {range}{inner}"))
     }
 
+    /// `expr` of the body of `def`, as the evaluator takes it.
+    fn handle(&self, def: DefId, expr: &Expr) -> Result<SpecExpr, Failure> {
+        self.evaluator.spec_expr(def, expr).ok_or_else(|| {
+            Failure::Fatal(
+                "The translation of a temporal formula lost track of an expression".into(),
+            )
+        })
+    }
+
     fn eval(&self, expr: &'e Expr, place: &Place) -> Result<Value, Failure> {
-        // SAFETY: `expr` is an expression of the evaluator's spec, in the body of `place.def`.
-        unsafe { self.evaluator.eval_in(&place.frames, expr, None, None) }
+        let expr = self.handle(place.def, expr)?;
+        self.evaluator
+            .eval_in(&place.frames, &expr, None, None)
             .map_err(|error| Failure::Eval(error.to_string()))
     }
 
@@ -118,9 +128,10 @@ impl<'e> Translation<'e> {
         self.state_atoms
     }
 
-    fn evaluated(&mut self, expr: &'e Expr, place: &Place) -> Eval {
-        self.exprs.push(expr);
-        Eval { frames: place.frames.clone(), expr: self.exprs.len() - 1 }
+    /// What evaluates `expr`, of the body of `def`, in the frames of `place`.
+    fn evaluated(&mut self, def: DefId, expr: &Expr, place: &Place) -> Result<Eval, Failure> {
+        self.exprs.push(self.handle(def, expr)?);
+        Ok(Eval { frames: place.frames.clone(), expr: self.exprs.len() - 1 })
     }
 
     /// `expr` as one formula at `level`: TLC evaluates a constant one now.
@@ -139,11 +150,11 @@ impl<'e> Translation<'e> {
                 }
             },
             Level::State => {
-                let eval = self.evaluated(expr, place);
+                let eval = self.evaluated(place.def, expr, place)?;
                 Ok(Live::Atom(self.atom(AtomKind::State(eval))))
             }
             _ => {
-                let action = self.evaluated(expr, place);
+                let action = self.evaluated(place.def, expr, place)?;
                 Ok(Live::Atom(self.atom(AtomKind::Action {
                     action,
                     unchanged: None,
@@ -244,14 +255,16 @@ impl<'e> Translation<'e> {
                 self.whole_of(expr, place, junction)
             }
             ExprKind::Fairness { fairness, action, sub } => {
-                let Some(&enabled) = self.enabled.get(&(place.def, expr.span)) else {
+                let Some(&enabled_def) = self.enabled.get(&(place.def, expr.span)) else {
                     return Err(self.cannot_handle(expr, place, None));
                 };
                 let spec = self.evaluator.spec();
-                let DefBody::Expr(enabled) = &spec.def(enabled).body else {
+                let DefBody::Expr(enabled) = &spec.def(enabled_def).body else {
                     return Err(self.cannot_handle(expr, place, None));
                 };
-                let enabled = self.evaluated(enabled, place);
+                // The definition is like the one the condition is in, so it is evaluated in
+                // the same frames.
+                let enabled = self.evaluated(enabled_def, enabled, place)?;
                 let enabled = self.atom(AtomKind::Enabled(enabled));
                 let disabled = Live::not(Live::Atom(enabled.clone()));
                 let is_next = match &action.kind {
@@ -262,8 +275,8 @@ impl<'e> Translation<'e> {
                     _ => false,
                 };
                 let taken = AtomKind::Action {
-                    action: self.evaluated(action, place),
-                    unchanged: Some(self.evaluated(sub, place)),
+                    action: self.evaluated(place.def, action, place)?,
+                    unchanged: Some(self.evaluated(place.def, sub, place)?),
                     enabled: Some(enabled),
                     is_next,
                 };
@@ -309,8 +322,10 @@ impl<'e> Translation<'e> {
             arguments = args.iter().map(|arg| self.level(arg, place)).fold(arguments, Level::max);
             instance = parent;
         }
-        // SAFETY: the arguments and the scope are the spec's, written in `place`.
-        let frames = unsafe { self.evaluator.call_frames(&place.frames, target, scope, args) }
+        let call = self.handle(place.def, expr)?;
+        let frames = self
+            .evaluator
+            .call_frames(&place.frames, &call, target)
             .map_err(|error| Failure::Eval(error.to_string()))?;
         let inner = Place { frames, def: target, arguments };
         self.depth += 1;
