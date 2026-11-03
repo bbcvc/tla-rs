@@ -96,6 +96,7 @@ macro_rules! unsupported {
 
 mod bags;
 mod finite_sets;
+mod json;
 mod naturals;
 mod randomization;
 mod sequences;
@@ -114,6 +115,7 @@ pub(crate) fn lookup(module: &str, name: &str, uses_integers: bool) -> Option<Na
         "TLCExt" => tlc_ext::lookup(name),
         "_Possible" => tlc_ext::lookup_possible(name),
         "Bags" => bags::lookup(name, uses_integers),
+        "Json" => json::lookup(name),
         "Randomization" => randomization::lookup(name),
         _ => None,
     }
