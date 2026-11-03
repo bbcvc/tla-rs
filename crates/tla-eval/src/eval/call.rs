@@ -61,12 +61,15 @@ impl Evaluator {
             return native(&mut ctx, &args)
                 .map_err(|error| EvalError::at(&self.spec, info.module, info.span, error.0));
         }
+        if args.is_empty() && self.is_computed_once(def) {
+            return self.constant_value(def);
+        }
         let slots = args.into_iter().map(Slot::Value).collect();
         self.enter(def, parent, slots, state, next, false)
     }
 
     /// Evaluates the body of `def` in a new frame holding `slots`.
-    fn enter(
+    pub(super) fn enter(
         &self,
         def: DefId,
         parent: Option<Arc<Frame>>,
@@ -110,6 +113,9 @@ impl Evaluator {
         }
         if let Some(native) = self.natives[def.index()] {
             return self.call_native(native, def, scope, args, expr, env);
+        }
+        if args.is_empty() && self.is_computed_once(def) {
+            return self.constant_value(def);
         }
         if args.len() != info.params.len() {
             return Err(self.arity_error(def, args.len(), env, expr));

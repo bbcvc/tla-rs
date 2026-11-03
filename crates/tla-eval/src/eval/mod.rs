@@ -8,6 +8,7 @@ mod analysis;
 mod bound;
 mod builtin;
 mod call;
+mod constants;
 mod function;
 
 use tla_ast::{Quantifier, Span};
@@ -16,6 +17,7 @@ use tla_value::{LazySet, Symbol, Value};
 
 pub(crate) use self::analysis::{normalizing_evaluations, recursive_functions, tlc_eval};
 use self::builtin::describe;
+pub(crate) use self::constants::constant_definitions;
 use crate::env::{Env, Slot};
 use crate::{EvalError, Evaluator, Result, State};
 
