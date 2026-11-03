@@ -182,8 +182,14 @@ impl Evaluator {
         let parent = self.scope_frame(scope, env)?;
         let frame = Arc::new(Frame::new(Vec::new(), info.frame_size, parent));
         // As in the lazy function, which keeps the state and the laziness of its application.
-        let mut inner =
-            Env { frame, module: info.module, state: env.state, next: env.next, keep_lazy: true };
+        let mut inner = Env {
+            frame,
+            module: info.module,
+            state: env.state,
+            next: env.next,
+            keep_lazy: true,
+            enabled: env.enabled,
+        };
         let mut factors = Vec::new();
         for bound in bounds {
             let set = self.eval(&bound.set, &mut inner)?;

@@ -7,7 +7,7 @@ use tla_resolve::{DefBody, DefId, Expr, VarId};
 use tla_value::{Symbol, Value};
 
 use super::{Action, Rest, Site};
-use crate::env::{Env, Frame, StateRef, Version};
+use crate::env::{Enabled, Env, Frame, StateRef, Version};
 use crate::{EvalError, Evaluator, Incomplete, Result, State};
 
 /// What TLC computes when it walks a predicate.
@@ -58,7 +58,11 @@ impl<'r> Run<'r> {
         def: DefId,
         found: Option<&'r mut dyn FnMut(State) -> Result<bool>>,
     ) -> Self {
-        let variables = evaluator.spec.variables.len();
+        // ENABLED in an instantiated module may bind its variables apart from the spec's.
+        let variables = match computation {
+            Computation::Enabled => evaluator.instance_enabled.slots,
+            _ => evaluator.spec.variables.len(),
+        };
         Self {
             computation,
             current,
@@ -116,7 +120,14 @@ impl<'r> Run<'r> {
 /// Builds an [`Env`] for an expression of `site` that reads the states of `run`.
 pub(super) fn env<'a>(site: &Site, run: &'a Run<'_>) -> Env<'a> {
     let (state, next) = run.views();
-    Env { frame: site.frame.clone(), module: site.module, state, next, keep_lazy: false }
+    Env {
+        frame: site.frame.clone(),
+        module: site.module,
+        state,
+        next,
+        keep_lazy: false,
+        enabled: site.enabled,
+    }
 }
 
 impl Evaluator {
@@ -165,7 +176,14 @@ impl Evaluator {
         };
         let def = DefId(0);
         let mut run = Run::new(self, Computation::Enabled, Some(state), def, None);
-        let site = Site { frame: env.frame.clone(), module: env.module };
+        // In an instantiated module, TLC takes the module's primed variables in the operand for
+        // variables of their own.
+        let is_instance = self.instance_enabled.enabled.contains(&(expr as *const Expr as usize));
+        let enabled = match env.enabled {
+            Enabled::Outside if !is_instance => Enabled::Outside,
+            _ => Enabled::Inside,
+        };
+        let site = Site { frame: env.frame.clone(), module: env.module, enabled };
         self.act(action, &site, &mut run, Action::default(), &Rest::Done)?;
         Ok(run.is_stopped)
     }
@@ -188,6 +206,7 @@ impl Evaluator {
             let site = Site {
                 frame: Arc::new(Frame::new(Vec::new(), info.frame_size, None)),
                 module: info.module,
+                enabled: Enabled::Outside,
             };
             let DefBody::Expr(body) = &info.body else { unreachable!("a walked definition") };
             return self.act(body, &site, run, action.called(info.name), rest);

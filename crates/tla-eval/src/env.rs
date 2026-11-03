@@ -133,6 +133,19 @@ impl OwnedState {
     }
 }
 
+/// Whether an expression is in the operand of an ENABLED of an instantiated module, or what
+/// that operand calls, where TLC takes a primed variable of the module for a variable of its
+/// own: tla-ts's rewrite modes. It goes with the text, so an argument keeps the mode of the
+/// place that passes it.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub(crate) enum Enabled {
+    #[default]
+    Outside,
+    Inside,
+    /// Inside, and under a prime.
+    Primed,
+}
+
 /// Everything about the place an expression is evaluated in but the evaluator: what a lazy
 /// value or a thunk keeps to evaluate an expression later.
 #[derive(Clone)]
@@ -142,6 +155,7 @@ pub(crate) struct Captured {
     pub state: Option<OwnedState>,
     pub next: Option<OwnedState>,
     pub keep_lazy: bool,
+    pub enabled: Enabled,
 }
 
 impl Captured {
@@ -152,6 +166,7 @@ impl Captured {
             state: self.state.as_ref().map(OwnedState::as_ref),
             next: self.next.as_ref().map(OwnedState::as_ref),
             keep_lazy: self.keep_lazy,
+            enabled: self.enabled,
         }
     }
 
@@ -187,6 +202,7 @@ pub(crate) struct Env<'a> {
     /// that a function constructor builds a lazy function and evaluates its body only where it
     /// is applied.
     pub keep_lazy: bool,
+    pub enabled: Enabled,
 }
 
 impl Env<'_> {
@@ -205,6 +221,7 @@ impl Env<'_> {
             state: self.state.map(StateRef::to_owned),
             next: self.next.map(StateRef::to_owned),
             keep_lazy: self.keep_lazy,
+            enabled: self.enabled,
         }
     }
 
@@ -221,6 +238,7 @@ impl Env<'_> {
             state: self.state.map(keep),
             next: self.next.map(keep),
             keep_lazy: self.keep_lazy,
+            enabled: self.enabled,
         }
     }
 }

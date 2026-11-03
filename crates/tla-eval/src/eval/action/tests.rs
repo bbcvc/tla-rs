@@ -878,3 +878,41 @@ Next == x' = <<f[4][3], f[4][0][2], DOMAIN f[5][0]>>
     let current = state(vec![Value::Int(0)]);
     assert_eq!(next_states(&evaluator, "Next", &current).unwrap(), ["<<7, 6, 0..5>>"]);
 }
+
+#[test]
+fn takes_the_primed_variables_of_an_instance_apart_in_its_enabled() {
+    let inner = r#"---- MODULE Inner ----
+EXTENDS Naturals
+VARIABLES u, v
+A == (u' = u) /\ (v' = v + 1)
+B(d) == ENABLED d
+C == B(A)
+D == ENABLED A
+F == ENABLED (u' = 0 /\ v' = 1)
+G == ENABLED (u # v /\ u' = 0 /\ v' = 1)
+H == ENABLED <<u' = u + 1>>_<<u, v>>
+K == ENABLED (UNCHANGED u /\ v' = v + 1)
+L == ENABLED (u' = 1 /\ v' = 2 /\ <<u, v>>' = <<1, 2>>)
+====
+"#;
+    let source = r#"---- MODULE M ----
+VARIABLE x
+I == INSTANCE Inner WITH u <- x, v <- x
+Values == <<I!B(I!A), I!C, I!D, I!F, I!G, I!K, I!L, ENABLED I!A>>
+Unassigned == I!H
+====
+"#;
+    let spec =
+        tla_resolve::resolve(source, &mut |name: &str| (name == "Inner").then(|| inner.to_owned()))
+            .unwrap();
+    let evaluator = Evaluator::new(Arc::new(spec), Vec::new());
+    let current = state(vec![Value::Int(1)]);
+    // As tla-ts finds: inside the module, u and v are primed apart, while an action passed in,
+    // or one of the module's under an ENABLED of the root module, primes x for both.
+    let value = evaluator.eval_def(def(&evaluator, "Values"), Some(&current)).unwrap();
+    assert_eq!(value.to_string(), "<<FALSE, FALSE, TRUE, TRUE, FALSE, TRUE, TRUE, FALSE>>");
+    let error = evaluator.eval_def(def(&evaluator, "Unassigned"), Some(&current)).unwrap_err();
+    assert!(
+        error.message.starts_with("In evaluation, the identifier v@ENABLED is either undefined")
+    );
+}

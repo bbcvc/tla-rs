@@ -98,6 +98,8 @@ pub struct Evaluator {
     /// The function constructors that apply the recursive function whose body holds them, by
     /// address, which TLC builds lazily.
     pub(crate) recursive_constructions: Arc<HashSet<usize>>,
+    /// What TLC's ENABLED does with the variables of an instantiated module.
+    pub(crate) instance_enabled: Arc<eval::InstanceEnabled>,
     /// Whether each definition is a constant TLC computes once, by [`DefId`], and its value once
     /// computed.
     pub(crate) is_constant_definition: Arc<[bool]>,
@@ -134,6 +136,7 @@ impl Evaluator {
         let overrides = vec![None; spec.defs.len()].into();
         let is_recursive = eval::recursive_functions(&spec).into();
         let recursive_constructions = Arc::new(eval::recursive_constructions(&spec));
+        let instance_enabled = Arc::new(eval::instance_enabled(&spec));
         let is_constant_definition = eval::constant_definitions(&spec).into();
         let constant_values = (0..spec.defs.len()).map(|_| OnceLock::new()).collect();
         let tlc_eval = eval::tlc_eval(&spec);
@@ -149,6 +152,7 @@ impl Evaluator {
             runtime: Arc::default(),
             is_recursive,
             recursive_constructions,
+            instance_enabled,
             is_constant_definition,
             constant_values,
             tlc_eval,

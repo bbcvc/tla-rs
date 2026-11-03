@@ -24,7 +24,7 @@ use self::run::{Run, env};
 pub use self::split::NextAction;
 use super::bound::{Variable, bind_frame};
 use super::{STACK_OVERFLOW, describe, is_stack_low};
-use crate::env::{Frame, Slot};
+use crate::env::{Captured, Enabled, Frame, Slot};
 use crate::native::OperatorKind;
 use crate::{ConstBinding, EvalError, Evaluator, Result};
 
@@ -34,6 +34,8 @@ use crate::{ConstBinding, EvalError, Evaluator, Result};
 pub(crate) struct Site {
     pub frame: Arc<Frame>,
     pub module: ModuleId,
+    /// Whether the expression is in the operand of an ENABLED of an instantiated module.
+    pub enabled: Enabled,
 }
 
 /// The action TLC names a successor after: the last definition the walk called outside a
@@ -42,6 +44,13 @@ pub(crate) struct Site {
 pub(super) struct Action {
     pub name: Option<Symbol>,
     is_fixed: bool,
+}
+
+impl Site {
+    /// Where an argument or a lazy function was written, which it keeps.
+    pub(super) fn of(captured: &Captured) -> Self {
+        Site { frame: captured.frame.clone(), module: captured.module, enabled: captured.enabled }
+    }
 }
 
 impl Action {
@@ -305,8 +314,7 @@ impl Evaluator {
                     }
                     _ => return self.guard(expr, site, run, action, rest),
                 };
-                let origin =
-                    Site { frame: thunk.captured.frame.clone(), module: thunk.captured.module };
+                let origin = Site::of(&thunk.captured);
                 self.act(thunk.expr.get(), &origin, run, action, rest)
             }
             _ => self.guard(expr, site, run, action, rest),
@@ -394,6 +402,7 @@ impl Evaluator {
         Ok(Site {
             frame: Arc::new(Frame::new(slots, info.frame_size, parent)),
             module: info.module,
+            enabled: site.enabled,
         })
     }
 
