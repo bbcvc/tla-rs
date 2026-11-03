@@ -15,6 +15,7 @@ mod fingerprint;
 mod format;
 mod func;
 mod order;
+mod permute;
 mod set;
 mod stream;
 

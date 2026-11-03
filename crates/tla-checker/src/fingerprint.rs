@@ -2,12 +2,12 @@
 //! of the `VIEW`, under the permutations of the `SYMMETRY`, as TLC fingerprints them.
 //!
 //! TLC fingerprints a state of a symmetric spec by a representative of its orbit, the states its
-//! permutations give, so a state and its permutations count once. Any choice of representative
-//! that is the same for the whole orbit counts the same states, so this takes the smallest
-//! fingerprint of the orbit. TLC closes the permutations the `SYMMETRY` gives under
-//! composition, as does this.
+//! permutations give, so a state and its permutations count once: the smallest of them, compared
+//! variable by variable. TLC closes the permutations the `SYMMETRY` gives under composition, as
+//! does this.
 
-use std::collections::{BTreeMap, HashMap, HashSet};
+use std::cmp::Ordering;
+use std::collections::{BTreeMap, HashSet};
 use std::hash::{DefaultHasher, Hasher};
 use std::sync::Arc;
 
@@ -17,8 +17,9 @@ use tla_value::{Symbol, Value};
 
 use crate::Error;
 
-/// A permutation of model values.
-type Permutation = HashMap<Symbol, Value>;
+/// A permutation of model values: each model value it moves, with its image. It moves few, so
+/// looking one up is a scan.
+type Permutation = Vec<(Symbol, Value)>;
 
 pub struct Fingerprinter {
     view: Option<DefId>,
@@ -45,14 +46,37 @@ impl Fingerprinter {
 
     /// The fingerprint of `state`.
     pub fn fingerprint(&self, evaluator: &Evaluator, state: &State) -> Result<u128, String> {
-        let mut smallest = self.fingerprint_one(evaluator, state)?;
+        let error = |error: tla_value::Error| error.to_string();
+        // The smallest permutation so far, if smaller than the state. Comparing a permutation
+        // with it builds only what the comparison needs.
+        let mut smallest: Option<Vec<Value>> = None;
         for permutation in &self.permutations {
-            let permuted: Vec<Value> =
-                state.iter().map(|value| permute(value, permutation)).collect::<Result<_, _>>()?;
-            let fingerprint = self.fingerprint_one(evaluator, &Arc::from(permuted))?;
-            smallest = smallest.min(fingerprint);
+            let image = |name: Symbol| {
+                permutation.iter().find(|(from, _)| *from == name).map(|(_, to)| to.clone())
+            };
+            let preimage = |name: Symbol| {
+                permutation.iter().find_map(|(from, to)| match to {
+                    Value::Model(to) if *to == name => Some(*from),
+                    _ => None,
+                })
+            };
+            let least = smallest.as_deref().unwrap_or(state);
+            let mut ordering = Ordering::Equal;
+            for (value, least) in state.iter().zip(least) {
+                ordering = value.compare_permuted(&image, &preimage, least).map_err(error)?;
+                if ordering != Ordering::Equal {
+                    break;
+                }
+            }
+            if ordering == Ordering::Less {
+                let permuted = state.iter().map(|value| value.permute(&image));
+                smallest = Some(permuted.collect::<Result<_, _>>().map_err(error)?);
+            }
         }
-        Ok(smallest)
+        match smallest {
+            Some(smallest) => self.fingerprint_one(evaluator, &Arc::from(smallest)),
+            None => self.fingerprint_one(evaluator, state),
+        }
     }
 
     fn fingerprint_one(&self, evaluator: &Evaluator, state: &State) -> Result<u128, String> {
@@ -177,34 +201,6 @@ fn compose(
 
 fn is_model(value: &Value, name: Symbol) -> bool {
     matches!(value, Value::Model(found) if *found == name)
-}
-
-/// `value` with each model value the permutation moves replaced by its image.
-fn permute(value: &Value, permutation: &Permutation) -> Result<Value, String> {
-    let error = |error: tla_value::Error| error.to_string();
-    Ok(match value {
-        Value::Model(name) => permutation.get(name).cloned().unwrap_or_else(|| value.clone()),
-        Value::Bool(_) | Value::Int(_) | Value::Str(_) | Value::Interval(..) => value.clone(),
-        Value::Tuple(items) => Value::tuple(
-            items.iter().map(|item| permute(item, permutation)).collect::<Result<_, _>>()?,
-        ),
-        Value::Func(_) | Value::LazyFunc(_) => {
-            let pairs = value.written_pairs().map_err(error)?;
-            let pairs = pairs
-                .iter()
-                .map(|(key, value)| Ok((permute(key, permutation)?, permute(value, permutation)?)))
-                .collect::<Result<Vec<_>, String>>()?;
-            Value::function(pairs).map_err(error)?
-        }
-        _ => {
-            let elements = value.elements().map_err(error)?;
-            let permuted = elements
-                .iter()
-                .map(|element| permute(element, permutation))
-                .collect::<Result<Vec<_>, _>>()?;
-            Value::set(permuted).map_err(error)?
-        }
-    })
 }
 
 #[cfg(test)]
