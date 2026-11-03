@@ -2,9 +2,9 @@
 
 use std::ptr::NonNull;
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::{Arc, OnceLock};
+use std::sync::{Arc, Mutex, OnceLock, PoisonError};
 
-use tla_resolve::{Expr, ModuleId, Spec};
+use tla_resolve::{DefId, Expr, ModuleId, Spec};
 use tla_value::Value;
 
 use crate::{Operator, State};
@@ -25,10 +25,32 @@ pub(crate) enum Slot {
 /// Frames are shared through `Arc`. Evaluation writes slots of the current frame with
 /// `Arc::make_mut`, so a lazy value that captured the frame keeps the values it saw, and no
 /// frame can ever hold a reference to itself.
-#[derive(Clone)]
 pub(crate) struct Frame {
     pub slots: Vec<Slot>,
     pub parent: Option<Arc<Frame>>,
+    /// The values of the `LET` definitions evaluated in this frame, as TLC binds a `LET`
+    /// definition to a `LazyValue`: each for the states it was computed in, until a slot of the
+    /// frame changes.
+    lets: Mutex<Vec<LetValue>>,
+}
+
+/// The value of a `LET` definition, and where it was computed.
+struct LetValue {
+    def: DefId,
+    /// The slots of the frame the value may have read, as bits: bit 63 for every slot from 63.
+    reads: u64,
+    state: Option<OwnedState>,
+    next: Option<OwnedState>,
+    keep_lazy: bool,
+    enabled: Enabled,
+    value: Value,
+}
+
+impl Clone for Frame {
+    /// A copy, about to be written, which keeps no `LET` values.
+    fn clone(&self) -> Self {
+        Self { slots: self.slots.clone(), parent: self.parent.clone(), lets: Mutex::default() }
+    }
 }
 
 impl Frame {
@@ -36,7 +58,50 @@ impl Frame {
     pub fn new(args: Vec<Slot>, size: usize, parent: Option<Arc<Frame>>) -> Self {
         let mut slots = args;
         slots.resize(size.max(slots.len()), Slot::Value(Value::FALSE));
-        Self { slots, parent }
+        Self { slots, parent, lets: Mutex::default() }
+    }
+
+    /// Writes a slot, dropping the `LET` values computed in the frame that may have read it.
+    pub fn set(&mut self, slot: usize, value: Slot) {
+        self.slots[slot] = value;
+        let lets = self.lets.get_mut().unwrap_or_else(PoisonError::into_inner);
+        if !lets.is_empty() {
+            let bit = 1 << slot.min(63);
+            lets.retain(|cached| cached.reads & bit == 0);
+        }
+    }
+
+    /// The value of the `LET` definition `def` computed in this frame where `env` is.
+    pub fn let_value(&self, def: DefId, env: &Env<'_>) -> Option<Value> {
+        let lets = self.lets.lock().unwrap_or_else(PoisonError::into_inner);
+        lets.iter()
+            .find(|cached| {
+                cached.def == def
+                    && cached.keep_lazy == env.keep_lazy
+                    && cached.enabled == env.enabled
+                    && is_same_state(cached.state.as_ref(), env.state)
+                    && is_same_state(cached.next.as_ref(), env.next)
+            })
+            .map(|cached| cached.value.clone())
+    }
+
+    /// Keeps the value of the `LET` definition `def`, which may read the slots `reads` of this
+    /// frame, computed in this frame where `env` is.
+    pub fn keep_let_value(&self, def: DefId, reads: u64, env: &Env<'_>, value: Value) {
+        let keep = |state: StateRef<'_>| match state {
+            StateRef::Complete(state) => OwnedState::Complete(state.clone()),
+            StateRef::Partial(_, version) => OwnedState::Changing(version),
+        };
+        let cached = LetValue {
+            def,
+            reads,
+            state: env.state.map(keep),
+            next: env.next.map(keep),
+            keep_lazy: env.keep_lazy,
+            enabled: env.enabled,
+            value,
+        };
+        self.lets.lock().unwrap_or_else(PoisonError::into_inner).push(cached);
     }
 
     /// The frame `hops` frames up from this one.
@@ -173,20 +238,23 @@ impl Captured {
     /// Whether `env` reads the states this was captured in: the same complete states, and the
     /// same version of a state being assigned.
     pub fn is_in_states_of(&self, env: &Env<'_>) -> bool {
-        fn same(captured: Option<&OwnedState>, current: Option<StateRef<'_>>) -> bool {
-            match (captured, current) {
-                (Some(OwnedState::Complete(captured)), Some(StateRef::Complete(current))) => {
-                    Arc::ptr_eq(captured, current)
-                }
-                (
-                    Some(OwnedState::Changing(captured) | OwnedState::Partial(_, captured)),
-                    Some(StateRef::Partial(_, current)),
-                ) => captured == &current,
-                (None, None) => true,
-                _ => false,
-            }
+        is_same_state(self.state.as_ref(), env.state) && is_same_state(self.next.as_ref(), env.next)
+    }
+}
+
+/// Whether a state kept is the state `current`: the same complete state, or the same version of a
+/// state being assigned.
+fn is_same_state(kept: Option<&OwnedState>, current: Option<StateRef<'_>>) -> bool {
+    match (kept, current) {
+        (Some(OwnedState::Complete(kept)), Some(StateRef::Complete(current))) => {
+            Arc::ptr_eq(kept, current)
         }
-        same(self.state.as_ref(), env.state) && same(self.next.as_ref(), env.next)
+        (
+            Some(OwnedState::Changing(kept) | OwnedState::Partial(_, kept)),
+            Some(StateRef::Partial(_, current)),
+        ) => kept == &current,
+        (None, None) => true,
+        _ => false,
     }
 }
 
@@ -207,7 +275,7 @@ pub(crate) struct Env<'a> {
 
 impl Env<'_> {
     pub fn set(&mut self, slot: usize, value: Value) {
-        Arc::make_mut(&mut self.frame).slots[slot] = Slot::Value(value);
+        Arc::make_mut(&mut self.frame).set(slot, Slot::Value(value));
     }
 
     pub fn slot(&self, hops: usize, slot: usize) -> &Slot {

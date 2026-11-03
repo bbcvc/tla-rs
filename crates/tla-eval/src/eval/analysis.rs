@@ -7,6 +7,135 @@ use tla_resolve::{
     Bound, Builtin, DefBody, DefId, ExceptKey, Expr, ExprKind, Level, OpRef, Scope, Spec,
 };
 
+/// Whether each definition is one of a `LET` without parameters whose value the evaluator keeps
+/// for the frame the `LET` is evaluated in, as TLC binds it to a `LazyValue`, by [`DefId`]. One
+/// that calls an operator with effects or a random choice, or applies an operator parameter,
+/// which could, is evaluated at each reference, as is one that builds a set with `UNION` or
+/// `\cup`, which TLC builds anew each time (tla-ts `getReevaluatedDefinitions`).
+pub(crate) fn cached_lets(spec: &Spec, is_computed_once: &[bool]) -> Vec<bool> {
+    let mut is_pure: Vec<Option<bool>> = vec![None; spec.defs.len()];
+    (0..spec.defs.len())
+        .map(|index| {
+            let def = spec.def(DefId(index as u32));
+            def.depth > 0
+                && def.params.is_empty()
+                && is_pure_definition(spec, is_computed_once, DefId(index as u32), &mut is_pure)
+        })
+        .collect()
+}
+
+/// The slots of the frame each definition of a `LET` is evaluated in that the definition may
+/// read, as bits, by [`DefId`]: bit `s` for slot `s`, bit 63 for every slot from 63 on. A
+/// definition whose reads can't be told reads them all.
+pub(crate) fn let_reads(spec: &Spec) -> Vec<u64> {
+    (0..spec.defs.len())
+        .map(|index| {
+            let id = DefId(index as u32);
+            if spec.def(id).depth == 0 {
+                return 0;
+            }
+            let mut visited = HashSet::new();
+            definition_reads(spec, id, 1, &mut visited)
+        })
+        .collect()
+}
+
+fn slot_bit(slot: usize) -> u64 {
+    1 << slot.min(63)
+}
+
+/// The slots of the frame `distance` frames up from the frame of `id` that the definition may read.
+fn definition_reads(
+    spec: &Spec,
+    id: DefId,
+    distance: usize,
+    visited: &mut HashSet<(DefId, usize)>,
+) -> u64 {
+    if !visited.insert((id, distance)) {
+        return 0;
+    }
+    let mut pending: Vec<&Expr> = match &spec.def(id).body {
+        DefBody::Expr(body) => vec![body],
+        DefBody::Function { bounds, body } => {
+            bounds.iter().map(|bound| &bound.set).chain([body]).collect()
+        }
+    };
+    let mut reads = 0;
+    while let Some(expr) = pending.pop() {
+        match &expr.kind {
+            ExprKind::Local(local) | ExprKind::OpArg(OpRef::Param(local))
+                if local.hops == distance =>
+            {
+                reads |= slot_bit(local.slot);
+            }
+            ExprKind::CallParam { param, .. } if param.hops == distance => {
+                reads |= slot_bit(param.slot);
+            }
+            ExprKind::Call { def, scope, .. } | ExprKind::OpArg(OpRef::Def { def, scope }) => {
+                match scope {
+                    Scope::Global => {}
+                    // The definition captures a frame at or below the one read.
+                    Scope::Up(hops) if *hops <= distance => {
+                        reads |= definition_reads(spec, *def, distance - hops + 1, visited);
+                    }
+                    Scope::Up(_) => {}
+                    Scope::Instance { .. } => return u64::MAX,
+                }
+            }
+            _ => {}
+        }
+        for_each_child(expr, &mut |child| pending.push(child));
+    }
+    reads
+}
+
+fn is_pure_definition(
+    spec: &Spec,
+    is_computed_once: &[bool],
+    id: DefId,
+    is_pure: &mut Vec<Option<bool>>,
+) -> bool {
+    if let Some(known) = is_pure[id.index()] {
+        return known;
+    }
+    // A definition that refers to itself counts as pure meanwhile.
+    is_pure[id.index()] = Some(true);
+    let def = spec.def(id);
+    let module = spec.modules[def.module.index()].name.as_str();
+    let pure = if crate::stdlib::is_impure(module, def.name.as_str()) {
+        false
+    } else {
+        let mut pending: Vec<&Expr> = match &def.body {
+            DefBody::Expr(body) => vec![body],
+            DefBody::Function { bounds, body } => {
+                bounds.iter().map(|bound| &bound.set).chain([body]).collect()
+            }
+        };
+        let mut pure = true;
+        while let Some(expr) = pending.pop() {
+            match &expr.kind {
+                ExprKind::CallParam { .. }
+                | ExprKind::Builtin { op: Builtin::Union | Builtin::Cup, .. } => {
+                    pure = false;
+                    break;
+                }
+                ExprKind::Call { def, .. } | ExprKind::OpArg(OpRef::Def { def, .. })
+                    if !is_computed_once[def.index()]
+                        && !is_pure_definition(spec, is_computed_once, *def, is_pure) =>
+                {
+                    pure = false;
+                    break;
+                }
+                _ => {}
+            }
+            for_each_child(expr, &mut |child| pending.push(child));
+        }
+        pure
+    };
+    is_pure[id.index()] = Some(pure);
+    pure
+}
+
 /// Whether `expr` reads a variable, itself or through a definition it applies.
 pub(crate) fn mentions_variables(spec: &Spec, expr: &Expr) -> bool {
     let mut pending = vec![expr];

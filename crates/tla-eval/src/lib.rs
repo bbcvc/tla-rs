@@ -106,6 +106,11 @@ pub struct Evaluator {
     /// Whether each definition is a constant TLC computes once, by [`DefId`], and its value once
     /// computed.
     pub(crate) is_constant_definition: Arc<[bool]>,
+    /// Whether each definition is one of a `LET` whose value is kept for the frame the `LET` is
+    /// evaluated in, by [`DefId`].
+    pub(crate) is_cached_let: Arc<[bool]>,
+    /// The slots of its frame each `LET` definition may read, as bits, by [`DefId`].
+    pub(crate) let_reads: Arc<[u64]>,
     pub(crate) constant_values: Arc<[OnceLock<Value>]>,
     /// TLC's `TLCEval`, and the applications of it whose argument TLC normalizes, by address.
     pub(crate) tlc_eval: Option<DefId>,
@@ -122,7 +127,7 @@ impl Evaluator {
             .modules
             .iter()
             .any(|module| module.is_standard && module.name.as_str() == "Integers");
-        let natives = spec
+        let natives: Arc<[Option<Native>]> = spec
             .defs
             .iter()
             .map(|def| {
@@ -142,7 +147,15 @@ impl Evaluator {
         let is_recursive = eval::recursive_functions(&spec).into();
         let recursive_constructions = Arc::new(eval::recursive_constructions(&spec));
         let instance_enabled = Arc::new(eval::instance_enabled(&spec));
-        let is_constant_definition = eval::constant_definitions(&spec).into();
+        let is_constant_definition: Arc<[bool]> = eval::constant_definitions(&spec).into();
+        // A native is computed at each call, even where its definition is a constant.
+        let is_computed_once: Vec<bool> = is_constant_definition
+            .iter()
+            .zip(natives.iter())
+            .map(|(&is_constant, native)| is_constant && native.is_none())
+            .collect();
+        let is_cached_let = eval::cached_lets(&spec, &is_computed_once).into();
+        let let_reads = eval::let_reads(&spec).into();
         let constant_values = (0..spec.defs.len()).map(|_| OnceLock::new()).collect();
         let tlc_eval = eval::tlc_eval(&spec);
         let tlc_cache = spec.defs.iter().position(|def| {
@@ -164,6 +177,8 @@ impl Evaluator {
             recursive_constructions,
             instance_enabled,
             is_constant_definition,
+            is_cached_let,
+            let_reads,
             constant_values,
             tlc_eval,
             normalizing_evaluations,

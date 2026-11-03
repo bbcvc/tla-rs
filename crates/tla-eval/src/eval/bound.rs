@@ -40,7 +40,7 @@ pub(super) fn bind_frame(
     frame: &mut Arc<Frame>,
 ) -> tla_value::Result<()> {
     match binder {
-        Binder::Slot(slot) => Arc::make_mut(frame).slots[slot] = Slot::Value(value),
+        Binder::Slot(slot) => Arc::make_mut(frame).set(slot, Slot::Value(value)),
         Binder::Tuple(slots) => {
             let Some(items) = tuple_items(&value).filter(|items| items.len() == slots.len()) else {
                 bail!(
@@ -50,7 +50,7 @@ pub(super) fn bind_frame(
             };
             let frame = Arc::make_mut(frame);
             for (&slot, item) in slots.iter().zip(items.iter()) {
-                frame.slots[slot] = Slot::Value(item.clone());
+                frame.set(slot, Slot::Value(item.clone()));
             }
         }
     }
