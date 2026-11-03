@@ -59,6 +59,12 @@ fn defers_constant_parts_to_evaluation() {
     let usages: Vec<&Usage> = plan.constants.iter().map(|constant| &constant.usage).collect();
     assert!(matches!(usages[0], Usage::Predicate { kind: "invariant", .. }));
     assert!(matches!(usages[1], Usage::Predicate { kind: "property", .. }));
+    // An operator applied to a variable is at state level to TLC, whether it uses its
+    // parameter or not.
+    let body = format!("{SPEC}\nIgnore(a) == FALSE\nInv == Ignore(x)");
+    let (_, plan) = planned(&body, "SPECIFICATION Spec\nINVARIANT Inv").unwrap();
+    assert!(plan.constants.is_empty());
+    assert_eq!(plan.invariants.len(), 1);
 }
 
 #[test]

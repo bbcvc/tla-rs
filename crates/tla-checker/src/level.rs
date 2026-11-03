@@ -1,7 +1,8 @@
 //! The level of an expression of the resolved program, which spec processing uses to sort the
 //! conjuncts of a specification or property as TLC does. It starts from the levels the resolver
-//! computed, as SANY does, and raises to state level the operators TLC overrides with Java
-//! methods that read the model checker's state, such as `TLCGet`, as tla-ts does.
+//! computed, as SANY does, takes the level of every argument of an operator, as TLC does, and
+//! raises to state level the operators TLC overrides with Java methods that read the model
+//! checker's state, such as `TLCGet`, as tla-ts does.
 
 use std::cell::RefCell;
 use std::collections::HashMap;
@@ -85,14 +86,12 @@ impl Levels {
             }
             ExprKind::Local(_) => Level::Constant,
             ExprKind::Var(_) => Level::State,
-            ExprKind::Call { def, scope, args } => {
-                let outer = instance_args(scope)
-                    .map(|arg| self.level(spec, arg))
-                    .fold(Level::Constant, Level::max);
-                let own: Vec<Level> = args.iter().map(|arg| self.level(spec, arg)).collect();
-                let applied = spec.def_levels(*def).applied(&own);
-                applied.max(self.def_level(spec, *def)).max(outer)
-            }
+            // TLC's `Spec.getLevelBound` takes the level of every argument, whether the
+            // definition uses its parameter or not, as tla-ts does, unlike SANY.
+            ExprKind::Call { def, scope, args } => instance_args(scope)
+                .chain(args)
+                .map(|arg| self.level(spec, arg))
+                .fold(self.def_level(spec, *def), Level::max),
             ExprKind::CallParam { args, .. } | ExprKind::CallConst { args, .. } => {
                 all(&mut args.iter())
             }
