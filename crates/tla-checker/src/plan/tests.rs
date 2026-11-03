@@ -3,6 +3,7 @@ use std::collections::HashMap;
 use tla_resolve::{DefBody, Spec};
 
 use super::{Plan, Usage, plan};
+use crate::liveness::template::Template;
 use crate::testing::spec;
 
 fn planned(body: &str, config: &str) -> Result<(Spec, Plan), String> {
@@ -24,7 +25,13 @@ fn splits_a_specification_into_init_next_and_fairness() {
     let (spec, plan) = planned(SPEC, "SPECIFICATION Spec").unwrap();
     let init: Vec<&str> = plan.init.iter().map(|&def| name(&spec, def)).collect();
     assert_eq!((init, plan.next.map(|def| name(&spec, def))), (vec!["Init"], Some("Next")));
-    assert_eq!(plan.temporals, 1);
+    // TLC translates the fairness only to check temporal properties.
+    assert!(plan.fairness.is_empty());
+    let body = format!("{SPEC}\nLater == <>(x > 2)");
+    let (_, plan) = planned(&body, "SPECIFICATION Spec\nPROPERTY Later").unwrap();
+    assert!(matches!(plan.fairness[..], [Template::Fairness { strong: false, .. }]));
+    assert!(matches!(&plan.properties[..], [(name, Template::Eventually(body))]
+        if name == "Later" && matches!(**body, Template::State(_))));
 
     // Parts that aren't definitions get definitions of their own.
     let (spec, plan) = planned(
@@ -49,7 +56,8 @@ fn sorts_the_parts_of_properties() {
     assert_eq!(names(&plan.invariants), ["TypeOK"]);
     assert_eq!(names(&plan.action_properties), ["Up"]);
     assert_eq!(names(&plan.initial_predicates), ["Start"]);
-    assert_eq!(plan.liveness, ["All"]);
+    let properties: Vec<&str> = plan.properties.iter().map(|(name, _)| name.as_str()).collect();
+    assert_eq!(properties, ["Eventually"]);
 }
 
 #[test]

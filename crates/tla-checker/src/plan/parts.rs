@@ -23,8 +23,8 @@ pub(super) struct Part {
 #[derive(Clone)]
 pub(super) struct Via {
     /// The module-level definition the instance's arguments are written in.
-    caller: DefId,
-    scope: Scope,
+    pub caller: DefId,
+    pub scope: Scope,
 }
 
 impl Planner<'_> {

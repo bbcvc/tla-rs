@@ -6,3 +6,4 @@
 
 pub mod live;
 pub mod tableau;
+pub mod template;

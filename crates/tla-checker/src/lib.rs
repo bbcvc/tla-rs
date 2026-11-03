@@ -31,15 +31,30 @@ use tla_resolve::Spec;
 pub use crate::plan::{Check, Plan};
 pub use crate::search::{Ending, Successors};
 
-/// A model TLC rejects before it explores any state, with TLC's wording.
+/// A model TLC rejects before it explores any state, with TLC's wording, or one that uses what
+/// the checker doesn't support.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Error {
     pub message: String,
+    pub is_unsupported: bool,
 }
 
 impl Error {
     pub fn config(message: impl Into<String>) -> Self {
-        Self { message: message.into() }
+        Self { message: message.into(), is_unsupported: false }
+    }
+
+    pub fn unsupported(message: impl Into<String>) -> Self {
+        Self { message: message.into(), is_unsupported: true }
+    }
+}
+
+impl From<Error> for Outcome {
+    fn from(error: Error) -> Self {
+        match error.is_unsupported {
+            true => Outcome::unsupported(error.message),
+            false => Outcome::error(error.message),
+        }
     }
 }
 
@@ -157,7 +172,7 @@ pub fn check<S: Successors>(
         .collect();
     let mut plan = match plan::plan(&mut spec, config, &overrides) {
         Ok(plan) => plan,
-        Err(error) => return Outcome::error(error.message),
+        Err(error) => return error.into(),
     };
     let has_variables = !spec.variables.is_empty();
     let assumptions = spec.assumptions.clone();
@@ -196,7 +211,7 @@ pub fn check<S: Successors>(
     if let Some(outcome) = check_assumptions(&evaluator, &assumptions) {
         return outcome;
     }
-    let has_liveness = !plan.liveness.is_empty() || plan.temporals > 0;
+    let has_liveness = !plan.properties.is_empty();
     if !has_variables {
         let outcome = Outcome {
             generated: Some(0),
