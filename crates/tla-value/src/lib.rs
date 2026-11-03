@@ -20,7 +20,7 @@ use std::fmt;
 use std::sync::Arc;
 
 pub use func::Key;
-pub use tla_intern::Symbol;
+pub use tla_intern::{Symbol, set_order};
 
 /// An evaluation error, worded like TLC's where TLC reports the same problem.
 #[derive(Clone, Debug, PartialEq, Eq, thiserror::Error)]
