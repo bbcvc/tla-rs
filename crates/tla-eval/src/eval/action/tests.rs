@@ -500,9 +500,7 @@ fn walks_the_bodies_of_functions_of_actions() {
     assert_eq!(successors("Each").unwrap(), ["1, 0", "2, 0"]);
     assert_eq!(successors("Defined").unwrap(), ["2, 2"]);
     assert_eq!(successors("Guard").unwrap(), ["0, 0"]);
-    assert!(successors("Outside").unwrap_err().message.starts_with(
-        "In applying the function\n"
-    ));
+    assert!(successors("Outside").unwrap_err().message.starts_with("In applying the function\n"));
     assert_eq!(
         successors("NotBoolean").unwrap_err().message,
         "In computing next states, TLC expected a boolean expression,\nbut didn't find one.\nline 11, col 15 to line 11, col 22 of module FunctionActions"
@@ -511,4 +509,51 @@ fn walks_the_bodies_of_functions_of_actions() {
         successors("NotFunction").unwrap_err().message,
         "In computing next states, a non-function (a set of the form {e1, ... ,eN}) was applied as a function.\nline 12, col 16 to line 12, col 21 of module FunctionActions"
     );
+}
+
+/// The states generated and distinct of a spec with `body` after `EXTENDS Naturals, FiniteSets`.
+fn explore_body(body: &str) -> (usize, usize) {
+    let source = format!("---- MODULE M ----\nEXTENDS Naturals, FiniteSets\n{body}\n====");
+    explore(&evaluator(&source), "Init", "Next")
+}
+
+#[test]
+fn streams_lazy_unions_with_their_duplicates() {
+    let records = "x' \\in [b : UNION {{3, 1}, 0..1}, a : UNION {{2}, 1..2}]";
+    assert_eq!(explore_body(&format!("VARIABLE x\nInit == x = 0\nNext == {records}")).0, 85);
+    let set = "UNION {SUBSET {1}, {{}}}";
+    let body = format!("VARIABLE x\nInit == x \\in {set}\nNext == x' \\in {set}");
+    assert_eq!(explore_body(&body), (9, 2));
+    let counts =
+        |set: &str| explore_body(&format!("VARIABLE x\nInit == x \\in {set}\nNext == UNCHANGED x"));
+    assert_eq!(counts("SUBSET {1} \\cup SUBSET {2}"), (7, 3));
+    assert_eq!(counts("(1..3) \\cup SUBSET {}"), (8, 4));
+    assert_eq!(counts("{1} \\cup {1, 2}"), (4, 2));
+    assert_eq!(counts("UNION UNION (SUBSET {{}, {{}}})"), (3, 1));
+    assert_eq!(counts("UNION UNION {SUBSET {1}, {{1}}}"), (3, 1));
+    let nested = "x = 0 /\\ x' \\in UNION UNION (SUBSET {{1}, {1, 2}})";
+    assert_eq!(explore_body(&format!("VARIABLE x\nInit == x = 0\nNext == {nested}")), (7, 3));
+}
+
+#[test]
+fn streams_a_union_until_tlc_caches_it() {
+    let generated = |next: &str| {
+        let body =
+            format!("VARIABLES x, y\nInit == x = 0 /\\ y = 0\nNext == ({next}) /\\ UNCHANGED x");
+        explore_body(&body).0
+    };
+    let union = "UNION {UNION {0..2, {1}}, {7}}";
+    assert_eq!(generated(&format!("y' \\in {union}")), 21);
+    assert_eq!(generated(&format!("\\E e \\in {union} : y' = e")), 17);
+    assert_eq!(generated("y' \\in {1} \\X UNION {UNION {0..2, {1}}, {1, 2}}"), 25);
+    // A LET definition is evaluated anew at each reference, so sizing it leaves the next uncached.
+    assert_eq!(generated(&format!("LET u == {union} IN Cardinality(u) > 0 /\\ y' \\in u")), 21);
+    // Sizing the set itself caches it.
+    let sized = "\\E u \\in {UNION {0..2, {1}}} : Cardinality(u) > 0 /\\ y' \\in UNION {u, {7}}";
+    assert_eq!(generated(sized), 17);
+    // Sorting a set enumeration compares each element after the first, which caches it.
+    let counts =
+        |set: &str| explore_body(&format!("VARIABLE x\nInit == x \\in {set}\nNext == UNCHANGED x"));
+    assert_eq!(counts("UNION {UNION (SUBSET {{1}, {1, 2}}), {1}}"), (8, 3));
+    assert_eq!(counts("UNION {{1}, UNION (SUBSET {{1}, {1, 2}})}"), (6, 3));
 }

@@ -64,7 +64,9 @@ impl Evaluator {
     }
 
     /// `x' = e`, `x' \in S`, or `x' \subseteq S` for the variable `var`: assigns `var` if the
-    /// walk hasn't yet, for each element of `S` in TLC's order, and tests it otherwise.
+    /// walk hasn't yet, for each element of `S` as TLC's `Enumerator` streams it, and tests it
+    /// otherwise. A lazy union TLC hasn't cached streams each set it combines, so an element two
+    /// of them share is assigned once for each.
     #[allow(clippy::too_many_arguments)]
     pub(super) fn assign(
         &self,
@@ -97,7 +99,7 @@ impl Evaluator {
             let message = format!("{message}\n{}", self.range(&env, expr));
             return Err(self.error(&env, expr, message));
         }
-        let elements = set.elements().at(self, &env, expr)?;
+        let elements = set.streamed_elements().at(self, &env, expr)?;
         drop(env);
         for element in elements.iter() {
             run.with_assigned(var, element.clone(), |run| self.resume(run, action, rest))?;
