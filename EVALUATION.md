@@ -191,11 +191,8 @@ Still missing from evaluation:
 
 | Gap | Effect |
 | --- | --- |
-| `ENABLED` | Needs successor generation, which comes with the model checker. |
 | Natives for the other community modules TLC overrides in Java, such as CSV, and `TLCGet("config").install` | Only matter with `--community-modules`; CSV's writers stay `TRUE`, and `SmokeEWD998_SC`'s command has no jar to run. |
 | TLC's order of computing constant definitions at startup | `Evaluator::evaluate_constant_definitions` goes through the definitions in the resolver's order. TLC goes through the modules in the order SANY finishes them, through each module's definitions in the order of SANY's symbol table (tla-ts `createTlcDefinitionOrder`), and skips the modules an `INSTANCE` gives parameters to. Values are the same; impure natives in several constant definitions, such as `Print` or `RandomElement`, can run in another order. |
-| Streaming the elements of a lazy set before TLC caches them | TLC enumerates a `UNION` or `\cup` it hasn't cached by streaming the sets it combines, duplicates and all (tla-ts `getStreamedElements`). This matters for how many successors TLC generates. |
-| A graceful error on deep recursion | Each recursion level uses about 2.6 KB of stack in release builds. The checker should evaluate on threads with large stacks. |
 | `PickSuccessor`, and `AssertError`'s check that its message is a string literal | Small; they matter only for the specs that use them. |
 
 ## Model checking results
@@ -255,14 +252,16 @@ cargo run --release -p tla-checker --example conformance -- $C/.corpora \
 | First full run | 636 | 44 | 60 | | 82 | 1 |
 | Safety only | 653 | 18 | 70 | 51 | 30 | 1 |
 | With liveness | 708 | 31 | 0 | 51 | 32 | 1 |
-| Now | 741 | 9 | 0 | 51 | 22 | 0 |
+| ENABLED under INSTANCE, scope API | 750 | 0 | 0 | 51 | 22 | 0 |
+| Now | 755 | 0 | 0 | 51 | 17 | 0 |
 
-All 823 models run in 11 minutes on 8 jobs. 741 of the 772 models with a TLC verdict match. On them the median ratio of the checker's wall time to TLC's is 0.019, and the checker is faster on 731 (TLC's times include starting the JVM).
+All 823 models run in 10 minutes on 8 jobs. 755 of the 772 models with a TLC verdict match, and none disagrees: the other 17 time out. On the matches, the median ratio of the checker's wall time to TLC's is 0.019, the checker is faster on 746, and the total is 774 s against TLC's 2,243 s (TLC's times include starting the JVM, so small models flatter the checker).
 
 - **No verdict (51)** are models where TLC stopped with an error after more than 20 s. That is TLC running out of memory or disk on a state space too large for it, and tla-ts's runner leaves these out too.
-- **Timeouts (22)** are all models TLC took more than 20 s on. `cf1s_folklore` (TLC 271 s) spends its time evaluating its fairness action, a part of its next-state relation, on every step of the behavior graph.
+- **Timeouts (17)** are all models TLC took more than 60 s on. With a 600 s timeout, 4 at a time, 18 of the 19 models TLC finishes in 60–290 s match TLC's counts; `TLCSailfish1` (TLC 77 s) still times out, in membership tests over tuples and records. `cf1s_folklore` (TLC 271 s) spends its time evaluating its fairness action, a part of its next-state relation, on every step of the behavior graph.
+- **Slower than TLC:** `MCTxnsMoveRange`, `MCMoveRange` and `S2C` take about twice TLC's time, mostly in the action walk, and so do some of the long models (`VR_STATE_TRANSFER`, `VR_APP_STATE`, `BufferAsWAL`, `S2CFencing`, `MCCheckpointCoordination`).
 
-Of the 70 models liveness checking decides, 66 match. TLC's liveness counterexamples depend on TLC's order of the variables, the reverse of the root module's SANY `Context` enumeration (`tla_resolve::tlc_variable_order`, which agrees with tla-ts on all 912 models both read): it decides TLC's fingerprint of a state, which orders a state's successors in the behavior graph.
+All 70 models liveness checking decides match. TLC's liveness counterexamples depend on TLC's order of the variables, the reverse of the root module's SANY `Context` enumeration (`tla_resolve::tlc_variable_order`, which agrees with tla-ts on all 912 models both read): it decides TLC's fingerprint of a state, which orders a state's successors in the behavior graph.
 
 The first run found these; they are fixed:
 
@@ -274,8 +273,4 @@ The first run found these; they are fixed:
 - Publishing statistics as states are found (`EWD998Chan` stops on `TLCGet("distinct") > 500`).
 - Liveness checking, which also settles `InitialLivenessEvaluationError`: TLC fails evaluating `ENABLED` on the initial state as it adds it to the behavior graph.
 
-What is left, by cause:
-
-| Cause | Models |
-| --- | --- |
-| `ENABLED` of a fairness condition of an instance whose variables are substituted by definitions, as a refinement property `TD!Spec` has: the evaluator fails on a primed substitute in the state being assigned, or answers otherwise than TLC's context quirk | `EWD840` (both), `EWD998ChanID` (both), `EWD998`, `MCParReach`, `glowingRaccoon/product`, `Github725f`, `Github725g` |
+The last nine, `ENABLED` of a fairness condition of an instance whose variables are substituted by definitions, as a refinement property `TD!Spec` has, are fixed: the resolved spec records where an instantiated module refers to its own variables, and `ENABLED` in the instance gives each of them a slot of its own when primed.
