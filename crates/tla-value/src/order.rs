@@ -13,6 +13,11 @@ use crate::{LazySet, Result, Value, fail, model_type};
 
 /// Fails as TLC does when a typed model value meets a value of another type.
 fn check_model_types(left: &Value, right: &Value, is_equality: bool) -> Result<()> {
+    if let (Value::Model(left), Value::Model(right)) = (left, right)
+        && left == right
+    {
+        return Ok(());
+    }
     let type_of = |value: &Value| match value {
         Value::Model(name) => model_type(*name),
         _ => None,
