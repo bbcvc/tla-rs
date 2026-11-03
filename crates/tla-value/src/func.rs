@@ -71,11 +71,14 @@ pub enum Key {
     Field(Symbol),
 }
 
+/// The keys of each shape of record, by its field names.
+type Shapes = HashMap<Box<[Symbol]>, Arc<[Value]>>;
+
 /// The keys of records with the fields `names`, sorted and distinct: one allocation for each
 /// shape of record a thread builds, so that records of one shape share their keys.
 fn record_keys(names: &[Symbol]) -> Arc<[Value]> {
     thread_local! {
-        static SHAPES: RefCell<HashMap<Box<[Symbol]>, Arc<[Value]>>> = RefCell::default();
+        static SHAPES: RefCell<Shapes> = RefCell::default();
     }
     SHAPES.with_borrow_mut(|shapes| {
         if let Some(keys) = shapes.get(names) {
