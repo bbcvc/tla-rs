@@ -15,7 +15,7 @@ use tla_resolve::{Builtin, DefBody, DefId, Expr, ExprKind, Level, RootName, Scop
 use tla_value::Symbol;
 
 use crate::Error;
-use crate::level::Levels;
+use crate::level::{Levels, STATE_LEVEL_OPERATORS};
 pub use parts::describe_range;
 use parts::{Part, always, is_temporal_quantifier};
 
@@ -106,7 +106,13 @@ pub fn plan(
     config: &ModelConfig,
     overrides: &HashMap<DefId, DefId>,
 ) -> Result<Plan, Error> {
-    let mut planner = Planner { spec, overrides, plan: Plan::default(), levels: Levels::default() };
+    let mut planner = Planner {
+        spec,
+        overrides,
+        plan: Plan::default(),
+        levels: Levels::tlc(),
+        sany: Levels::sany(STATE_LEVEL_OPERATORS),
+    };
     planner.invariants(&config.invariants)?;
     planner.specification(config)?;
     planner.properties(&config.properties)?;
@@ -146,7 +152,10 @@ struct Planner<'s> {
     spec: &'s mut Spec,
     overrides: &'s HashMap<DefId, DefId>,
     plan: Plan,
+    /// TLC's level bound, which sorts the parts of formulas and finds constants.
     levels: Levels,
+    /// SANY's levels, by which TLC checks invariants and computes constant definitions.
+    sany: Levels,
 }
 
 impl Planner<'_> {
@@ -192,7 +201,7 @@ impl Planner<'_> {
 
     fn invariants(&mut self, names: &[Symbol]) -> Result<(), Error> {
         for check in self.predicates("invariant", names)? {
-            if self.def_level(check.def) >= Level::Action {
+            if self.sany.def_level(self.spec, check.def) >= Level::Action {
                 return Err(Error::config(format!(
                     "The invariant {} is not a state predicate (one with no primes or temporal operators).",
                     check.name
@@ -233,7 +242,8 @@ impl Planner<'_> {
                 _ => None,
             };
             let is_constant = def.is_some_and(|def| {
-                self.spec.def(def).depth == 0 && self.def_level(def) == Level::Constant
+                self.spec.def(def).depth == 0
+                    && self.sany.def_level(self.spec, def) == Level::Constant
             });
             self.plan.postconditions.push(Postcondition {
                 name: name.to_string(),

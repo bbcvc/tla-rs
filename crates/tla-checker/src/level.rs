@@ -1,8 +1,13 @@
-//! The level of an expression of the resolved program, which spec processing uses to sort the
-//! conjuncts of a specification or property as TLC does. It starts from the levels the resolver
-//! computed, as SANY does, takes the level of every argument of an operator, as TLC does, and
-//! raises to state level the operators TLC overrides with Java methods that read the model
-//! checker's state, such as `TLCGet`, as tla-ts does.
+//! The levels of expressions of the resolved program, which spec processing uses to sort the
+//! conjuncts of a specification or property and to find what is constant, as TLC does. Both
+//! kinds start from the levels the resolver computed, and raise to state level the operators
+//! TLC overrides with Java methods that read the model checker's state, such as `TLCGet`:
+//!
+//! - TLC's level bound (`Spec.getLevelBound`, tla-ts `getLevel` and `isConstantLevel`) takes the
+//!   level of every argument of an operator. Spec processing sorts parts and finds constants
+//!   by it.
+//! - SANY's level (tla-ts's level analyzer) takes the level of an argument only where the
+//!   operator uses its parameter. TLC checks that an invariant is a state predicate by it.
 
 use std::cell::RefCell;
 use std::collections::HashMap;
@@ -11,7 +16,7 @@ use tla_resolve::{Builtin, DefBody, DefId, Expr, ExprKind, Level, OpRef, Scope, 
 
 /// The operators of TLC's modules whose Java overrides declare a state level, by module and
 /// name: the list tla-eval computes constant definitions by.
-const STATE_LEVEL_OPERATORS: &[(&str, &[&str])] = &[
+pub const STATE_LEVEL_OPERATORS: &[(&str, &[&str])] = &[
     ("TLC", &["TLCGet", "TLCSet"]),
     (
         "TLCExt",
@@ -44,14 +49,44 @@ const STATE_LEVEL_OPERATORS: &[(&str, &[&str])] = &[
     ("IOUtils", &["IOExec", "IOEnvExec", "IOExecTemplate", "IOEnvExecTemplate"]),
 ];
 
+/// The operators TLC takes for variables when it checks the definitions the configuration
+/// substitutes for constants, as tla-ts lists them.
+pub const SUBSTITUTION_STATE_LEVEL_OPERATORS: &[(&str, &[&str])] =
+    &[("TLC", &["TLCGet"]), ("TLCExt", &["Trace", "CounterExample"])];
+
 /// The levels of definitions, remembered. Definitions added to the spec later don't change the
 /// levels of earlier ones.
-#[derive(Default)]
 pub struct Levels {
     definitions: RefCell<HashMap<DefId, Level>>,
+    /// Whether an argument counts only where the operator uses its parameter, as in SANY.
+    is_weighted: bool,
+    operators: &'static [(&'static str, &'static [&'static str])],
+}
+
+impl Default for Levels {
+    fn default() -> Self {
+        Self::tlc()
+    }
 }
 
 impl Levels {
+    /// TLC's level bound.
+    pub fn tlc() -> Self {
+        Self::new(false, STATE_LEVEL_OPERATORS)
+    }
+
+    /// SANY's levels, with the given operators at state level.
+    pub fn sany(operators: &'static [(&'static str, &'static [&'static str])]) -> Self {
+        Self::new(true, operators)
+    }
+
+    fn new(
+        is_weighted: bool,
+        operators: &'static [(&'static str, &'static [&'static str])],
+    ) -> Self {
+        Self { definitions: RefCell::default(), is_weighted, operators }
+    }
+
     /// The level of a definition with its parameters taken to be constants.
     pub fn def_level(&self, spec: &Spec, def: DefId) -> Level {
         if let Some(&level) = self.definitions.borrow().get(&def) {
@@ -59,7 +94,7 @@ impl Levels {
         }
         // A recursive definition sees itself as a constant while its level is computed.
         self.definitions.borrow_mut().insert(def, Level::Constant);
-        let level = if is_state_level_operator(spec, def) {
+        let level = if is_state_level_operator(spec, def, self.operators) {
             Level::State
         } else {
             let body = match &spec.def(def).body {
@@ -86,12 +121,18 @@ impl Levels {
             }
             ExprKind::Local(_) => Level::Constant,
             ExprKind::Var(_) => Level::State,
-            // TLC's `Spec.getLevelBound` takes the level of every argument, whether the
-            // definition uses its parameter or not, as tla-ts does, unlike SANY.
-            ExprKind::Call { def, scope, args } => instance_args(scope)
-                .chain(args)
-                .map(|arg| self.level(spec, arg))
-                .fold(self.def_level(spec, *def), Level::max),
+            ExprKind::Call { def, scope, args } => {
+                let outer = instance_args(scope)
+                    .map(|arg| self.level(spec, arg))
+                    .fold(self.def_level(spec, *def), Level::max);
+                let own: Vec<Level> = args.iter().map(|arg| self.level(spec, arg)).collect();
+                let applied = if self.is_weighted {
+                    spec.def_levels(*def).applied(&own)
+                } else {
+                    own.into_iter().fold(Level::Constant, Level::max)
+                };
+                applied.max(outer)
+            }
             ExprKind::CallParam { args, .. } | ExprKind::CallConst { args, .. } => {
                 all(&mut args.iter())
             }
@@ -131,11 +172,11 @@ impl Levels {
     }
 }
 
-fn is_state_level_operator(spec: &Spec, def: DefId) -> bool {
+fn is_state_level_operator(spec: &Spec, def: DefId, operators: &[(&str, &[&str])]) -> bool {
     let def = spec.def(def);
     let module = &spec.modules[def.module.index()];
     def.depth == 0
-        && STATE_LEVEL_OPERATORS.iter().any(|(name, operators)| {
+        && operators.iter().any(|(name, operators)| {
             *name == module.name.as_str() && operators.contains(&def.name.as_str())
         })
 }

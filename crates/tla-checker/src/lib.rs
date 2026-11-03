@@ -238,7 +238,7 @@ fn check_substitutions(
     evaluator: &Evaluator,
     substitutions: &[(tla_value::Symbol, tla_resolve::DefId)],
 ) -> Result<(), Error> {
-    let levels = level::Levels::default();
+    let levels = level::Levels::sany(level::SUBSTITUTION_STATE_LEVEL_OPERATORS);
     for &(constant, def) in substitutions {
         let spec = evaluator.spec();
         if !spec.def(def).params.is_empty()

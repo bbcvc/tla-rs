@@ -118,3 +118,14 @@ fn follows_parameterized_instances() {
     let parts: Vec<_> = plan.init.iter().chain(&plan.next).collect();
     assert!(parts.len() == 2 && parts.iter().all(|&&def| spec.def(def).depth == 0));
 }
+
+#[test]
+fn checks_invariants_by_sanys_levels() {
+    // SANY's level of `Gen(Step, 3)` is that of `ENABLED`, whatever the level of `Step`.
+    let body =
+        format!("{SPEC}\nStep(k) == x' = k\nGen(A(_), k) == ENABLED A(k)\nInv == Gen(Step, 3)");
+    let (_, plan) = planned(&body, "SPECIFICATION Spec\nINVARIANT Inv").unwrap();
+    assert_eq!(plan.invariants.len(), 1);
+    let error = planned(&body, "SPECIFICATION Spec\nINVARIANT Next").unwrap_err();
+    assert!(error.starts_with("The invariant Next is not a state predicate"), "{error}");
+}
