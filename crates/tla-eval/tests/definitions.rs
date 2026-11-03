@@ -320,3 +320,31 @@ fn shares_evaluators_across_threads() {
     assert_send_sync::<Evaluator>();
     assert_send_sync::<tla_eval::Value>();
 }
+
+#[test]
+fn evaluates_a_definition_with_bound_slots() {
+    use tla_resolve::{DefBody, DefLevels, ExprKind, Pattern};
+
+    let mut spec = spec("EXTENDS Naturals\nPositive == \\A p \\in {1, 2} : p + 1 > 2", &[]);
+    let positive = spec.def(lookup(&spec, "Positive")).clone();
+    let DefBody::Expr(body) = &positive.body else { panic!("Positive is an expression") };
+    let ExprKind::Quant { bounds, body, .. } = &body.kind else { panic!("a quantifier") };
+    let Pattern::Names(slots) = &bounds[0].pattern else { panic!("a name") };
+    // The body of the quantifier, as a definition in the frame of Positive.
+    let mut part = positive.clone();
+    part.body = DefBody::Expr((**body).clone());
+    spec.defs.push(part);
+    spec.levels.push(DefLevels {
+        level: tla_resolve::Level::Constant,
+        max_levels: Vec::new(),
+        weights: Vec::new(),
+        min_max_levels: Vec::new(),
+        leibniz: Vec::new(),
+    });
+    let part = tla_resolve::DefId(spec.defs.len() as u32 - 1);
+    let evaluator = Evaluator::new(Arc::new(spec), Vec::new());
+    let at =
+        |p: i32| evaluator.eval_bound(part, &[(slots[0], tla_eval::Value::Int(p))], None, None);
+    assert_eq!(at(1).unwrap().as_bool(), Some(false));
+    assert_eq!(at(2).unwrap().as_bool(), Some(true));
+}
