@@ -1,8 +1,9 @@
 //! Prints TLC's string order for every model (a `.cfg` beside a `.tla` of the same name) under a
-//! directory, one JSON line per model, to compare with tla-ts's `getTlcStringOrder`:
+//! directory, one JSON line per model, to compare with tla-ts's `getTlcStringOrder`, or with
+//! `--variables` TLC's order of the variables, to compare with `getTlcVariableOrder`:
 //!
 //! ```text
-//! cargo run --release -p tla-resolve --example string_order -- DIR [--library DIR]... > order.jsonl
+//! cargo run --release -p tla-resolve --example string_order -- DIR [--variables] [--library DIR]...
 //! ```
 
 use std::collections::HashMap;
@@ -22,7 +23,12 @@ fn main() {
     let mut args = std::env::args().skip(1);
     let root = PathBuf::from(args.next().expect("usage: string_order DIR [--library DIR]..."));
     let mut library = HashMap::new();
+    let mut variables = false;
     while let Some(flag) = args.next() {
+        if flag == "--variables" {
+            variables = true;
+            continue;
+        }
         assert_eq!(flag, "--library");
         let mut files = Vec::new();
         collect(Path::new(&args.next().expect("a library directory")), "tla", &mut files);
@@ -52,7 +58,11 @@ fn main() {
                 .ok()
                 .or_else(|| library.get(name).and_then(|path| std::fs::read_to_string(path).ok()))
         };
-        let line = match tla_resolve::tlc_string_order(&source, &config, &mut loader) {
+        let order = match variables {
+            true => tla_resolve::tlc_variable_order(&source, &mut loader),
+            false => tla_resolve::tlc_string_order(&source, &config, &mut loader),
+        };
+        let line = match order {
             Ok(order) => serde_json::json!({ "id": id, "order": order }),
             Err(error) => serde_json::json!({ "id": id, "error": error }),
         };

@@ -16,10 +16,12 @@ use tla_value::Symbol;
 
 use crate::Error;
 use crate::level::{Levels, STATE_LEVEL_OPERATORS};
+use crate::liveness::template::Template;
 pub use parts::describe_range;
 use parts::{Part, always, is_temporal_quantifier};
 
 mod parts;
+mod temporal;
 
 /// A named predicate the model checker evaluates.
 #[derive(Clone, Debug)]
@@ -42,10 +44,11 @@ pub struct Plan {
     pub initial_predicates: Vec<Check>,
     /// `[A]_v` of the property `[][A]_v`, which holds of every step.
     pub action_properties: Vec<Check>,
-    /// The properties left to liveness checking, by name.
-    pub liveness: Vec<String>,
-    /// Temporal conjuncts of the specification, such as fairness.
-    pub temporals: usize,
+    /// The temporal parts of the properties, by name, which liveness checking checks.
+    pub properties: Vec<(String, Template)>,
+    /// The temporal parts of the specification, such as fairness, which liveness checking
+    /// assumes of every behavior.
+    pub fairness: Vec<Template>,
     pub constraints: Vec<Check>,
     pub action_constraints: Vec<Check>,
     /// The `VIEW`, whose value tells states apart instead of their variables.
@@ -66,7 +69,7 @@ impl Plan {
     pub fn checks_behaviors(&self) -> bool {
         !self.invariants.is_empty()
             || !self.action_properties.is_empty()
-            || !self.liveness.is_empty()
+            || !self.properties.is_empty()
     }
 }
 
@@ -112,22 +115,26 @@ pub fn plan(
         plan: Plan::default(),
         levels: Levels::tlc(),
         sany: Levels::sany(STATE_LEVEL_OPERATORS),
+        temporal_properties: Vec::new(),
+        temporal_spec: Vec::new(),
     };
     planner.invariants(&config.invariants)?;
     planner.specification(config)?;
     planner.properties(&config.properties)?;
     let has_variables = !planner.spec.variables.is_empty();
+    let checks_behaviors =
+        planner.plan.checks_behaviors() || !planner.temporal_properties.is_empty();
     let plan = &planner.plan;
     if plan.init.is_empty()
         && config.specification.is_none()
         && config.init.is_none()
-        && (plan.checks_behaviors() || !plan.initial_predicates.is_empty() || has_variables)
+        && (checks_behaviors || !plan.initial_predicates.is_empty() || has_variables)
     {
         return Err(Error::config(
             "The configuration file did not specify the initial state predicate.",
         ));
     }
-    if plan.next.is_none() && plan.checks_behaviors() {
+    if plan.next.is_none() && checks_behaviors {
         return Err(Error::config(
             "The configuration file did not specify the next state predicate.",
         ));
@@ -145,6 +152,18 @@ pub fn plan(
         planner.plan.view = Some(planner.operator("view function", view)?);
     }
     planner.postconditions(&config.postconditions);
+    // TLC builds the liveness checker, and so translates the temporal formulas, only when
+    // there are temporal properties to check.
+    if !planner.temporal_properties.is_empty() {
+        for (name, part) in std::mem::take(&mut planner.temporal_properties) {
+            let template = planner.temporal(&part)?;
+            planner.plan.properties.push((name, template));
+        }
+        for part in std::mem::take(&mut planner.temporal_spec) {
+            let template = planner.temporal(&part)?;
+            planner.plan.fairness.push(template);
+        }
+    }
     Ok(planner.plan)
 }
 
@@ -156,6 +175,10 @@ struct Planner<'s> {
     levels: Levels,
     /// SANY's levels, by which TLC checks invariants and computes constant definitions.
     sany: Levels,
+    /// The temporal parts of the properties and of the specification, translated once the
+    /// configuration is processed.
+    temporal_properties: Vec<(String, Part)>,
+    temporal_spec: Vec<Part>,
 }
 
 impl Planner<'_> {
@@ -314,7 +337,7 @@ impl Planner<'_> {
                 }
             }
             match self.part_level(part.via.as_ref(), expr) {
-                Level::Temporal => self.plan.temporals += 1,
+                Level::Temporal => self.temporal_spec.push(part),
                 Level::Action => {
                     return Err(Error::config(format!(
                         "TLC cannot handle the action-level conjunct of the specification {name}"
@@ -397,7 +420,10 @@ impl Planner<'_> {
                             "The property {name} is an action-level formula"
                         )));
                     }
-                    Level::Temporal => self.plan.liveness.push(name.to_string()),
+                    Level::Temporal => {
+                        let name = part.name.clone();
+                        self.temporal_properties.push((name, part));
+                    }
                 }
             }
         }

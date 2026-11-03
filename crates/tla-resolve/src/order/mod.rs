@@ -6,8 +6,11 @@
 //! the order SANY analyzes the modules, and the names it uses for `TLCGet`.
 //! [`tlc_string_order`] lists those texts, for `tla_intern::set_order`.
 
+mod context;
 mod lexer;
 mod strings;
+
+pub use context::tlc_variable_order;
 
 use std::collections::{HashMap, HashSet};
 
@@ -82,6 +85,8 @@ struct Modules<'a> {
     source: &'a str,
     loader: &'a mut dyn ModuleLoader,
     files: Vec<Vec<Token>>,
+    /// The text of each file.
+    texts: Vec<Option<String>>,
     units: HashMap<Option<String>, Unit>,
     nested: HashMap<String, Unit>,
 }
@@ -139,6 +144,7 @@ impl<'a> Modules<'a> {
             source,
             loader,
             files: Vec::new(),
+            texts: Vec::new(),
             units: HashMap::new(),
             nested: HashMap::new(),
         };
@@ -162,10 +168,11 @@ impl<'a> Modules<'a> {
                     .or_else(|| extract_module(self.source, name))
             }
         };
-        let tokens = match text {
-            Some(text) => tokenize(&text)?,
+        let tokens = match &text {
+            Some(text) => tokenize(text)?,
             None => Vec::new(),
         };
+        self.texts.push(text);
         let ranges = ranges(&tokens);
         let module_name = tokens.get(2).map(|token| token.text.clone());
         let (start, end) = ranges

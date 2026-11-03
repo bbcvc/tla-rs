@@ -207,8 +207,10 @@ Still missing from evaluation:
 5. Check the constant parts of the spec and configuration.
 6. Build the symmetry group.
 7. Check the assumptions.
-8. Search.
-9. Check the postconditions.
+8. Build the liveness checker, for a spec with temporal properties.
+9. Search, adding each state to the liveness checker's behavior graphs.
+10. Look for a liveness counterexample in the graphs.
+11. Check the postconditions.
 
 The modules:
 
@@ -220,7 +222,7 @@ The modules:
 
   Each part that isn't a zero-arity definition gets a synthesized one, appended to `Spec.defs` with its levels. A part inside a parameterized instance gets a module-level definition that calls into the instance's frame. Constant parts are evaluated when the checker starts. A `TRUE` one is dropped, and the rest are TLC's errors. INIT/NEXT, CONSTRAINT, ACTION_CONSTRAINT, VIEW, `_POSSIBLE`, POSTCONDITION, RL reward and periodic are looked up and rejected with TLC's messages.
 - **`level`** has two notions of level, and TLC uses each where tla-ts does. TLC's level bound (`Spec.getLevelBound`, tla-ts `getLevel`) counts every argument of an operator: it sorts parts and finds constants. SANY's level counts an argument only where the operator uses its parameter: TLC checks invariants (`Ignore(x)` with an unused parameter is a constant to SANY) and the substitutes for constants by it. Both raise TLC's Java overrides that read the checker's state (`TLCGet`, `_Counts`, `RandomSubset`, ...) to state level.
-- **`search`** is the breadth-first search: a set of fingerprints, a FIFO queue, and a parent link and depth per state for traces. Counting:
+- **`search`** is the breadth-first search: a set of fingerprints, a FIFO queue, and a parent link and depth per state for traces. Like TLC, it drops a state once it has expanded it, and rebuilds the behavior to a violation from the initial states by the fingerprints along it. It keeps the states only when the spec extends TLCExt, whose `Trace` reads them as the search runs. A state costs about 30 bytes besides the queue: a 128-bit fingerprint (two seeded foldhash lanes over one pass of the values), a parent index, a depth, and a slot in a hashbrown table of indices. Counting:
   - Every initial state and every successor counts as generated, repeats included.
   - An initial state that the constraints keep and that was seen already is skipped.
   - Invariants are checked on any successor that isn't a stored state, so a state the constraints exclude is still checked.
@@ -229,9 +231,14 @@ The modules:
 
   The runtime's statistics are published as each state is found, so `TLCGet("distinct")` already counts a new state while its invariants are checked. `TLCGet("level")` is the depth of the state being checked. `TLCSet("exit", TRUE)` stops the search between expansions.
 - **`fingerprint`** tells states apart by the variables or by the `VIEW`. With a `SYMMETRY`, it closes the permutations under composition and takes the smallest fingerprint over the orbit.
+- **`liveness`** is TLC's liveness checking with `-lncheck final`, ported from tla-ts `liveness.ts`, `tableau.ts` and `liveness-checker.ts`:
+  - Spec processing translates the temporal parts of the properties and the fairness of the spec into formula templates (tla-ts `toLiveExpression`). Each part below temporal level becomes a module-level definition that reaches the part's frame through the calls the expansion went into. Quantifiers over constant sets, constant `IF` conditions and constant parts are left for evaluation: the evaluator unrolls them when the checker is built (`Evaluator::eval_bound` evaluates a definition with slots of its frame bound).
+  - The negated properties, conjoined with the fairness, go to disjunctive normal form. Each disjunct is sorted into conditions on a cycle (`<>[]A`, `[]<>S`, `[]<>A`) and a temporal rest, whose tableau the behavior graph is the product with.
+  - The search adds each new initial state, and each expanded state with its successors in the model, to the behavior graph of each solution, with the results of the solution's checks. The successors go in the order TLC's `SetOfStates` iterates them, by TLC's fingerprint of each state over its variables in TLC's order.
+  - Once the search is done, a Tarjan search finds a strongly connected component that satisfies a model, and the lasso TLC prints through it, whose length TLC reports with the stuttering step at the end of a one-state cycle.
 - **`postcondition`** runs after a search that finds no violation. A postcondition TLC computed at startup is an error. A `_POSSIBLE` predicate that no state or step in the model witnessed is a violation, and so is a postcondition that is false or fails. TLC exits as for a violated assumption in both cases.
 
-`crates/tla-checker/examples/conformance.rs` checks every recorded model and compares it with TLC the way tla-ts's `compareOutcome` does: status, violation name, states generated, distinct states, depth, and trace length. Each model runs in a child process, because TLC's string order is the process's, on a thread with a 1 GB stack and under a timeout. `--filter` selects models and `--outcomes FILE` writes each model's outcome.
+`crates/tla-checker/examples/conformance/` checks every recorded model and compares it with TLC the way tla-ts's `compareOutcome` does: status, violation name, states generated, distinct states, depth, and trace length. Each model runs in a child process, because TLC's string order is the process's, on a thread with a 1 GB stack and under a timeout. `--filter` selects models and `--outcomes FILE` writes each model's outcome with the milliseconds its child process ran. The run ends with the time against TLC's recorded time on the models that match: the median ratio, how many are faster, and the slowest ratios.
 
 ```shell
 C=../tla-ts/packages/tla-ts/tests/conformance
@@ -243,16 +250,15 @@ cargo run --release -p tla-checker --example conformance -- $C/.corpora \
 | Run | Match | Mismatch | Unsupported | No verdict | Timeout | Crash |
 | --- | ---: | ---: | ---: | ---: | ---: | ---: |
 | First full run | 636 | 44 | 60 | | 82 | 1 |
-| Now | 653 | 18 | 70 | 51 | 30 | 1 |
+| Safety only | 653 | 18 | 70 | 51 | 30 | 1 |
+| With liveness | 708 | 31 | 0 | 51 | 32 | 1 |
 
-All 823 models run in 11 minutes on 8 jobs. 653 of the 772 models with a TLC verdict match.
+All 823 models run in 12 minutes on 8 jobs. 708 of the 772 models with a TLC verdict match. On them the median ratio of the checker's wall time to TLC's is 0.021, and the checker is faster on 686 (TLC's times include starting the JVM).
 
-- **Unsupported (70)** are the models whose verdict needs liveness checking. TLC reports a liveness or temporal-property violation, or fails on a temporal property, where the safety part checks out here.
 - **No verdict (51)** are models where TLC stopped with an error after more than 20 s. That is TLC running out of memory or disk on a state space too large for it, and tla-ts's runner leaves these out too.
-- **Timeouts (30):**
-  - 23 are models TLC took more than 20 s on.
-  - `ObjWAL` (191k states in 4 s in TLC) and `TestLinQueue` are slow in the evaluator.
-  - `Github710b` needs liveness checking to stop on its unbounded state space.
+- **Timeouts (32):** 25 are models TLC took more than 20 s on. `ObjWAL` and `TestLinQueue` are slow in the evaluator; `cf1s_folklore` and both `SpanTreeRandom` models spend most of their time evaluating fairness on every step of the behavior graph (TLC: 271 s and 22 s).
+
+Of the 70 models liveness checking decides, 59 match. TLC's liveness counterexamples depend on TLC's order of the variables, the reverse of the root module's SANY `Context` enumeration (`tla_resolve::tlc_variable_order`, which agrees with tla-ts on all 912 models both read): it decides TLC's fingerprint of a state, which orders a state's successors in the behavior graph.
 
 The first run found these; they are fixed:
 
@@ -262,7 +268,7 @@ The first run found these; they are fixed:
 - Specifications through parameterized instances (`test61`).
 - Rejecting a substitute for a constant that fails without a state (`etest7`, `TLCGetNamedUndefined`).
 - Publishing statistics as states are found (`EWD998Chan` stops on `TLCGet("distinct") > 500`).
-- Leaving out what liveness checking would decide.
+- Liveness checking, which also settles `InitialLivenessEvaluationError`: TLC fails evaluating `ENABLED` on the initial state as it adds it to the behavior graph.
 
 What is left, by cause:
 
@@ -274,4 +280,6 @@ What is left, by cause:
 | TLC's 64-bit fingerprints, which fingerprint a string by the low bytes of its characters so that the test's strings collide. `tla_eval`'s `tlc_fingerprint` is crate-private | `UnicodeFunctionFingerprint`, `UnicodeRecordFingerprint`, `UnicodeStringFingerprint` |
 | A Java class in the model's directory overrides a definition | `UserModuleOverride` |
 | Other evaluator gaps: `UNCHANGED` as an operator argument, `TLCCache`, `AssertError`'s message for a function applied outside its domain, an error comparing the integer 1 with the string "type" in `ExternalHistoryInvars` where TLC succeeds, and a stack overflow on a function whose body applies the function itself eagerly | `test52`, `ConstantContextTLCCache`, `Github696`, `MCMultiNode`, `MCMultiNodeReadsAlt`, `test45` (crash) |
-| TLC evaluates the liveness property on the initial state before it finds the invariant violation | `InitialLivenessEvaluationError` |
+| `ENABLED` of a fairness condition of an instance whose variables are substituted by definitions, as a refinement property `TD!Spec` has: the evaluator fails on a primed substitute in the state being assigned | `EWD840` (both), `EWD998ChanID` (both), `EWD998`, `MCParReach`, `glowingRaccoon/product` |
+| A recursive operator in a temporal formula: TLC expands it with the values of its arguments, which the templates don't have | `Github1389`, `Github1389Counting`, `Github1389Violated`, `ViolatedB`, `ViolatedC` |
+| Liveness under `SYMMETRY`: TLC's fingerprint of a state's representative orders its successors in the behavior graph | `symmetry/NQ/MC`, `symmetry/NQ/MCa`, `symmetry/OneBitMutex/OneBitMutexMC` |
