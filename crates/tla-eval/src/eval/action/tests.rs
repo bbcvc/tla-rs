@@ -704,13 +704,33 @@ fn keeps_an_action_of_an_instance_whole() {
     .unwrap();
     let evaluator = Evaluator::new(Arc::new(spec), Vec::new());
     let actions = evaluator.next_actions(def(&evaluator, "Next")).unwrap();
-    // TLC names these I!Inc, I!Dec(1), I!Dec, and I!Both, at the INSTANCE but for I!Dec(x).
-    let signatures: Vec<String> = actions.iter().map(|action| action.signature()).collect();
-    assert_eq!(signatures, ["Inc", "Dec(1)", "Dec", "Both"]);
+    // As tla-ts finds: at the INSTANCE, but for I!Dec(x), whose argument isn't a constant.
+    let labels: Vec<String> = actions.iter().map(|action| evaluator.action_label(action)).collect();
+    let instance = "line 4, col 1 to line 4, col 33 of module M";
     assert_eq!(
-        evaluator.action_label(&actions[2]),
-        "Dec line 6, col 30 to line 6, col 37 of module M"
+        labels,
+        [
+            format!("I!Inc {instance}"),
+            format!("I!Dec(1) {instance}"),
+            "I!Dec line 6, col 30 to line 6, col 37 of module M".to_owned(),
+            format!("I!Both {instance}"),
+        ]
     );
+    let parameters: Vec<String> =
+        actions[1].parameters.iter().map(|(name, value)| format!("{name} = {value}")).collect();
+    assert_eq!(parameters, ["n = 1"]);
+    let unnamed = source
+        .replace("I == INSTANCE", "INSTANCE")
+        .replace("I!Inc \\/ I!Dec(1) \\/ I!Dec(x) \\/ I!Both", "Inc \\/ Dec(1)");
+    let spec = tla_resolve::resolve(&unnamed, &mut |name: &str| {
+        (name == "Counter").then(|| inner.to_owned())
+    })
+    .unwrap();
+    let unnamed = Evaluator::new(Arc::new(spec), Vec::new());
+    let split = unnamed.next_actions(def(&unnamed, "Next")).unwrap();
+    let labels: Vec<String> = split.iter().map(|action| unnamed.action_label(action)).collect();
+    let instance = "line 4, col 1 to line 4, col 28 of module M";
+    assert_eq!(labels, [format!("Inc {instance}"), format!("Dec(1) {instance}")]);
     let current = state(vec![Value::Int(5)]);
     let mut successors = Vec::new();
     for action in actions.iter() {
@@ -945,4 +965,21 @@ Values == <<I!F, I!G, I!K, I!L, I!M, I!N>>
     // As tla-ts finds: u' is a variable of its own, and u, unprimed or kept, is x + 1.
     let value = evaluator.eval_def(def(&evaluator, "Values"), Some(&current)).unwrap();
     assert_eq!(value.to_string(), "<<TRUE, TRUE, TRUE, TRUE, FALSE, TRUE>>");
+}
+
+#[test]
+fn names_an_incomplete_action_of_an_instance_as_sany_does() {
+    let inner = "---- MODULE Counter ----\nVARIABLE v\nSet == v' = 1\n====\n";
+    let source = "---- MODULE M ----\nVARIABLES x, y\nI == INSTANCE Counter WITH v <- x\nOther == x' = 2 /\\ y' = 2\nNext == I!Set \\/ Other\n====\n";
+    let spec = tla_resolve::resolve(source, &mut |name: &str| {
+        (name == "Counter").then(|| inner.to_owned())
+    })
+    .unwrap();
+    let evaluator = Evaluator::new(Arc::new(spec), Vec::new());
+    let current = state(vec![Value::Int(0), Value::Int(0)]);
+    let error = next_states(&evaluator, "Next", &current).unwrap_err();
+    assert_eq!(
+        error.message,
+        "Successor state is not completely specified by action I!Set of the next-state relation. The following variable is not defined: y."
+    );
 }

@@ -402,7 +402,15 @@ impl Evaluator {
         let callee = self.entered(def, target, scope, args, site, run)?;
         let info = self.spec.def(target);
         let DefBody::Expr(body) = &info.body else { unreachable!("a walked definition") };
-        self.act(body, &callee, run, action.called(info.name), rest)
+        // TLC names the action as SANY names the operator: I!Op through the instance I.
+        let name = match action.is_fixed {
+            true => info.name,
+            false => {
+                let qualified = self.spec.qualified_names.get(&(site.module, expr.span));
+                qualified.copied().unwrap_or(info.name)
+            }
+        };
+        self.act(body, &callee, run, action.called(name), rest)
     }
 
     /// The site of the body of `def` called with `args` of `site`, in a frame whose parent is
