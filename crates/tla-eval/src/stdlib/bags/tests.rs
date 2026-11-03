@@ -177,7 +177,7 @@ fn rejects_an_operator_whose_body_is_a_literal() {
         let Some(tla_resolve::RootName::Def(def)) = evaluator.spec().lookup(name) else {
             panic!("{name} is a definition")
         };
-        Arg::Op(Operator(OperatorKind::Def { def, parent: None }))
+        Arg::Op(Operator(OperatorKind::Def { def, parent: None, enabled: Default::default() }))
     };
     assert_eq!(
         bag_of_all(&evaluator, definition("H"), tuple(&[1])).unwrap_err().0,

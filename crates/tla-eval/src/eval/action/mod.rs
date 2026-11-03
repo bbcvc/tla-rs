@@ -304,7 +304,7 @@ impl Evaluator {
                     Slot::Op(op) => op.clone(),
                     _ => return self.guard(expr, site, run, action, rest),
                 };
-                let OperatorKind::Def { def, parent } = &operator.0 else {
+                let OperatorKind::Def { def, parent, enabled } = &operator.0 else {
                     if let (OperatorKind::Builtin(Builtin::Unchanged), [arg]) =
                         (&operator.0, &args[..])
                     {
@@ -316,7 +316,9 @@ impl Evaluator {
                     return self.guard(expr, site, run, action, rest);
                 };
                 let parent = if target == *def { parent.clone() } else { None };
-                let callee = self.callee(target, parent, args, site, run)?;
+                let mut callee = self.callee(target, parent, args, site, run)?;
+                // The operator keeps the mode of where it was passed.
+                callee.enabled = *enabled;
                 let info = self.spec.def(target);
                 let DefBody::Expr(body) = &info.body else { unreachable!("a walked definition") };
                 self.act(body, &callee, run, action.called(info.name), rest)

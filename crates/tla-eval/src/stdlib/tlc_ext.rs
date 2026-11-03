@@ -180,7 +180,10 @@ fn tlc_eval_definition(ctx: &mut Ctx<'_>, args: &[Arg]) -> Outcome {
             "The argument of TLCEvalDefinition should be a zero-arity definition, but instead it is:\n{text}"
         );
     }
-    Ok(ctx.call(&Operator(OperatorKind::Def { def, parent: None }), &[])?)
+    Ok(ctx.call(
+        &Operator(OperatorKind::Def { def, parent: None, enabled: Default::default() }),
+        &[],
+    )?)
 }
 
 /// The name `_Possible` counts under: a string's text, or another value as TLC prints it.

@@ -1020,3 +1020,37 @@ Values == <<TD!D, TD!W, TD!P>>
     assert_eq!(values(false, 1), "<<TRUE, TRUE, TRUE>>");
     assert_eq!(values(true, 0), "<<FALSE, FALSE, TRUE>>");
 }
+
+#[test]
+fn passes_an_operator_its_mode_under_an_enabled_of_an_instance() {
+    // Github725g: under ENABLED Step in the instance, the LAMBDA SelectSeq applies reads a' as
+    // the module's own variable, which Step sets to 1, so c' is <<2, 3>> and Step is disabled.
+    let inner = r#"---- MODULE Inner ----
+EXTENDS Sequences, Naturals
+VARIABLES a, b, c
+Step == /\ a = 0
+        /\ b' = 42
+        /\ a' = 1
+        /\ c' = SelectSeq(c, LAMBDA e: e /= a')
+        /\ c' = <<1, 2, 3>>
+Kept == /\ a' = 1
+        /\ c' = SelectSeq(c, LAMBDA e: e /= a')
+StepEnabled == ENABLED Step
+KeptEnabled == ENABLED <<Kept>>_<<a, c>>
+====
+"#;
+    let source = r#"---- MODULE M ----
+VARIABLES b, q, s
+Svc == INSTANCE Inner WITH c <- s, a <- b, b <- q
+Values == <<Svc!StepEnabled, Svc!KeptEnabled>>
+====
+"#;
+    let spec =
+        tla_resolve::resolve(source, &mut |name: &str| (name == "Inner").then(|| inner.to_owned()))
+            .unwrap();
+    let evaluator = Evaluator::new(Arc::new(spec), Vec::new());
+    let sequence = Value::tuple(vec![Value::Int(1), Value::Int(2), Value::Int(3)]);
+    let current = state(vec![Value::Int(0), Value::Int(0), sequence]);
+    let value = evaluator.eval_def(def(&evaluator, "Values"), Some(&current)).unwrap();
+    assert_eq!(value.to_string(), "<<FALSE, TRUE>>");
+}
