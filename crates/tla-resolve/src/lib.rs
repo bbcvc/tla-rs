@@ -102,6 +102,9 @@ pub fn resolve(source: &str, loader: &mut dyn ModuleLoader) -> Result<Spec> {
     };
     let root = resolver.add_file(modules, source.into(), false);
     let context = resolver.plain(&root)?;
+    let extended = resolver.extends_closure(&root);
+    let defs = &resolver.spec.defs;
+    resolver.spec.assumptions.retain(|def| extended.contains(&defs[def.index()].module));
     if let Some(&def) = resolver.pending.iter().min() {
         let def = resolver.spec.def(def);
         let message =
@@ -123,6 +126,24 @@ pub fn resolve(source: &str, loader: &mut dyn ModuleLoader) -> Result<Spec> {
         .collect();
     resolver.check_levels()?;
     Ok(resolver.spec)
+}
+
+impl Resolver<'_> {
+    /// `root` and the modules it extends, directly or not.
+    fn extends_closure(&self, root: &ParsedModule) -> HashSet<ModuleId> {
+        let mut closure = HashSet::from([root.id]);
+        let mut pending = vec![root];
+        while let Some(module) = pending.pop() {
+            for name in &module.ast.extends {
+                if let Some(extended) = self.parsed.get(&name.symbol)
+                    && closure.insert(extended.id)
+                {
+                    pending.push(extended);
+                }
+            }
+        }
+        closure
+    }
 }
 
 pub(crate) struct Resolver<'l> {

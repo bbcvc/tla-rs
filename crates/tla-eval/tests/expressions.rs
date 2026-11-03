@@ -134,6 +134,9 @@ fn updates_functions_with_except() {
     assert_eq!(value("[<<1, 2>> EXCEPT ![3] = 5]"), "<<1, 2>>");
     assert_eq!(value("[[x \\in {1, 2}, y \\in {3} |-> 0] EXCEPT ![2, 3] = 1][2, 3]"), "1");
     assert_eq!(value("[[s \\in STRING |-> 0] EXCEPT ![\"k\"] = 1][\"k\"]"), "1");
+    // tla-ts's NormalizationCases: an EXCEPT that is applied at once keeps its function lazy,
+    // so a domain TLC can't sort is never sorted.
+    assert_eq!(value("[[x \\in {1, \"a\"} |-> x] EXCEPT ![1] = 2][1]"), "2");
 }
 
 #[test]

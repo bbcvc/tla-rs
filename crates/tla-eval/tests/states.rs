@@ -36,7 +36,7 @@ Called == Twice(x)
     assert_eq!(in_state(&evaluator, "Called", &current), "<<1, 1>>");
     assert_eq!(
         evaluator.eval_def(def(&evaluator, "Pair"), None).unwrap_err().message,
-        "In evaluation, the identifier x is either undefined or not an operator."
+        "In evaluation, the identifier x is either undefined or not an operator.\nline 4, col 11 to line 4, col 11 of module Test"
     );
 }
 
@@ -65,7 +65,7 @@ LetPrimed == LET sum == x \cup y IN sum'
     assert_eq!(on_step(&evaluator, "LetPrimed", &current, &swapped), "{1, 2}");
     assert_eq!(
         evaluator.eval_def(def(&evaluator, "Swap"), Some(&current)).unwrap_err().message,
-        "A primed expression appears outside an action"
+        "A primed expression appears outside an action at line 4, column 9"
     );
 }
 

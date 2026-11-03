@@ -53,8 +53,23 @@ fn overridden(value: &Value) -> Option<&'static str> {
 }
 
 fn compare_overridden(left: &Value, right: &Value, verb: &str) -> Result<Ordering> {
-    let (Some(left_name), Some(right_name)) = (overridden(left), overridden(right)) else {
-        bail!("Attempted to {verb} the set {left} with the value:\n{right}")
+    let Some(left_name) = overridden(left) else {
+        // TLC prints the set strictly, enumerating it, which fails as enumerating it fails.
+        let is_combined = matches!(
+            left,
+            Value::Lazy(set) if matches!(
+                **set,
+                LazySet::Cup(..) | LazySet::Cap(..) | LazySet::Minus(..) | LazySet::Filtered { .. } | LazySet::Union(_)
+            )
+        );
+        let shown = match left.is_enumerable() || is_combined {
+            true => Value::Set(left.elements()?),
+            false => left.clone(),
+        };
+        bail!("Attempted to {verb} the set {shown} with the value:\n{right}")
+    };
+    let Some(right_name) = overridden(right) else {
+        bail!("Attempted to compare overridden value {left} with non-overridden value:\n{right}")
     };
     match (left_name, right_name) {
         ("Seq", "Seq") => {
@@ -105,14 +120,16 @@ impl Value {
                 }
                 Ok(low.cmp(other_low))
             }
-            _ if self.is_function() && other.is_function() => compare_functions(self, other),
+            _ if self.is_function() && other.is_function() => {
+                compare_functions(self, other, "compare")
+            }
             _ if self.is_set() && other.is_set() => {
                 if overridden(self).is_some() || overridden(other).is_some() {
                     return compare_overridden(self, other, "compare");
                 }
                 compare_elements(&self.elements()?, &other.elements()?)
             }
-            _ => bail!("Attempted to compare {} {self} with {} {other}", self.kind(), other.kind()),
+            _ => Err(mismatch(self, other)),
         }
     }
 
@@ -137,7 +154,7 @@ impl Value {
                 bail!("Attempted to check equality of {kind} {self} with non-{kind}:\n{other}")
             }
             _ if self.is_function() && other.is_function() => {
-                Ok(compare_functions(self, other)? == Ordering::Equal)
+                Ok(compare_functions(self, other, "check equality of")? == Ordering::Equal)
             }
             _ if self.is_set() && other.is_set() => set_equals(self, other),
             _ => bail!(
@@ -163,15 +180,23 @@ fn compare_elements(left: &[Value], right: &[Value]) -> Result<Ordering> {
 }
 
 /// Compares two functions: by domain size, then keys, then values.
-fn compare_functions(left: &Value, right: &Value) -> Result<Ordering> {
+fn compare_functions(left: &Value, right: &Value, verb: &str) -> Result<Ordering> {
     match (left, right) {
         (Value::Tuple(left), Value::Tuple(right)) => compare_elements(left, right),
-        (Value::LazyFunc(_), _) => compare_functions(&left.materialize()?, right),
-        (_, Value::LazyFunc(_)) => compare_functions(left, &right.materialize()?),
+        (Value::LazyFunc(_), _) => compare_functions(&left.materialize()?, right, verb),
+        (_, Value::LazyFunc(_)) => compare_functions(left, &right.materialize()?, verb),
         _ => {
             let (left_keys, left_values) = left.entries();
             let (right_keys, right_values) = right.entries();
-            if left_keys.len() != right_keys.len() {
+            // TLC compares a record only with another record.
+            let is_record = |keys: &[Value]| keys.iter().all(|key| matches!(key, Value::Str(_)));
+            let is_mismatch = !left_keys.is_empty()
+                && !right_keys.is_empty()
+                && is_record(&left_keys) != is_record(&right_keys);
+            if is_mismatch && is_record(&left_keys) {
+                bail!("Attempted to {verb} record:\n{left}\nwith non-record\n{right}");
+            }
+            if left_keys.len() != right_keys.len() && !is_mismatch {
                 return Ok(left_keys.len().cmp(&right_keys.len()));
             }
             for (left, right) in left_keys.iter().zip(right_keys.iter()) {
@@ -180,9 +205,30 @@ fn compare_functions(left: &Value, right: &Value) -> Result<Ordering> {
                     return Ok(ordering);
                 }
             }
+            if left_keys.len() != right_keys.len() {
+                return Ok(left_keys.len().cmp(&right_keys.len()));
+            }
             compare_elements(&left_values, &right_values)
         }
     }
+}
+
+/// TLC's error comparing values of different kinds, worded by the class of the left one.
+fn mismatch(left: &Value, right: &Value) -> crate::Error {
+    let message = match left {
+        Value::Bool(_) | Value::Int(_) | Value::Str(_) => {
+            let kind = left.kind();
+            format!("Attempted to compare {kind} {left} with non-{kind}:\n{right}")
+        }
+        Value::Func(_) if left.kind() == "record" => {
+            format!("Attempted to compare record:\n{left}\nwith non-record\n{right}")
+        }
+        _ if left.is_function() => {
+            format!("Attempted to compare the function {left} with the value:\n{right}")
+        }
+        _ => format!("Attempted to compare the set {left} with the value:\n{right}"),
+    };
+    crate::Error(message)
 }
 
 fn set_equals(left: &Value, right: &Value) -> Result<bool> {
@@ -207,8 +253,11 @@ fn set_equals(left: &Value, right: &Value) -> Result<bool> {
                 return Ok(domain.equals(other_domain)? && range.equals(other_range)?);
             }
             (RecordSet(fields), RecordSet(other_fields)) => {
-                if left.is_empty()? || right.is_empty()? {
-                    return Ok(left.is_empty()? && right.is_empty()?);
+                if left.is_empty()? {
+                    return right.is_empty();
+                }
+                if right.is_empty()? {
+                    return Ok(false);
                 }
                 if fields.len() != other_fields.len() {
                     return Ok(false);
@@ -222,8 +271,11 @@ fn set_equals(left: &Value, right: &Value) -> Result<bool> {
                 return Ok(true);
             }
             (Product(factors), Product(other_factors)) => {
-                if left.is_empty()? || right.is_empty()? {
-                    return Ok(left.is_empty()? && right.is_empty()?);
+                if left.is_empty()? {
+                    return right.is_empty();
+                }
+                if right.is_empty()? {
+                    return Ok(false);
                 }
                 if factors.len() != other_factors.len() {
                     return Ok(false);

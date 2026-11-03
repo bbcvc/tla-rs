@@ -119,8 +119,11 @@ impl Evaluator {
         env.keep_lazy = keep_lazy;
         let function = function?;
         if !function.is_function() {
-            let message =
-                format!("A non-function ({}) was applied as a function.", describe(&function));
+            let message = format!(
+                "A non-function ({}) was applied as a function.\n{}",
+                describe(&function),
+                self.range(env, expr)
+            );
             return Err(self.error(env, expr, message));
         }
         let argument = match args {
@@ -152,14 +155,18 @@ impl Evaluator {
                 {
                     Some(index) => return Ok(func.values[index].clone()),
                     None => format!(
-                        "Attempted to select nonexistent field \"{field}\" from the record\n{value}"
+                        "Attempted to select nonexistent field \"{field}\" from the record\n{value}\n{}",
+                        self.range(env, expr)
                     ),
                 }
             }
             Value::Func(_) | Value::LazyFunc(_) => {
                 return value.apply(&Value::Str(field)).at(self, env, expr);
             }
-            _ => format!("Attempted to select field \"{field}\" from a non-record value {value}"),
+            _ => format!(
+                "Attempted to select field \"{field}\" from a non-record value {value}\n{}",
+                self.range(env, expr)
+            ),
         };
         Err(self.error(env, expr, message))
     }
@@ -188,7 +195,8 @@ impl Evaluator {
                 })
                 .collect::<Result<Vec<_>>>()?;
             let mut failure: Option<EvalError> = None;
-            let updated = current.except(&path, &mut |old| {
+            let except = if env.keep_lazy { Value::except_kept_lazy } else { Value::except };
+            let updated = except(&current, &path, &mut |old| {
                 env.set(update.at, old.clone());
                 self.eval(&update.value, env).map_err(|error| {
                     let message = error.message.clone();

@@ -123,7 +123,7 @@ impl Evaluator {
             return Ok(Elements::Interval(low, high));
         }
         if !set.is_set() || is_overridden(&set) {
-            return Err(self.error(env, expr, non_enumerable(&set)));
+            return Err(self.error(env, expr, non_enumerable(&set, &self.node(env, expr))));
         }
         Ok(Elements::List(set.elements().at(self, env, expr)?))
     }
@@ -181,7 +181,7 @@ impl Evaluator {
             Quantifier::Forall => true,
             Quantifier::Exists => false,
             Quantifier::TemporalForall | Quantifier::TemporalExists => {
-                return Err(self.error(env, expr, TEMPORAL_ERROR));
+                return self.fail_at(env, expr, TEMPORAL_ERROR);
             }
         };
         let description = if is_forall { "the body of \\A" } else { "the body of \\E" };
@@ -205,15 +205,15 @@ impl Evaluator {
         env: &mut Env<'_>,
     ) -> Result<Value> {
         let Some(set_expr) = set else {
-            return Err(self.error(env, expr, "TLC cannot evaluate an unbounded CHOOSE"));
+            return self.fail_at(env, expr, "TLC cannot evaluate an unbounded CHOOSE");
         };
         let set = self.eval(set_expr, env)?;
         if !set.is_set() || is_overridden(&set) {
-            return Err(self.error(
-                env,
-                expr,
-                "Attempted to compute the value of an expression of\nform CHOOSE x \\in S: P, but S was not enumerable.",
-            ));
+            let message = format!(
+                "Attempted to compute the value of an expression of\nform CHOOSE x \\in S: P, but S was not enumerable.\n{}",
+                self.range(env, expr)
+            );
+            return Err(self.error(env, expr, message));
         }
         let elements = self.bound_elements(set, set_expr, env)?;
         for index in 0..elements.len() {
@@ -233,11 +233,11 @@ impl Evaluator {
                 }
             }
         }
-        Err(self.error(
-            env,
-            expr,
-            "Attempted to compute the value of an expression of form\nCHOOSE x \\in S: P, but no element of S satisfied P.",
-        ))
+        let message = format!(
+            "Attempted to compute the value of an expression of form\nCHOOSE x \\in S: P, but no element of S satisfied P.\n{}",
+            self.range(env, expr)
+        );
+        Err(self.error(env, expr, message))
     }
 
     /// `{x \in S : pred}`. TLC filters a set enumeration or an interval at once, and any other
@@ -318,8 +318,8 @@ fn expected_boolean(description: &str, value: &Value) -> String {
     format!("Expected {description} to be a boolean but found {value}")
 }
 
-/// TLC's error for a quantifier bound it can't enumerate.
-fn non_enumerable(set: &Value) -> String {
+/// TLC's error for a quantifier bound it can't enumerate, which SANY describes as `node`.
+fn non_enumerable(set: &Value, node: &str) -> String {
     let text = set.to_string();
     let quantified = format!(
         "universally (\\A) or existentially (\\E) quantify over {text}, because this would require checking an\ninfinite number of cases."
@@ -337,9 +337,9 @@ fn non_enumerable(set: &Value) -> String {
         _ => None,
     };
     match explanation {
-        Some(explanation) => {
-            format!("TLC encountered the non-enumerable quantifier bound\n{text}\n{explanation}")
-        }
-        None => format!("TLC encountered a non-enumerable quantifier bound\n{text}."),
+        Some(explanation) => format!(
+            "TLC encountered the non-enumerable quantifier bound\n{text}\n{node}\n{explanation}"
+        ),
+        None => format!("TLC encountered a non-enumerable quantifier bound\n{text}.\n{node}"),
     }
 }

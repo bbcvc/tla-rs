@@ -76,7 +76,9 @@ impl Value {
     pub fn materialize(&self) -> Result<Value> {
         let Value::LazyFunc(lazy) = self else { return Ok(self.clone()) };
         if !lazy.domain.is_enumerable() {
-            bail!("Attempted to enumerate the function {self}, whose domain is infinite");
+            // TLC sizes the domain first, which fails as the domain fails.
+            lazy.domain.cardinality()?;
+            bail!("Attempted to enumerate a function whose domain {} is infinite", lazy.domain);
         }
         let keys = lazy.domain.elements()?;
         let values = keys.iter().map(|key| (lazy.apply)(key)).collect::<Result<Vec<_>>>()?;
@@ -145,6 +147,25 @@ impl Value {
         path: &[Key],
         update: &mut dyn FnMut(&Value) -> Result<Value>,
     ) -> Result<Value> {
+        self.except_with(path, update, false)
+    }
+
+    /// `[self EXCEPT !path = update(@)]` where the result is applied at once, as in
+    /// `[f EXCEPT ![1] = 2][1]`: TLC keeps a lazy function lazy then, whatever its domain.
+    pub fn except_kept_lazy(
+        &self,
+        path: &[Key],
+        update: &mut dyn FnMut(&Value) -> Result<Value>,
+    ) -> Result<Value> {
+        self.except_with(path, update, true)
+    }
+
+    fn except_with(
+        &self,
+        path: &[Key],
+        update: &mut dyn FnMut(&Value) -> Result<Value>,
+        is_kept_lazy: bool,
+    ) -> Result<Value> {
         let Some((first, rest)) = path.split_first() else { return update(self) };
         let key = match first {
             Key::Apply(arg) => arg.clone(),
@@ -179,7 +200,7 @@ impl Value {
                 Err(_) => Ok(self.clone()),
             },
             Value::LazyFunc(lazy) => {
-                if lazy.domain.is_enumerable() {
+                if !is_kept_lazy && lazy.domain.is_enumerable() {
                     return self.materialize()?.except(path, update);
                 }
                 if !lazy.domain.contains(&key)? {
@@ -190,7 +211,7 @@ impl Value {
                 Ok(Value::LazyFunc(Arc::new(LazyFunc {
                     domain: lazy.domain.clone(),
                     apply: Arc::new(move |arg| {
-                        if arg.equals(&key)? { Ok(updated.clone()) } else { previous(arg) }
+                        if key.equals(arg)? { Ok(updated.clone()) } else { previous(arg) }
                     }),
                 })))
             }
@@ -227,5 +248,20 @@ mod tests {
             outer.except(&missing, &mut |_| Ok(Value::TRUE)).unwrap().to_string(),
             "[x |-> <<1, 2>>]"
         );
+    }
+
+    /// Materializing a function over a domain TLC can't enumerate fails as sizing the domain
+    /// does, and printing such a function doesn't recurse into that failure.
+    #[test]
+    fn refuses_to_materialize_an_infinite_domain() {
+        let function = Value::LazyFunc(std::sync::Arc::new(crate::LazyFunc {
+            domain: Value::lazy(crate::LazySet::Nat),
+            apply: std::sync::Arc::new(|_| Ok(Value::Int(0))),
+        }));
+        assert_eq!(
+            function.materialize().unwrap_err().0,
+            "Attempted to compute the number of elements in the overridden value Nat."
+        );
+        assert!(!function.to_string().is_empty());
     }
 }

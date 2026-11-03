@@ -9,7 +9,7 @@ mod builtin;
 mod call;
 mod function;
 
-use tla_ast::Quantifier;
+use tla_ast::{Quantifier, Span};
 use tla_resolve::{DefId, Expr, ExprKind, Local, VarId};
 use tla_value::{LazySet, Symbol, Value};
 
@@ -74,20 +74,22 @@ impl Evaluator {
             ExprKind::CallParam { param, args } => self.call_param(*param, args, expr, env),
             ExprKind::CallConst { id, args } => self.call_const(*id, args, expr, env),
             ExprKind::Builtin { op, args } => self.builtin(*op, args, expr, env),
-            ExprKind::OpArg(_) => self.fail(env, expr, "An operator cannot be used as a value"),
+            ExprKind::OpArg(_) => self.fail_at(env, expr, "An operator cannot be used as a value"),
             ExprKind::And(items) => self.junction(true, items, expr, env),
             ExprKind::Or(items) => self.junction(false, items, expr, env),
-            ExprKind::If { cond, then, otherwise } => self.condition(cond, then, otherwise, env),
+            ExprKind::If { cond, then, otherwise } => {
+                self.condition(cond, then, otherwise, expr, env)
+            }
             ExprKind::Case { arms, other } => self.case(arms, other.as_deref(), expr, env),
             ExprKind::Quant { quantifier, bounds, body } => {
                 self.quantifier(*quantifier, bounds, body, expr, env)
             }
             ExprKind::UnboundedQuant { quantifier, .. } => match quantifier {
                 Quantifier::Forall | Quantifier::Exists => {
-                    self.fail(env, expr, "TLC cannot evaluate an unbounded quantifier")
+                    self.fail_at(env, expr, "TLC cannot evaluate an unbounded quantifier")
                 }
                 Quantifier::TemporalForall | Quantifier::TemporalExists => {
-                    self.fail(env, expr, TEMPORAL_ERROR)
+                    self.fail_at(env, expr, TEMPORAL_ERROR)
                 }
             },
             ExprKind::Choose { pattern, set, body } => {
@@ -111,14 +113,46 @@ impl Evaluator {
             ExprKind::AngleAction { action, sub } => {
                 self.subscripted_action(false, action, sub, expr, env)
             }
-            ExprKind::Fairness { .. } => self.fail(env, expr, TEMPORAL_ERROR),
+            ExprKind::Fairness { .. } => self.fail_at(env, expr, TEMPORAL_ERROR),
         }
     }
 
+    /// Fails with `message` followed by where the expression starts, as TLC words it.
     #[cold]
     #[inline(never)]
-    fn fail(&self, env: &Env<'_>, expr: &Expr, message: &str) -> Result<Value> {
-        Err(self.error(env, expr, message))
+    fn fail_at(&self, env: &Env<'_>, expr: &Expr, message: &str) -> Result<Value> {
+        Err(self.error(env, expr, format!("{message} at {}", self.location(env, expr))))
+    }
+
+    /// Where an expression starts, as tla-ts's `describeLocation` puts it in a message.
+    pub(crate) fn location(&self, env: &Env<'_>, expr: &Expr) -> String {
+        let (line, column) = expr.span.line_column(&self.spec.modules[env.module.index()].source);
+        format!("line {line}, column {column}")
+    }
+
+    /// Where an expression is, as SANY describes a location in TLC's messages:
+    /// `line 1, col 2 to line 3, col 4 of module M`, the end being the last character.
+    pub(crate) fn range(&self, env: &Env<'_>, expr: &Expr) -> String {
+        let module = &self.spec.modules[env.module.index()];
+        let (line, column) = expr.span.line_column(&module.source);
+        let last = expr.span.end.saturating_sub(1).max(expr.span.start) as usize;
+        let (end_line, end_column) = Span::new(last, last + 1).line_column(&module.source);
+        format!(
+            "line {line}, col {column} to line {end_line}, col {end_column} of module {}",
+            module.name
+        )
+    }
+
+    /// How SANY describes an expression in a message: a numeral as written, and any other
+    /// expression by its range.
+    pub(crate) fn node(&self, env: &Env<'_>, expr: &Expr) -> String {
+        match expr.kind {
+            ExprKind::Int(_) => {
+                let source = &self.spec.modules[env.module.index()].source;
+                source[expr.span.start as usize..expr.span.end as usize].to_owned()
+            }
+            _ => self.range(env, expr),
+        }
     }
 
     fn condition(
@@ -126,6 +160,7 @@ impl Evaluator {
         cond: &Expr,
         then: &Expr,
         otherwise: &Expr,
+        expr: &Expr,
         env: &mut Env<'_>,
     ) -> Result<Value> {
         match self.eval(cond, env)? {
@@ -133,8 +168,9 @@ impl Evaluator {
             Value::Bool(false) => self.eval(otherwise, env),
             value => {
                 let message = format!(
-                    "A non-boolean expression ({}) was used as the condition of an IF.",
-                    describe(&value)
+                    "A non-boolean expression ({}) was used as the condition of an IF.\n{}",
+                    describe(&value),
+                    self.range(env, expr)
                 );
                 Err(self.error(env, cond, message))
             }
@@ -185,7 +221,12 @@ impl Evaluator {
 
     fn int(&self, value: i64, expr: &Expr, env: &Env<'_>) -> Result<Value> {
         i32::try_from(value).map(Value::Int).map_err(|_| {
-            self.error(env, expr, format!("TLC can't handle a number this big: {value}"))
+            let message = format!(
+                "TLC can't handle a number this big: {} at {}",
+                self.node(env, expr),
+                self.location(env, expr)
+            );
+            self.error(env, expr, message)
         })
     }
 
@@ -198,7 +239,8 @@ impl Evaluator {
                     env,
                     expr,
                     format!(
-                        "In evaluation, the identifier {name} is either undefined or not an operator."
+                        "In evaluation, the identifier {name} is either undefined or not an operator.\n{}",
+                        self.range(env, expr)
                     ),
                 ))
             }
@@ -209,7 +251,7 @@ impl Evaluator {
         match env.slot(local.hops, local.slot) {
             Slot::Value(value) => Ok(value.clone()),
             Slot::Thunk(thunk) => self.force(thunk, expr, env),
-            Slot::Op(_) => Err(self.error(env, expr, "An operator cannot be used as a value")),
+            Slot::Op(_) => self.fail_at(env, expr, "An operator cannot be used as a value"),
         }
     }
 
@@ -240,7 +282,8 @@ impl Evaluator {
                             env,
                             item,
                             format!(
-                                "A non-boolean expression ({kind}) was used as a formula in a {formula}."
+                                "A non-boolean expression ({kind}) was used as a formula in a {formula}.\n{}",
+                                self.node(env, item)
                             ),
                         )
                     } else {
@@ -248,11 +291,19 @@ impl Evaluator {
                             if is_and { "/\\" } else { "\\/" },
                             if index == 0 { "P" } else { "Q" },
                         );
+                        // TLC nests an infix chain to the left, so the junction that fails ends
+                        // with the operand that failed, or the second one.
+                        let end = items[index.max(1).min(items.len() - 1)].span.end;
+                        let junction = Expr::new(
+                            ExprKind::Bool(false),
+                            Span::new(expr.span.start as usize, end as usize),
+                        );
                         self.error(
                             env,
                             expr,
                             format!(
-                                "Attempted to evaluate an expression of form P {operator} Q when {side} was\n{kind}."
+                                "Attempted to evaluate an expression of form P {operator} Q when {side} was\n{kind}.\n{}",
+                                self.range(env, &junction)
                             ),
                         )
                     });
@@ -276,8 +327,9 @@ impl Evaluator {
                 Value::Bool(false) => {}
                 value => {
                     let message = format!(
-                        "A non-boolean expression ({}) was used as a condition of a CASE.",
-                        describe(&value)
+                        "A non-boolean expression ({}) was used as a condition of a CASE. {}",
+                        describe(&value),
+                        self.node(env, guard)
                     );
                     return Err(self.error(env, guard, message));
                 }
@@ -286,7 +338,11 @@ impl Evaluator {
         match other {
             Some(other) => self.eval(other, env),
             None => {
-                Err(self.error(env, expr, "Attempted to evaluate a CASE with no conditions true."))
+                let message = format!(
+                    "Attempted to evaluate a CASE with no conditions true.\n{}",
+                    self.range(env, expr)
+                );
+                Err(self.error(env, expr, message))
             }
         }
     }
@@ -294,7 +350,11 @@ impl Evaluator {
     /// `e'`: `e` evaluated in the next state.
     fn prime(&self, operand: &Expr, expr: &Expr, env: &mut Env<'_>) -> Result<Value> {
         let Some(next) = env.next else {
-            return Err(self.error(env, expr, "A primed expression appears outside an action"));
+            let message = format!(
+                "A primed expression appears outside an action at {}",
+                self.location(env, expr)
+            );
+            return Err(self.error(env, expr, message));
         };
         let state = env.state;
         (env.state, env.next) = (Some(next), None);
