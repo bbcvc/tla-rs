@@ -806,3 +806,13 @@ fn computes_enabled_in_an_initial_state_once_assigned() {
     let error = init_states(&evaluator, "Early").unwrap_err();
     assert_eq!(error.message, "ENABLED needs a complete state at line 5, column 10");
 }
+
+#[test]
+fn reads_the_level_after_the_current_state_in_the_state_being_assigned() {
+    let source = "---- MODULE M ----\nEXTENDS TLC\nVARIABLES x, y\nNext == x' = TLCGet(\"level\") /\\ y' = TLCGet(\"level\")'\n====\n";
+    let evaluator = evaluator(source);
+    let current = state(vec![Value::Int(0), Value::Int(0)]);
+    let expanded = current.clone();
+    evaluator.runtime().on_level(move |state| if Arc::ptr_eq(state, &expanded) { 3 } else { 4 });
+    assert_eq!(next_states(&evaluator, "Next", &current).unwrap(), ["3, 4"]);
+}

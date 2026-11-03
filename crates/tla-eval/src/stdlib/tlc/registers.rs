@@ -7,6 +7,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use tla_value::{Symbol, Value};
 
+use crate::env::StateRef;
 use crate::stdlib::{Outcome, arg, forced};
 use crate::{Arg, Ctx, Runtime};
 
@@ -56,7 +57,10 @@ fn runtime_value(ctx: &Ctx<'_>, key: &str) -> Outcome {
     let statistics = statistics.unwrap_or_default();
     let duration = int(runtime.elapsed().as_secs() as i64);
     Ok(match key {
-        "level" => Value::Int(runtime.level(ctx.state())),
+        "level" => Value::Int(match ctx.state {
+            Some(StateRef::Partial(..)) => runtime.assigned_level(),
+            _ => runtime.level(ctx.state()),
+        }),
         "diameter" => int(statistics.diameter),
         "generated" => int(statistics.generated),
         "distinct" => int(statistics.distinct),

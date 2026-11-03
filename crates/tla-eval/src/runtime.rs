@@ -251,6 +251,13 @@ impl Runtime {
         }
     }
 
+    /// `TLCGet("level")` in a state still being assigned, which is none the model checker has
+    /// found: as in tla-ts, the level after the state being expanded, or 0 for an initial state.
+    pub(crate) fn assigned_level(&self) -> i32 {
+        let assigned: State = Arc::from([]);
+        self.level(Some(&assigned))
+    }
+
     pub(crate) fn behavior(&self, state: &State) -> Option<Vec<State>> {
         self.checker.read().unwrap().behavior.as_ref().map(|behavior| behavior(state))
     }
