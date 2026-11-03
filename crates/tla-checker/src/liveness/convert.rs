@@ -44,10 +44,13 @@ pub struct Translation<'e> {
     evaluator: &'e Evaluator,
     overrides: &'e HashMap<DefId, DefId>,
     enabled: &'e HashMap<(DefId, Span), DefId>,
+    /// The spec's next-state relation.
+    next: Option<DefId>,
     levels: Levels,
     /// The expressions the atoms evaluate, by index.
     pub exprs: Vec<&'e Expr>,
     atoms: usize,
+    state_atoms: usize,
     depth: usize,
 }
 
@@ -56,14 +59,17 @@ impl<'e> Translation<'e> {
         evaluator: &'e Evaluator,
         overrides: &'e HashMap<DefId, DefId>,
         enabled: &'e HashMap<(DefId, Span), DefId>,
+        next: Option<DefId>,
     ) -> Self {
         Self {
             evaluator,
             overrides,
             enabled,
+            next,
             levels: Levels::tlc(),
             exprs: Vec::new(),
             atoms: 0,
+            state_atoms: 0,
             depth: 0,
         }
     }
@@ -100,7 +106,16 @@ impl<'e> Translation<'e> {
 
     fn atom(&mut self, kind: AtomKind) -> Rc<Atom> {
         self.atoms += 1;
-        Rc::new(Atom { id: self.atoms, kind })
+        let slot = self.state_atoms;
+        if !matches!(kind, AtomKind::Action { .. }) {
+            self.state_atoms += 1;
+        }
+        Rc::new(Atom { id: self.atoms, slot, kind })
+    }
+
+    /// The number of state predicates among the atoms.
+    pub fn state_atoms(&self) -> usize {
+        self.state_atoms
     }
 
     fn evaluated(&mut self, expr: &'e Expr, place: &Place) -> Eval {
@@ -133,6 +148,7 @@ impl<'e> Translation<'e> {
                     action,
                     unchanged: None,
                     enabled: None,
+                    is_next: false,
                 })))
             }
         }
@@ -238,10 +254,18 @@ impl<'e> Translation<'e> {
                 let enabled = self.evaluated(enabled, place);
                 let enabled = self.atom(AtomKind::Enabled(enabled));
                 let disabled = Live::not(Live::Atom(enabled.clone()));
+                let is_next = match &action.kind {
+                    ExprKind::Call { def, scope: tla_resolve::Scope::Global, args } => {
+                        args.is_empty()
+                            && Some(*self.overrides.get(def).unwrap_or(def)) == self.next
+                    }
+                    _ => false,
+                };
                 let taken = AtomKind::Action {
                     action: self.evaluated(action, place),
                     unchanged: Some(self.evaluated(sub, place)),
                     enabled: Some(enabled),
+                    is_next,
                 };
                 let taken = Live::Atom(self.atom(taken));
                 Ok(match fairness {

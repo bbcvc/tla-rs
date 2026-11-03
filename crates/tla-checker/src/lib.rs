@@ -236,6 +236,7 @@ pub fn check<S: Successors>(
             &plan.fairness,
             &overrides,
             &plan.enabled,
+            plan.next,
         ) {
             Ok(liveness) => liveness,
             Err(message) => return Outcome::error(message),

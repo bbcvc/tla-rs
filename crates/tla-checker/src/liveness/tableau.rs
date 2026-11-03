@@ -430,11 +430,11 @@ mod tests {
     fn atom(id: usize, is_action: bool) -> Live {
         let eval = Eval { frames: crate::liveness::tests::frames(), expr: 0 };
         let kind = if is_action {
-            AtomKind::Action { action: eval, unchanged: None, enabled: None }
+            AtomKind::Action { action: eval, unchanged: None, enabled: None, is_next: false }
         } else {
             AtomKind::State(eval)
         };
-        Live::Atom(Rc::new(Atom { id, kind }))
+        Live::Atom(Rc::new(Atom { id, slot: 0, kind }))
     }
 
     #[test]

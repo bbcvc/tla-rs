@@ -26,6 +26,8 @@ impl std::fmt::Debug for Eval {
 pub struct Atom {
     /// Atoms are equal only to themselves.
     pub id: usize,
+    /// The place of a state predicate's results among those of the others.
+    pub slot: usize,
     pub kind: AtomKind,
 }
 
@@ -37,7 +39,11 @@ pub enum AtomKind {
     Enabled(Eval),
     /// An action. One a fairness condition takes is `<<A>>_v`: `A` on a step that changes the
     /// subscript `v`, which can't hold where the condition's `ENABLED` doesn't.
-    Action { action: Eval, unchanged: Option<Eval>, enabled: Option<Rc<Atom>> },
+    ///
+    /// When the action is the spec's next-state relation, every step of the behavior graph
+    /// but a stuttering one satisfies it, since the search found it as a successor, and it
+    /// isn't evaluated.
+    Action { action: Eval, unchanged: Option<Eval>, enabled: Option<Rc<Atom>>, is_next: bool },
 }
 
 /// A liveness formula.
@@ -412,11 +418,11 @@ mod tests {
     fn atom(id: usize, is_action: bool) -> Live {
         let eval = Eval { frames: crate::liveness::tests::frames(), expr: 0 };
         let kind = if is_action {
-            AtomKind::Action { action: eval, unchanged: None, enabled: None }
+            AtomKind::Action { action: eval, unchanged: None, enabled: None, is_next: false }
         } else {
             AtomKind::State(eval)
         };
-        Live::Atom(Rc::new(Atom { id, kind }))
+        Live::Atom(Rc::new(Atom { id, slot: 0, kind }))
     }
 
     #[test]

@@ -34,15 +34,57 @@ pub trait Explore {
 /// every set that outgrows it.
 const SUCCESSOR_CAPACITY: usize = 16;
 
-/// The results of evaluating the atoms on the states of one addition to the graph. TLC
-/// evaluates every check on its own; without side effects the order can't show, so the checks
-/// of one state share their results.
+/// The results of evaluating the atoms. TLC evaluates every check on its own; without side
+/// effects the order can't show, so the checks of one state share their results: those of one
+/// addition to the graph by the state, and those of the state predicates by the index of the
+/// state in the search for as long as the search runs.
 #[derive(Default)]
 struct Cache {
     states: HashMap<(*const tla_eval::Value, usize), bool>,
     actions: HashMap<(*const tla_eval::Value, *const tla_eval::Value), Vec<Option<bool>>>,
     /// The states the results are for, kept so that no other state takes their place.
     alive: Vec<State>,
+    /// The index in the search of the states of this addition that have one.
+    indices: HashMap<*const tla_eval::Value, u32>,
+    /// The results of the state predicates on each state of the search, by its index and the
+    /// predicate's slot: 0 when unknown, 1 for false, 2 for true.
+    known: Vec<u8>,
+    /// The number of state predicates.
+    width: usize,
+}
+
+impl Cache {
+    /// Forgets what is only known for one addition to the graph.
+    fn reset(&mut self) {
+        self.states.clear();
+        self.actions.clear();
+        self.alive.clear();
+        self.indices.clear();
+    }
+
+    /// Notes the index of a state of this addition.
+    fn index(&mut self, state: &State, index: u32) {
+        self.indices.insert(key(state), index);
+        self.alive.push(state.clone());
+    }
+
+    fn known(&self, state: &State, slot: usize) -> Option<bool> {
+        let index = *self.indices.get(&key(state))? as usize;
+        match self.known.get(index * self.width + slot) {
+            Some(1) => Some(false),
+            Some(2) => Some(true),
+            _ => None,
+        }
+    }
+
+    fn remember(&mut self, state: &State, slot: usize, result: bool) {
+        let Some(&index) = self.indices.get(&key(state)) else { return };
+        let at = index as usize * self.width + slot;
+        if self.known.len() <= at {
+            self.known.resize((index as usize + 1) * self.width, 0);
+        }
+        self.known[at] = if result { 2 } else { 1 };
+    }
 }
 
 pub struct Checker<'e> {
@@ -71,11 +113,12 @@ impl<'e> Checker<'e> {
         fairness: &[DefId],
         overrides: &'e HashMap<DefId, DefId>,
         enabled: &'e HashMap<(DefId, Span), DefId>,
+        next: Option<DefId>,
     ) -> Result<Option<Self>, String> {
         if properties.is_empty() {
             return Ok(None);
         }
-        let mut translation = Translation::new(evaluator, overrides, enabled);
+        let mut translation = Translation::new(evaluator, overrides, enabled, next);
         let fairness: Vec<Live> =
             fairness.iter().map(|&def| translation.formula(def)).collect::<Result<_, _>>()?;
         let mut negations: Vec<Live> = properties
@@ -110,13 +153,14 @@ impl<'e> Checker<'e> {
                 Graph::new(solution, action_ids)
             })
             .collect();
+        let width = translation.state_atoms();
         Ok(Some(Self {
             evaluator,
             exprs: translation.exprs,
             graphs,
             action_ids: ids.len(),
             capacity: 1,
-            cache: Cache::default(),
+            cache: Cache { width, ..Cache::default() },
         }))
     }
 
@@ -127,7 +171,8 @@ impl<'e> Checker<'e> {
 
     /// Adds an initial state the search found new.
     pub fn add_initial_state(&mut self, index: u32, state: &State) -> Result<(), String> {
-        self.cache = Cache::default();
+        self.cache.reset();
+        self.cache.index(state, index);
         for position in 0..self.graphs.len() {
             let Some(tableau) = &self.graphs[position].solution.tableau else {
                 self.graphs[position].initial.push(index);
@@ -166,7 +211,13 @@ impl<'e> Checker<'e> {
         successors: &[LiveSuccessor],
         explore: &dyn Explore,
     ) -> Result<Option<Vec<u32>>, String> {
-        self.cache = Cache::default();
+        self.cache.reset();
+        self.cache.index(state, index);
+        for successor in successors {
+            if let Some(successor_index) = successor.index {
+                self.cache.index(&successor.state, successor_index);
+            }
+        }
         let set = self.successor_set(index, state, successors, explore)?;
         for position in 0..self.graphs.len() {
             let actions: Vec<Vec<bool>> = set
@@ -429,6 +480,9 @@ impl<'e> Checker<'e> {
             }
         }
         for successor in explore.successors(index, state)? {
+            if let Some(successor_index) = successor.index {
+                self.cache.index(&successor.state, successor_index);
+            }
             let successor_actions = self.check_action(position, state, &successor.state)?;
             let Some(successor_index) = successor.index else {
                 // A successor the search never stored follows a violation or an error, after
@@ -552,13 +606,19 @@ fn eval(
                 if let Some(&known) = cache.states.get(&(key(state), atom.id)) {
                     return Ok(known);
                 }
+                if let Some(known) = cache.known(state, atom.slot) {
+                    cache.states.insert((key(state), atom.id), known);
+                    cache.alive.push(state.clone());
+                    return Ok(known);
+                }
                 let what = "a temporal property predicate";
                 let result = boolean(evaluator, exprs, predicate, state, None, what)?;
                 cache.states.insert((key(state), atom.id), result);
                 cache.alive.push(state.clone());
+                cache.remember(state, atom.slot, result);
                 result
             }
-            AtomKind::Action { action, unchanged, enabled } => {
+            AtomKind::Action { action, unchanged, enabled, is_next } => {
                 let Some(next) = next else {
                     return Err("TLC cannot evaluate an action in a single state".into());
                 };
@@ -574,6 +634,9 @@ fn eval(
                     if before.equals(&after).map_err(|error| error.to_string())? {
                         return Ok(false);
                     }
+                }
+                if *is_next {
+                    return Ok(true);
                 }
                 boolean(evaluator, exprs, action, state, Some(next), "an action predicate")?
             }
