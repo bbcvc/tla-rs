@@ -90,6 +90,7 @@ pub fn resolve(source: &str, loader: &mut dyn ModuleLoader) -> Result<Spec> {
         pending: HashSet::new(),
         recursive: HashMap::new(),
         enclosing: HashMap::new(),
+        inner_origins: HashMap::new(),
     };
     let root = resolver.add_file(modules, source.into(), false);
     let context = resolver.plain(&root)?;
@@ -137,7 +138,11 @@ pub(crate) struct Resolver<'l> {
     /// `RECURSIVE` declarations awaiting their definitions, by module, name, and depth.
     recursive: HashMap<(ModuleId, Symbol, usize), DefId>,
     /// What each nested module sees of the module around it.
-    enclosing: HashMap<ModuleId, Rc<Context>>,
+    /// Whether that module was elaborated plainly, so the nested module can be too.
+    enclosing: HashMap<ModuleId, (Rc<Context>, bool)>,
+    /// The enclosing module and place of each nested module, to tell a second elaboration of
+    /// it from a different module of the same name.
+    inner_origins: HashMap<Symbol, (ModuleId, Span)>,
 }
 
 /// Whether TLC bundles a module of this name. A loader shouldn't supply one from a library

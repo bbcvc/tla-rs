@@ -142,24 +142,55 @@ impl Resolver<'_> {
     }
 
     /// Resolves an operator definition, at module level or in a `LET`.
-    pub(crate) fn operator(&mut self, elab: &Elab, definition: &ast::OperatorDef) -> Result<DefId> {
+    /// Claims `name` for an operator or function defined at the current depth: the `RECURSIVE`
+    /// declaration awaiting it, or else a new definition. Like SANY's `Generator`, rejects a
+    /// definition of a name that is already visible.
+    pub(crate) fn claim_def(
+        &mut self,
+        elab: &Elab,
+        name: Name,
+        params: Vec<usize>,
+        is_function: bool,
+    ) -> Result<DefId> {
         let depth = self.depth();
-        let arities: Vec<usize> = definition.params.iter().map(|param| param.arity).collect();
-        let key = (elab.module, definition.name.symbol, depth);
-        let def =
-            match self.recursive.remove(&key) {
-                Some(def) => {
-                    if self.spec.def(def).params.len() != arities.len() {
-                        return Err(self.error(elab.module, definition.name.span, format!(
-                        "The RECURSIVE declaration of {} has a different number of arguments.",
-                        definition.name.symbol
-                    )));
-                    }
-                    self.spec.defs[def.index()].params = arities;
-                    def
+        if let Some(def) = self.recursive.remove(&(elab.module, name.symbol, depth)) {
+            if self.spec.def(def).params.len() != params.len() {
+                let message = format!(
+                    "The RECURSIVE declaration of {} has a different number of arguments.",
+                    name.symbol
+                );
+                return Err(self.error(elab.module, name.span, message));
+            }
+            self.spec.defs[def.index()].params = params;
+            return Ok(def);
+        }
+        if let Some((entry, _)) = self.lookup(elab, name.symbol) {
+            let is_pending =
+                matches!(entry.binding, Binding::Def(def) if self.pending.contains(&def));
+            let message = match entry.kind {
+                SymbolKind::Builtin => {
+                    format!(
+                        "Symbol {} is a built-in operator, and cannot be redefined.",
+                        name.symbol
+                    )
                 }
-                None => self.new_def(elab.module, definition.name, arities, depth),
+                _ if is_pending => {
+                    format!("Recursive operator {} defined at wrong LET/IN level.", name.symbol)
+                }
+                _ if is_function => {
+                    format!("Function name `{}' already defined or declared.", name.symbol)
+                }
+                _ => format!("Operator {} already defined or declared.", name.symbol),
             };
+            return Err(self.error(elab.module, name.span, message));
+        }
+        Ok(self.new_def(elab.module, name, params, depth))
+    }
+
+    /// Resolves an operator definition, at module level or in a `LET`.
+    pub(crate) fn operator(&mut self, elab: &Elab, definition: &ast::OperatorDef) -> Result<DefId> {
+        let arities = definition.params.iter().map(|param| param.arity).collect();
+        let def = self.claim_def(elab, definition.name, arities, false)?;
         self.frames.push(FrameScope::default());
         let body = definition
             .params
@@ -341,6 +372,15 @@ impl Resolver<'_> {
     }
 
     fn fields(&mut self, elab: &Elab, fields: &[(Name, ast::Expr)]) -> Result<Vec<(Symbol, Expr)>> {
+        for (index, (name, _)) in fields.iter().enumerate() {
+            if fields[..index].iter().any(|(earlier, _)| earlier.symbol == name.symbol) {
+                return Err(self.error(
+                    elab.module,
+                    name.span,
+                    "Non-unique fields in constructor.",
+                ));
+            }
+        }
         fields.iter().map(|(name, value)| Ok((name.symbol, self.expr(elab, value)?))).collect()
     }
 
@@ -400,12 +440,11 @@ impl Resolver<'_> {
     }
 
     fn let_defs(&mut self, elab: &Elab, defs: &[Unit]) -> Result<()> {
-        let depth = self.depth();
         for unit in defs {
             match unit {
                 Unit::Recursive(decls) => {
                     for decl in decls {
-                        let def = self.declare_recursive(elab.module, decl, depth);
+                        let def = self.declare_recursive(elab.module, decl, self.depth());
                         self.bind_def(elab, decl.name, decl.arity, def)?;
                     }
                 }
@@ -414,11 +453,7 @@ impl Resolver<'_> {
                     self.bind_def(elab, definition.name, definition.params.len(), def)?;
                 }
                 Unit::Function(definition) => {
-                    let key = (elab.module, definition.name.symbol, depth);
-                    let def = match self.recursive.remove(&key) {
-                        Some(def) => def,
-                        None => self.new_def(elab.module, definition.name, Vec::new(), depth),
-                    };
+                    let def = self.claim_def(elab, definition.name, Vec::new(), true)?;
                     self.bind_def(elab, definition.name, 0, def)?;
                     self.function(elab, def, definition)?;
                 }
@@ -581,7 +616,12 @@ impl Resolver<'_> {
                     Binding::Slot(slot) => {
                         Ok(OpRef::Param(Local { hops: self.depth() - frame.unwrap() - 1, slot }))
                     }
-                    Binding::Def(def) => Ok(OpRef::Def { def, scope: self.scope_of(def) }),
+                    // TLA+ is second order: an operator argument takes no operators itself.
+                    Binding::Def(def)
+                        if self.spec.def(def).params.iter().all(|&arity| arity == 0) =>
+                    {
+                        Ok(OpRef::Def { def, scope: self.scope_of(def) })
+                    }
                     Binding::Const(id) => Ok(OpRef::Const(id)),
                     Binding::Builtin(op) => Ok(OpRef::Builtin(op)),
                     _ => Err(mismatch(self)),

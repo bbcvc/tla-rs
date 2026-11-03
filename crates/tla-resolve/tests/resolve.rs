@@ -260,3 +260,53 @@ fn follows_sany_visibility_rules() {
         "+"
     );
 }
+
+#[test]
+fn rejects_what_sany_rejects_in_definitions() {
+    let redefined = "---- MODULE A ----\nG == 1\nX == LET G == 0 IN G\n====\n";
+    assert_eq!(error(redefined, &[]), "Operator G already defined or declared.");
+    let imported = "---- MODULE A ----\nEXTENDS Naturals\nNat == 1\n====\n";
+    assert_eq!(error(imported, &[]), "Operator Nat already defined or declared.");
+    let fields = "---- MODULE A ----\nX == [a |-> 1, a |-> 2]\n====\n";
+    assert_eq!(error(fields, &[]), "Non-unique fields in constructor.");
+    let higher = "---- MODULE A ----\nD(Op(_)) == Op(42)\nX == D(D)\n====\n";
+    assert!(error(higher, &[]).starts_with("Expected an operator of 1 arguments"));
+}
+
+#[test]
+fn resolves_names_sany_defines_implicitly() {
+    let spec = spec(
+        r#"
+---- MODULE Outer ----
+EXTENDS Naturals
+VARIABLE y
+---- MODULE Inner ----
+VARIABLE x
+Step == x < 3
+====
+I == INSTANCE Inner WITH x <- y
+ASSUME Positive == 1 > 0
+THEOREM Trivial == TRUE
+RECURSIVE f
+f[n \in Nat] == IF n = 0 THEN 0 ELSE f[n - 1]
+O == INSTANCE Other
+Check == Positive /\ Trivial /\ I!Step /\ O!Z = 1
+====
+---- MODULE Other ----
+Z == 1
+====
+"#,
+        &[],
+    );
+    assert_eq!(spec.assumptions.len(), 1);
+    assert!(matches!(def(&spec, "f").body, DefBody::Function { .. }));
+    let ExprKind::And(conjuncts) = body_of(&spec, "Check") else { panic!() };
+    assert_eq!(call_name(&spec, &conjuncts[0]), "Positive");
+    assert_eq!(call_name(&spec, &conjuncts[1]), "Trivial");
+    let ExprKind::Call { def: step, .. } = &conjuncts[2].kind else { panic!() };
+    let DefBody::Expr(Expr { kind: ExprKind::Call { args, .. }, .. }) = &spec.def(*step).body
+    else {
+        panic!("the nested module sees < from the enclosing module's EXTENDS")
+    };
+    assert!(matches!(args[0].kind, ExprKind::Var(_)));
+}

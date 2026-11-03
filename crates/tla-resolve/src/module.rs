@@ -243,16 +243,26 @@ impl Resolver<'_> {
 
     /// Registers the modules nested in `module` so that later units can extend or instantiate
     /// them.
-    fn register_inner(&mut self, module: &Module, parent: ModuleId) {
+    fn register_inner(&mut self, module: &Module, parent: ModuleId) -> Result<()> {
         for unit in &module.units {
-            if let Unit::Module(inner) = unit
-                && !self.parsed.contains_key(&inner.name.symbol)
-            {
-                let source = self.source(parent);
-                let is_standard = self.spec.modules[parent.index()].is_standard;
-                self.add_module(inner.clone(), source, is_standard);
+            let Unit::Module(inner) = unit else { continue };
+            let origin = (parent, inner.span);
+            if self.parsed.contains_key(&inner.name.symbol) {
+                if self.inner_origins.get(&inner.name.symbol) == Some(&origin) {
+                    continue;
+                }
+                let message = format!(
+                    "Multiply-defined module '{}': this definition or declaration conflicts with an earlier one.",
+                    inner.name.symbol
+                );
+                return Err(self.error(parent, inner.name.span, message));
             }
+            self.inner_origins.insert(inner.name.symbol, origin);
+            let source = self.source(parent);
+            let is_standard = self.spec.modules[parent.index()].is_standard;
+            self.add_module(inner.clone(), source, is_standard);
         }
+        Ok(())
     }
 
     /// The constants and variables a module declares, itself and through `EXTENDS`.
@@ -311,6 +321,16 @@ impl Resolver<'_> {
         Ok(context)
     }
 
+    /// Elaborates a module without constants or variables for use at the current depth: the
+    /// shared plain elaboration, unless the module is nested in a module elaborated with
+    /// substitutions, whose names it sees.
+    fn shared(&mut self, module: &Rc<ParsedModule>) -> Result<Rc<Context>> {
+        match self.enclosing.get(&module.id) {
+            Some((_, false)) => self.elaborate(module, None, self.frames.len()),
+            _ => self.plain(module),
+        }
+    }
+
     /// Elaborates `module` with the definitions at `depth`, which is the current number of
     /// frames. The module can't see the names of those frames.
     pub(crate) fn elaborate(
@@ -342,7 +362,7 @@ impl Resolver<'_> {
     ) -> Result<Context> {
         let id = module.id;
         let source = self.source(id);
-        self.register_inner(&module.ast, id);
+        self.register_inner(&module.ast, id)?;
         let mut elab = Elab {
             module: id,
             name: module.ast.name.symbol,
@@ -351,7 +371,7 @@ impl Resolver<'_> {
             context: self
                 .enclosing
                 .get(&id)
-                .map_or_else(Context::with_builtins, |context| (**context).clone()),
+                .map_or_else(Context::with_builtins, |(context, _)| (**context).clone()),
             depth,
             substitution,
         };
@@ -361,7 +381,7 @@ impl Resolver<'_> {
                 Some(substitution) if !self.parameters(&target)?.is_empty() => {
                     self.instance_context(&target, substitution.clone(), depth)?
                 }
-                _ => self.plain(&target)?,
+                _ => self.shared(&target)?,
             };
             for (name, entry) in &context.names {
                 if !entry.is_local && entry.kind != SymbolKind::Builtin {
@@ -464,11 +484,7 @@ impl Resolver<'_> {
                 elab.add(definition.name, entry, source)?;
             }
             Unit::Function(definition) => {
-                let key = (elab.module, definition.name.symbol, elab.depth);
-                let def = match self.recursive.remove(&key) {
-                    Some(def) => def,
-                    None => self.new_def(elab.module, definition.name, Vec::new(), elab.depth),
-                };
+                let def = self.claim_def(elab, definition.name, Vec::new(), true)?;
                 let entry =
                     self.operator_entry(elab.module, definition.name, 0, def, definition.is_local);
                 elab.add(definition.name, entry, source)?;
@@ -514,12 +530,14 @@ impl Resolver<'_> {
                 }
             }
             Unit::Module(inner) => {
-                if elab.substitution.is_none() {
-                    let id = self.parsed[&inner.name.symbol].id;
-                    let mut context = elab.context.clone();
-                    context.names.values_mut().for_each(|entry| entry.is_local = true);
-                    self.enclosing.insert(id, Rc::new(context));
+                let id = self.parsed[&inner.name.symbol].id;
+                let mut context = elab.context.clone();
+                context.names.values_mut().for_each(|entry| entry.is_local = true);
+                let is_plain = elab.substitution.is_none() && elab.depth == 0;
+                if !is_plain {
+                    self.plain.remove(&id);
                 }
+                self.enclosing.insert(id, (Rc::new(context), is_plain));
             }
         }
         Ok(())
@@ -647,7 +665,7 @@ impl Resolver<'_> {
             substitution.insert(parameter.name, binding);
         }
         if parameters.is_empty() {
-            return self.plain(&target);
+            return self.shared(&target);
         }
         self.substitutions += 1;
         let substitution = Substitution { id: self.substitutions, names: substitution };
