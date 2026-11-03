@@ -293,3 +293,61 @@ impl Evaluator {
         Ok(Operator(kind))
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use std::sync::Arc;
+
+    use tla_resolve::RootName;
+    use tla_value::{Result, Value};
+
+    use crate::{Arg, Ctx, Evaluator, Operator};
+
+    /// `Map(F, S)`: the set of `F(x)` for each `x` in `S`, as a native would compute it.
+    fn map(ctx: &mut Ctx<'_>, args: &[Arg]) -> Result<Value> {
+        let op = args[0].op()?;
+        let mut mapped = Vec::new();
+        for element in args[1].value()?.elements()?.iter() {
+            mapped.push(ctx.call(op, std::slice::from_ref(element))?);
+        }
+        Value::set(mapped)
+    }
+
+    /// `Wrapped(x)`: applies a Rust operator through the context.
+    fn wrapped(ctx: &mut Ctx<'_>, args: &[Arg]) -> Result<Value> {
+        let pair = Operator::closure(|_, args| Ok(Value::tuple(args.to_vec())));
+        ctx.call(&pair, &[args[0].value()?.clone()])
+    }
+
+    fn evaluator_with_natives(source: &str) -> Evaluator {
+        let spec = tla_resolve::resolve(source, &mut |_name: &str| None).unwrap();
+        let mut evaluator = Evaluator::new(Arc::new(spec), Vec::new());
+        let mut natives = evaluator.natives.to_vec();
+        for (name, native) in [("Map", map as crate::Native), ("Wrapped", wrapped)] {
+            let Some(RootName::Def(def)) = evaluator.spec.lookup(name) else { panic!("{name}") };
+            natives[def.index()] = Some(native);
+        }
+        evaluator.natives = natives.into();
+        evaluator
+    }
+
+    #[test]
+    fn calls_natives_with_values_and_operators() {
+        let evaluator = evaluator_with_natives(
+            r#"
+---- MODULE Natives ----
+Map(F(_), S) == {}
+Wrapped(x) == x
+Lift(x) == {x}
+Expr(p) == <<Map(Lift, {1, 2}), Map(LAMBDA x : <<x, p>>, {3}), Map(SUBSET, {{}}), Wrapped(4)>>
+Call == Expr(9)
+====
+"#,
+        );
+        let Some(RootName::Def(def)) = evaluator.spec.lookup("Call") else { panic!() };
+        assert_eq!(
+            evaluator.eval_def(def, None).unwrap().to_string(),
+            "<<{{1}, {2}}, {<<3, 9>>}, {{{}}}, <<4>>>>"
+        );
+    }
+}
