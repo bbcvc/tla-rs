@@ -67,8 +67,18 @@ impl<S: Successors + ?Sized> Explorer<'_, S> {
 }
 
 impl<S: Successors + ?Sized> Explore for Explorer<'_, S> {
+    /// TLC's own fingerprint of `state`, or of its view.
     fn tlc_fingerprint(&self, state: &State) -> std::result::Result<u64, String> {
-        self.fingerprinter.tlc(self.evaluator, state)
+        match self.plan.view {
+            Some(view) => {
+                let value = self
+                    .evaluator
+                    .eval_def(view, Some(state))
+                    .map_err(|error| error.to_string())?;
+                tla_eval::tlc_fingerprint(std::slice::from_ref(&value))
+            }
+            None => tla_eval::tlc_fingerprint(state),
+        }
     }
 
     fn successors(
