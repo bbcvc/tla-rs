@@ -19,6 +19,7 @@ pub use config::{Model, OperatorTable, bind_model, config_value};
 pub use eval::NextAction;
 pub use native::{Arg, Ctx, Native, Operator};
 pub use runtime::{CheckerOptions, Registers, Runtime, Statistics};
+pub use stdlib::tlc::tlc_fingerprint;
 use tla_ast::{Span, Symbol};
 use tla_resolve::{DefId, ModuleId, Spec, VarId};
 pub use tla_value::{self as value, Value};
@@ -193,6 +194,33 @@ impl Evaluator {
 
     pub fn runtime(&self) -> &Runtime {
         &self.runtime
+    }
+
+    /// Whether a string with a character above U+00FF can reach a state: one the spec writes or
+    /// the configuration binds, or one a JSON deserializer reads. TLC fingerprints a string by
+    /// the low byte of each character, so it counts states whose strings differ only above U+00FF
+    /// as one, and a checker that counts states as TLC does fingerprints them with
+    /// [`tlc_fingerprint`] (tla-ts `hasWideString`).
+    pub fn has_wide_strings(&self) -> bool {
+        fn is_wide_value(value: &Value) -> bool {
+            match value {
+                Value::Str(text) => eval::is_wide(text.as_str()),
+                Value::Set(elements) | Value::MixedSet(elements) => {
+                    elements.iter().any(is_wide_value)
+                }
+                _ => false,
+            }
+        }
+        let is_wide_binding = |binding: &ConstBinding| match binding {
+            ConstBinding::Value(value) => is_wide_value(value),
+            ConstBinding::Table(table) => {
+                table.rows.iter().any(|(args, value)| args.iter().chain([value]).any(is_wide_value))
+            }
+            ConstBinding::Def(_) => false,
+        };
+        self.constants.iter().any(is_wide_binding)
+            || self.overrides.iter().flatten().any(is_wide_binding)
+            || eval::has_wide_string_literal(&self.spec)
     }
 
     /// Evaluates a definition without parameters, such as an `ASSUME` or `Init`, in `state`, or

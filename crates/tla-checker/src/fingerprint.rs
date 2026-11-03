@@ -11,7 +11,7 @@ use std::collections::{BTreeMap, HashMap, HashSet};
 use std::hash::{DefaultHasher, Hasher};
 use std::sync::Arc;
 
-use tla_eval::{Evaluator, State};
+use tla_eval::{Evaluator, State, tlc_fingerprint};
 use tla_resolve::{DefId, RootName};
 use tla_value::{Symbol, Value};
 
@@ -22,6 +22,9 @@ type Permutation = HashMap<Symbol, Value>;
 
 pub struct Fingerprinter {
     view: Option<DefId>,
+    /// Whether to fingerprint as TLC does, which a spec with strings above U+00FF needs: TLC's
+    /// fingerprints of two such strings that differ only above U+00FF collide.
+    is_tlc: bool,
     /// The permutations other than the identity.
     permutations: Vec<Permutation>,
 }
@@ -37,7 +40,7 @@ impl Fingerprinter {
             Some(name) => symmetry_group(evaluator, name)?,
             None => Vec::new(),
         };
-        Ok(Self { view, permutations })
+        Ok(Self { view, is_tlc: evaluator.has_wide_strings(), permutations })
     }
 
     /// The fingerprint of `state`.
@@ -53,14 +56,18 @@ impl Fingerprinter {
     }
 
     fn fingerprint_one(&self, evaluator: &Evaluator, state: &State) -> Result<u128, String> {
-        match self.view {
-            Some(view) => {
-                let value =
-                    evaluator.eval_def(view, Some(state)).map_err(|error| error.to_string())?;
-                hash(std::slice::from_ref(&value))
+        let view;
+        let values = match self.view {
+            Some(def) => {
+                view = evaluator.eval_def(def, Some(state)).map_err(|error| error.to_string())?;
+                std::slice::from_ref(&view)
             }
-            None => hash(state),
+            None => &state[..],
+        };
+        if self.is_tlc {
+            return tlc_fingerprint(values).map(u128::from).map_err(|error| error.to_string());
         }
+        hash(values)
     }
 }
 

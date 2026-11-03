@@ -27,6 +27,41 @@ pub(crate) fn mentions_variables(spec: &Spec, expr: &Expr) -> bool {
     false
 }
 
+/// Whether the spec writes a string with a character above U+00FF, or reads strings with a JSON
+/// deserializer, where they can reach a state (tla-ts `hasWideString`).
+pub(crate) fn has_wide_string_literal(spec: &Spec) -> bool {
+    let mut pending: Vec<&Expr> = Vec::new();
+    for def in &spec.defs {
+        match &def.body {
+            DefBody::Expr(body) => pending.push(body),
+            DefBody::Function { bounds, body } => {
+                pending.push(body);
+                pending.extend(bounds.iter().map(|bound| &bound.set));
+            }
+        }
+    }
+    while let Some(expr) = pending.pop() {
+        match &expr.kind {
+            ExprKind::Str(text) if is_wide(text.as_str()) => return true,
+            ExprKind::Call { def, .. }
+                if matches!(
+                    spec.def(*def).name.as_str(),
+                    "JsonDeserialize" | "ndJsonDeserialize"
+                ) =>
+            {
+                return true;
+            }
+            _ => for_each_child(expr, &mut |child| pending.push(child)),
+        }
+    }
+    false
+}
+
+/// Whether `text` has a character above U+00FF, which TLC fingerprints by its low byte.
+pub(crate) fn is_wide(text: &str) -> bool {
+    text.chars().any(|char| u32::from(char) > 0xff)
+}
+
 /// Whether each definition is a function definition whose body refers to the function, itself
 /// or through a definition inside it, by [`DefId`].
 pub(crate) fn recursive_functions(spec: &Spec) -> Vec<bool> {

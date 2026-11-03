@@ -18,7 +18,8 @@ use tla_value::{LazySet, Symbol, Value};
 
 pub use self::action::NextAction;
 pub(crate) use self::analysis::{
-    mentions_variables, normalizing_evaluations, recursive_functions, tlc_eval,
+    has_wide_string_literal, is_wide, mentions_variables, normalizing_evaluations,
+    recursive_functions, tlc_eval,
 };
 use self::builtin::describe;
 pub(crate) use self::constants::constant_definitions;
