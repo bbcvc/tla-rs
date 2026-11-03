@@ -140,7 +140,7 @@ fn for_each_unbound_child<'e>(expr: &'e Expr, visit: &mut impl FnMut(&'e Expr)) 
     }
 }
 
-fn for_each_child<'e>(expr: &'e Expr, visit: &mut impl FnMut(&'e Expr)) {
+pub(super) fn for_each_child<'e>(expr: &'e Expr, visit: &mut impl FnMut(&'e Expr)) {
     fn scope_args<'e>(scope: &'e Scope, visit: &mut impl FnMut(&'e Expr)) {
         if let Scope::Instance { parent, args } = scope {
             args.iter().for_each(&mut *visit);

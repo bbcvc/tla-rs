@@ -303,7 +303,13 @@ impl Value {
             Value::Set(elements) => Ok(elements.clone()),
             Value::MixedSet(elements) => Ok(sort_like_tlc(elements)?.into()),
             Value::Interval(low, high) => Ok((*low..=*high).map(Value::Int).collect()),
-            Value::Lazy(set) => self.lazy_elements(set),
+            Value::Lazy(set) => {
+                if let Some(elements) = set.elements().get() {
+                    return Ok(elements.clone());
+                }
+                let elements = self.lazy_elements(set)?;
+                Ok(set.elements().get_or_init(|| elements).clone())
+            }
             _ => fail!([self], "Expected a set but found {self}"),
         }
     }
@@ -1006,6 +1012,25 @@ mod tests {
         assert!(big.contains(&ints(&[3, 50])).unwrap());
         assert!(!big.contains(&ints(&[0])).unwrap());
         assert!(big.cardinality().is_err());
+    }
+
+    #[test]
+    fn enumerates_a_lazy_set_once() {
+        use std::sync::Arc;
+        use std::sync::atomic::{AtomicUsize, Ordering};
+
+        let calls = Arc::new(AtomicUsize::new(0));
+        let counted = calls.clone();
+        let test: crate::Predicate = Arc::new(move |value: &Value| {
+            counted.fetch_add(1, Ordering::SeqCst);
+            Ok(value.as_int().is_some_and(|value| value % 2 == 0))
+        });
+        let evens = Value::lazy(LazySet::Filtered { base: Value::Interval(1, 10), test });
+        let copy = evens.clone();
+        assert_eq!(format(&Value::Set(evens.elements().unwrap())), "{2, 4, 6, 8, 10}");
+        assert_eq!(copy.cardinality().unwrap(), 5);
+        assert!(evens.equals(&ints(&[2, 4, 6, 8, 10])).unwrap());
+        assert_eq!(calls.load(Ordering::SeqCst), 10);
     }
 
     #[test]
