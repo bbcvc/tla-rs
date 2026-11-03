@@ -42,6 +42,12 @@ None of them targets full TLC conformance with an interpreter, so starting fresh
 
 **R3. Equality and hashing must be semantic.** `1..3 = {1, 2, 3}` is `TRUE`, and so is equality between any lazy set and its explicit form. A derived `PartialEq` and `Hash` over an enum that mixes lazy and explicit forms gets this wrong. Values stored in a state are normalized (lazy sets are enumerated, as TLC does when it fingerprints them), and comparisons between lazy and explicit forms go through a semantic equality. Fingerprints only need to agree with that equality. They don't need to reproduce TLC's FP64 bits.
 
+Normalization still shows in what TLC prints, so `tla-value` tracks it where it does:
+
+- A record, or a function with string keys that `@@` builds, keeps the order the spec writes its fields in until TLC normalizes it, which TLC does to compare or fingerprint it. `ToString`, `Assert`, and error messages print that order. `Print` and `PrintT` normalize the value first and print the fields sorted. The written order is a permutation stored beside the sorted keys, so equality, ordering, and fingerprints never read it, and a record written in sorted order carries none.
+- A set enumeration TLC can't sort, such as `{1, "a"}`, stays as written until something needs its order. TLC sorts it to print it, so an error message that prints it fails with the comparison that sorting makes.
+- `TLCEval` normalizes its argument only where TLC computes a constant once: a constant argument, outside every binder, in a module-level definition without parameters, and not in a module that an `INSTANCE` substitutes into. Elsewhere it applies its definition, `TLCEval(v) == v`.
+
 **R4. Successor generation uses continuations.** The `Vec<PartialNextState>` sketch materializes every branch and clones the environment for each one. It also has no case for `\E` and treats non-Boolean guards as `FALSE`. The evaluator instead passes a continuation and assigns primed slots in place with undo, which is the shape of TLC's `getNextStates`. Non-Boolean guards and incompletely specified successors are errors, as in TLC.
 
 **R5. Liveness is part of done.** 66 recorded results are liveness or property violations, and successful runs of specs with `PROPERTY` need the checker too. Liveness becomes its own phase instead of an optional extra.
