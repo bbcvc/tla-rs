@@ -10,6 +10,7 @@
 //! (`1..3 = {1, 2, 3}`) and can fail (`1 = "a"` is an error in TLC). Use [`Value::equals`],
 //! [`Value::compare`], and [`Value::fingerprint`] instead.
 
+mod combinations;
 mod fingerprint;
 mod format;
 mod func;
@@ -21,6 +22,7 @@ use std::fmt;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, OnceLock};
 
+pub use combinations::{Combinations, Enumeration};
 pub use func::Key;
 pub use tla_intern::{Symbol, set_order};
 
