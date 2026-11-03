@@ -61,17 +61,31 @@ impl Operator {
     }
 }
 
+/// Evaluates the TLA+ definition a native replaces, with the arguments of the call.
+pub(crate) type Definition<'a> = &'a dyn Fn() -> crate::Result<Value>;
+
 /// What a native can use of the evaluator: operators passed to it, the state, and TLC's runtime.
 pub struct Ctx<'a> {
     pub(crate) evaluator: &'a Evaluator,
     pub(crate) state: Option<&'a State>,
     /// The next state, which an operator argument reads when it primes an expression.
     pub(crate) next: Option<&'a State>,
+    /// The definition the native replaces, applied to the call's arguments.
+    pub(crate) definition: Option<Definition<'a>>,
 }
 
 impl<'a> Ctx<'a> {
     pub(crate) fn new(evaluator: &'a Evaluator, state: Option<&'a State>) -> Self {
-        Self { evaluator, state, next: None }
+        Self { evaluator, state, next: None, definition: None }
+    }
+
+    /// Evaluates the TLA+ definition the native replaces, applied to the same arguments, as TLC
+    /// does when a Java override it hands expressions to declines a call by returning `null`.
+    pub fn evaluate_definition(&mut self) -> Result<Value> {
+        match self.definition {
+            Some(definition) => definition().map_err(|error| Error(error.message)),
+            None => Err(Error("The native has no definition to fall back to".to_owned())),
+        }
     }
 
     /// Applies an operator argument to `args`.
