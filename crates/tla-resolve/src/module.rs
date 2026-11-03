@@ -627,6 +627,7 @@ impl Resolver<'_> {
             body: DefBody::Expr(Expr::new(ExprKind::Bool(false), name.span)),
             frame_size: 0,
             depth,
+            is_instantiated: self.is_instantiating,
         });
         self.layout.defs.push(DefLayout {
             qualifier: self.qualifier.clone(),
