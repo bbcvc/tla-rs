@@ -11,13 +11,13 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use tla_value::{LazySet, Value};
 
 use super::{
-    Outcome, arg, check_enumerable, enumerable_elements, function_pairs, java_error, op_arg,
-    sequence_elements, sorted_set,
+    Outcome, arg, check_enumerable, enumerable_elements, java_error, op_arg, sequence_elements,
+    sorted_set,
 };
 use crate::{Arg, Ctx, Native};
 pub(crate) use fingerprint::tlc_fingerprint;
 pub(crate) use pretty::pretty_print;
-pub(crate) use print::strict_text;
+pub(crate) use print::{normalized_text, strict_text};
 pub(crate) use random::{JavaRandom, random_subset};
 pub(crate) use registers::{possible_counts, register, set_register};
 
@@ -86,7 +86,7 @@ fn tlc_get() -> Native {
 
 /// What `Print` and `PrintT` print for a value.
 fn printed(value: &Value) -> Outcome<String> {
-    Ok(pretty_print(&strict_text(value)?))
+    Ok(pretty_print(&normalized_text(value)?))
 }
 
 fn print(ctx: &mut Ctx<'_>, args: &[Arg]) -> Outcome {
@@ -128,11 +128,11 @@ fn combine_functions(_: &mut Ctx<'_>, args: &[Arg]) -> Outcome {
         if !value.is_function() {
             fail!("@@ expects a function but received {value}");
         }
-        function_pairs(&value.materialize()?)
+        Ok(value.written_pairs()?)
     };
     let mut pairs = function(0)?;
     pairs.extend(function(1)?);
-    Ok(Value::function(pairs)?)
+    Ok(Value::written_function(pairs)?)
 }
 
 /// Every ordering of `elements`, each element first in turn.
@@ -274,6 +274,16 @@ mod tests {
         let merged =
             call("TLC", "@@", &[record, Value::record(vec![(Symbol::intern("x"), int(2))])]);
         assert_eq!(merged.unwrap().to_string(), "[x |-> 1]");
+        // `@@` keeps the order its operands write string keys in, as ToString shows.
+        let later = string("combine_order_later");
+        let earlier = string("combine_order_earlier");
+        let first = call("TLC", ":>", &[earlier, int(0)]).unwrap();
+        let second = call("TLC", ":>", &[later, int(0)]).unwrap();
+        let combined = call("TLC", "@@", &[first, second]).unwrap();
+        assert_eq!(
+            call("TLC", "ToString", &[combined]).unwrap().to_string(),
+            "\"[combine_order_earlier |-> 0, combine_order_later |-> 0]\""
+        );
     }
 
     #[test]

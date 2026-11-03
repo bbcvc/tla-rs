@@ -158,6 +158,9 @@ pub struct Def {
     pub frame_size: usize,
     /// The number of frames around the definition. Zero for a module-level definition.
     pub depth: usize,
+    /// Whether the definition elaborates a module under the substitutions of an `INSTANCE`,
+    /// where TLC evaluates applications in the context of the instance.
+    pub is_instantiated: bool,
 }
 
 #[derive(Clone, Debug)]

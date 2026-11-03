@@ -2,7 +2,8 @@
 
 use std::fmt;
 
-use crate::{LazySet, Value};
+use crate::set::sort_like_tlc;
+use crate::{LazySet, Result, Value};
 
 /// TLC prints `SUBSET S` element by element when `S` has at most this many elements.
 const MAXIMUM_EXPANDED_SUBSET_BASE: i32 = 6;
@@ -104,6 +105,68 @@ fn write_lazy(formatter: &mut fmt::Formatter<'_>, set: &LazySet) -> fmt::Result 
     }
 }
 
+impl Value {
+    /// The value as TLC prints it in an error message. TLC normalizes a set enumeration to print
+    /// it, so printing fails where sorting the enumeration fails, as on `{1, "a"}`.
+    pub fn text(&self) -> Result<String> {
+        self.check_printable()?;
+        Ok(self.to_string())
+    }
+
+    /// Fails where printing the value would make TLC sort a set enumeration it can't sort.
+    pub(crate) fn check_printable(&self) -> Result<()> {
+        match self {
+            Value::Set(elements) | Value::Tuple(elements) => {
+                elements.iter().try_for_each(Value::check_printable)
+            }
+            Value::MixedSet(elements) => {
+                sort_like_tlc(elements)?.iter().try_for_each(Value::check_printable)
+            }
+            Value::Func(func) => {
+                func.keys.iter().chain(func.values.iter()).try_for_each(Value::check_printable)
+            }
+            // A lazy function TLC can't enumerate prints without its values.
+            Value::LazyFunc(_) => {
+                self.materialize().map_or(Ok(()), |function| function.check_printable())
+            }
+            Value::Lazy(set) => match expanded(self, set) {
+                Some(elements) => elements.check_printable(),
+                None => match &**set {
+                    LazySet::Subset(base)
+                    | LazySet::Seq(base)
+                    | LazySet::Filtered { base, .. }
+                    | LazySet::Union(base) => base.check_printable(),
+                    LazySet::FuncSet { domain: left, range: right }
+                    | LazySet::Cup(left, right)
+                    | LazySet::Cap(left, right)
+                    | LazySet::Minus(left, right) => {
+                        left.check_printable()?;
+                        right.check_printable()
+                    }
+                    LazySet::RecordSet(fields) => {
+                        fields.iter().try_for_each(|(_, set)| set.check_printable())
+                    }
+                    LazySet::Product(factors) => {
+                        factors.iter().try_for_each(Value::check_printable)
+                    }
+                    LazySet::Nat | LazySet::Int | LazySet::String | LazySet::Any => Ok(()),
+                },
+            },
+            Value::Bool(_)
+            | Value::Int(_)
+            | Value::Str(_)
+            | Value::Model(_)
+            | Value::Interval(..) => Ok(()),
+        }
+    }
+}
+
+/// Fails where TLC fails to print one of `values` in an error message, before it builds the
+/// message.
+pub(crate) fn printable(values: &[&Value]) -> Result<()> {
+    values.iter().try_for_each(|value| value.check_printable())
+}
+
 impl fmt::Display for Value {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
@@ -139,9 +202,7 @@ impl fmt::Display for Value {
                     .all(|key| matches!(key, Value::Str(name) if is_field_name(name.as_str())));
                 if is_record {
                     formatter.write_str("[")?;
-                    for (index, (key, value)) in
-                        func.keys.iter().zip(func.values.iter()).enumerate()
-                    {
+                    for (index, (key, value)) in func.written_entries().enumerate() {
                         let Value::Str(name) = key else { unreachable!() };
                         let separator = if index > 0 { ", " } else { "" };
                         write!(formatter, "{separator}{name} |-> {value}")?;
@@ -184,5 +245,20 @@ mod tests {
             "SUBSET (1..10)"
         );
         assert_eq!(Value::lazy(LazySet::Seq(Value::lazy(LazySet::Nat))).to_string(), "Seq(Nat)");
+    }
+
+    /// tla-ts's NormalizationCases: TLC normalizes a set enumeration to print it, so an error
+    /// that prints `{1, "a"}` fails as sorting it does.
+    #[test]
+    fn fails_to_print_a_set_enumeration_it_cant_sort() {
+        let mixed = Value::set(vec![Value::Int(1), Value::str("a")]).unwrap();
+        let sorting = "Attempted to compare string \"a\" with non-string:\n1";
+        assert_eq!(mixed.text().unwrap_err().0, sorting);
+        assert_eq!(Value::tuple(vec![mixed.clone()]).text().unwrap_err().0, sorting);
+        assert_eq!(mixed.equals(&Value::Int(1)).unwrap_err().0, sorting);
+        assert_eq!(Value::Int(1).equals(&mixed).unwrap_err().0, sorting);
+        assert_eq!(Value::Int(1).text().unwrap(), "1");
+        let subsets = Value::lazy(LazySet::Subset(Value::Interval(1, 2)));
+        assert_eq!(subsets.text().unwrap(), "{{}, {1}, {2}, {1, 2}}");
     }
 }

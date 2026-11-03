@@ -92,6 +92,14 @@ impl Evaluator {
             return self.call_binding(binding, args, expr, env);
         }
         let info = self.spec.def(def);
+        // Where TLC doesn't normalize the argument of `TLCEval`, it applies its definition,
+        // `TLCEval(v) == v`.
+        if self.tlc_eval == Some(def)
+            && let [arg] = args
+            && !self.normalizing_evaluations.contains(&(expr as *const Expr as usize))
+        {
+            return self.eval(arg, env);
+        }
         if let Some(native) = self.natives[def.index()] {
             return self.call_native(native, def, args, expr, env);
         }
