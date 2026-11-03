@@ -42,6 +42,10 @@ fn words_junction_errors_by_form() {
         "Attempted to evaluate an expression of form P /\\ Q when Q was\nan integer."
     );
     assert_eq!(
+        message("(TRUE) /\\ 1"),
+        "Attempted to evaluate an expression of form P /\\ Q when Q was\nan integer."
+    );
+    assert_eq!(
         message("{} \\/ TRUE"),
         "Attempted to evaluate an expression of form P \\/ Q when P was\na set of the form {e1, ... ,eN}."
     );

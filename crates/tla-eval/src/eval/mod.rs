@@ -229,9 +229,11 @@ impl Evaluator {
                 Value::Bool(_) => {}
                 value => {
                     let kind = describe(&value);
-                    // A bulleted list starts at its first bullet, before its first operand.
-                    let is_bulleted =
-                        items.first().is_some_and(|first| first.span.start > expr.span.start);
+                    let source = &self.spec.modules[env.module.index()].source;
+                    let text = source.get(expr.span.start as usize..).unwrap_or_default();
+                    let is_bulleted = ["/\\", "\\/", "\\land", "\\lor"]
+                        .iter()
+                        .any(|bullet| text.starts_with(bullet));
                     return Err(if is_bulleted {
                         let formula = if is_and { "conjunction" } else { "disjunction" };
                         self.error(
