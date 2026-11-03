@@ -83,6 +83,7 @@ macro_rules! java {
     }};
 }
 
+mod bags;
 mod finite_sets;
 mod naturals;
 mod randomization;
@@ -98,6 +99,7 @@ pub(crate) fn lookup(module: &str, name: &str, uses_integers: bool) -> Option<Na
         "Sequences" => sequences::lookup(name),
         "FiniteSets" => finite_sets::lookup(name),
         "TLC" => tlc::lookup(name),
+        "Bags" => bags::lookup(name, uses_integers),
         "Randomization" => randomization::lookup(name),
         _ => None,
     }
