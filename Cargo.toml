@@ -18,6 +18,7 @@ tla-eval = { path = "crates/tla-eval" }
 tla-checker = { path = "crates/tla-checker" }
 
 foldhash = "0.2"
+hashbrown = { version = "0.17", default-features = false, features = ["inline-more"] }
 lasso = { version = "0.7", features = ["multi-threaded"] }
 serde_json = "1"
 thiserror = "2"

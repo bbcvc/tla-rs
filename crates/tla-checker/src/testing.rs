@@ -12,7 +12,12 @@ use crate::{Options, Outcome, Successors, check};
 
 /// The module `M` with `body`, which declares `VARIABLE x`.
 pub fn spec(body: &str) -> Spec {
-    let source = format!("---- MODULE M ----\nEXTENDS Naturals, TLC\nVARIABLE x\n{body}\n====\n");
+    spec_extending("Naturals, TLC", body)
+}
+
+/// The module `M` that extends `modules`, with `body`.
+pub fn spec_extending(modules: &str, body: &str) -> Spec {
+    let source = format!("---- MODULE M ----\nEXTENDS {modules}\nVARIABLE x\n{body}\n====\n");
     tla_resolve::resolve(&source, &mut |_: &str| None).unwrap_or_else(|error| panic!("{error}"))
 }
 
@@ -54,6 +59,18 @@ impl Successors for System {
         }
         Ok(())
     }
+}
+
+/// Searches the states of `system` for the module `spec` under the configuration `config`.
+pub fn explore(mut spec: Spec, config: &str, system: System) -> crate::search::Search {
+    let config = tla_parser::parse_config(config).unwrap_or_else(|error| panic!("{error}"));
+    let model = tla_eval::bind_model(&spec, &config).unwrap_or_else(|error| panic!("{error:?}"));
+    let plan = crate::plan::plan(&mut spec, &config, &Default::default()).unwrap();
+    let evaluator = tla_eval::Evaluator::new(Arc::new(spec), model.constants);
+    evaluator.runtime().start(tla_eval::CheckerOptions::for_config(&config));
+    let fingerprinter =
+        crate::fingerprint::Fingerprinter::new(&evaluator, plan.view, config.symmetry).unwrap();
+    crate::search::search(&system, &evaluator, &plan, &fingerprinter, config.check_deadlock)
 }
 
 /// Checks the module with `body` under the configuration `config`, exploring `system`.

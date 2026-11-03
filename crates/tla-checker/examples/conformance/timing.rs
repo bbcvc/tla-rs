@@ -66,7 +66,10 @@ mod tests {
         ];
         let summary = summary(&timings, 1);
         let lines: Vec<&str> = summary.lines().collect();
-        assert!(lines[0].contains("3 matched models: median ratio 0.500, faster on 2"), "{summary}");
+        assert!(
+            lines[0].contains("3 matched models: median ratio 0.500, faster on 2"),
+            "{summary}"
+        );
         assert!(lines[0].contains("total 1.2 s against 1.1 s"), "{summary}");
         assert_eq!(lines.len(), 2);
         assert!(lines[1].contains("3.000x") && lines[1].ends_with(" b"), "{summary}");

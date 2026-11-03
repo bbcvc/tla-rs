@@ -349,6 +349,7 @@ name = "tla-checker"
 version = "0.1.0"
 dependencies = [
  "foldhash",
+ "hashbrown 0.17.1",
  "serde_json",
  "tla-ast",
  "tla-eval",
