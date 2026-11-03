@@ -3,7 +3,8 @@ macro_rules! operators {
     ($($variant:ident = $kind:literal => $name:literal,)*) => {
         /// A prefix, infix, or postfix operator symbol.
         ///
-        /// Synonyms share one variant: `#` and `/=` are both [`Op::Neq`].
+        /// Synonyms share one variant, as they do in SANY: `#` and `/=` are both [`Op::Neq`], and
+        /// `<=>` and `\equiv` are both [`Op::Equiv`].
         #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
         pub enum Op {
             $($variant,)*
@@ -13,6 +14,7 @@ macro_rules! operators {
             /// Maps a tree-sitter-tlaplus node kind, such as `"cup"`, to its operator.
             pub fn from_syntax_kind(kind: &str) -> Option<Self> {
                 match kind {
+                    "iff" => Some(Self::Equiv),
                     $($kind => Some(Self::$variant),)*
                     _ => None,
                 }
@@ -58,7 +60,6 @@ operators! {
     Gg = "gg" => "\\gg",
     Gt = "gt" => ">",
     HashHash = "hashhash" => "##",
-    Iff = "iff" => "<=>",
     Implies = "implies" => "=>",
     In = "in" => "\\in",
     LdTtile = "ld_ttile" => "=|",
@@ -144,6 +145,7 @@ mod tests {
         assert_eq!(Op::from_syntax_kind("neq"), Some(Op::Neq));
         assert_eq!(Op::Neq.name(), "/=");
         assert_eq!(Op::from_syntax_kind("negative").map(Op::name), Some("-."));
+        assert_eq!(Op::from_syntax_kind("iff"), Op::from_syntax_kind("equiv"));
         assert_eq!(Op::from_syntax_kind("identifier"), None);
     }
 }
