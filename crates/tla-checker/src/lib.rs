@@ -9,8 +9,6 @@
 
 mod fingerprint;
 mod level;
-// Wired into the search in the commits that follow.
-#[allow(dead_code)]
 mod liveness;
 pub mod plan;
 mod postcondition;
@@ -74,6 +72,8 @@ pub enum Status {
     /// such as `[][A]_v`, as a liveness violation.
     LivenessViolation,
     Deadlock,
+    /// A temporal property TLC finds violated as it builds the behavior graph.
+    PropertyViolation,
     /// A postcondition failed once the search ended, or a `_POSSIBLE` predicate was never
     /// witnessed. TLC exits as for a violated assumption.
     PostconditionViolation,
@@ -91,6 +91,7 @@ impl Status {
             Status::InvariantViolation => "invariant-violation",
             Status::LivenessViolation => "liveness-violation",
             Status::Deadlock => "deadlock",
+            Status::PropertyViolation => "property-violation",
             Status::PostconditionViolation => "postcondition-violation",
             Status::Error => "error",
             Status::Unsupported => "unsupported",
@@ -208,23 +209,37 @@ pub fn check<S: Successors>(
             Ok(fingerprinter) => fingerprinter,
             Err(error) => return Outcome::error(error.message),
         };
+    // TLC builds the liveness checker, which translates the temporal formulas, before it
+    // checks the assumptions, and only for a spec with variables.
+    let liveness = match has_variables {
+        true => match liveness::checker::Checker::new(&evaluator, &plan.properties, &plan.fairness)
+        {
+            Ok(liveness) => liveness,
+            Err(message) => return Outcome::error(message),
+        },
+        false => None,
+    };
     if let Some(outcome) = check_assumptions(&evaluator, &assumptions) {
         return outcome;
     }
-    let has_liveness = !plan.properties.is_empty();
     if !has_variables {
-        let outcome = Outcome {
+        return Outcome {
             generated: Some(0),
             distinct: Some(0),
             depth: Some(0),
             ..Outcome::new(Status::Success)
         };
-        return Outcome { has_liveness, ..outcome };
     }
     let successors = successors(&evaluator);
-    let searched =
-        search::search(&successors, &evaluator, &plan, &fingerprinter, config.check_deadlock);
-    let mut outcome = match searched.ending {
+    let searched = search::search(
+        &successors,
+        &evaluator,
+        &plan,
+        &fingerprinter,
+        config.check_deadlock,
+        liveness,
+    );
+    match searched.ending {
         Ending::Success => postcondition::check(&evaluator, &plan).unwrap_or(Outcome {
             generated: Some(searched.generated),
             distinct: Some(searched.distinct),
@@ -244,10 +259,16 @@ pub fn check<S: Successors>(
         Ending::Deadlock => {
             Outcome { trace_length: Some(searched.trace_length), ..Outcome::new(Status::Deadlock) }
         }
+        Ending::LivenessViolation => Outcome {
+            trace_length: Some(searched.trace_length),
+            ..Outcome::new(Status::LivenessViolation)
+        },
+        Ending::TemporalViolation => Outcome {
+            trace_length: Some(searched.trace_length),
+            ..Outcome::new(Status::PropertyViolation)
+        },
         Ending::Error(message) => Outcome::error(message),
-    };
-    outcome.has_liveness = has_liveness;
-    outcome
+    }
 }
 
 /// TLC's check of the definitions the configuration substitutes for constants, as in `C <- Foo`,

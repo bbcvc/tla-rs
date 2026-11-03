@@ -70,7 +70,7 @@ pub fn explore(mut spec: Spec, config: &str, system: System) -> crate::search::S
     evaluator.runtime().start(tla_eval::CheckerOptions::for_config(&config));
     let fingerprinter =
         crate::fingerprint::Fingerprinter::new(&evaluator, plan.view, config.symmetry).unwrap();
-    crate::search::search(&system, &evaluator, &plan, &fingerprinter, config.check_deadlock)
+    crate::search::search(&system, &evaluator, &plan, &fingerprinter, config.check_deadlock, None)
 }
 
 /// Checks the module with `body` under the configuration `config`, exploring `system`.

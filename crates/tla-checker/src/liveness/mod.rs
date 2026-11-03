@@ -4,6 +4,9 @@
 //! connected component of the graph that satisfies a way of violating the properties gives a
 //! counterexample. Ported from tla-ts `liveness.ts`, `tableau.ts`, and `liveness-checker.ts`.
 
+pub mod checker;
+pub mod graph;
+pub mod lasso;
 pub mod live;
 pub mod tableau;
 pub mod template;

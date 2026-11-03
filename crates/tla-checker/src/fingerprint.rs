@@ -52,6 +52,19 @@ impl Fingerprinter {
         Ok(smallest)
     }
 
+    /// TLC's own fingerprint of `state`, or of its view, which orders the successors of a
+    /// state in the behavior graph of liveness checking.
+    pub fn tlc(&self, evaluator: &Evaluator, state: &State) -> Result<u64, String> {
+        match self.view {
+            Some(view) => {
+                let value =
+                    evaluator.eval_def(view, Some(state)).map_err(|error| error.to_string())?;
+                tla_eval::tlc_fingerprint(std::slice::from_ref(&value))
+            }
+            None => tla_eval::tlc_fingerprint(state),
+        }
+    }
+
     fn fingerprint_one(&self, evaluator: &Evaluator, state: &State) -> Result<u128, String> {
         match self.view {
             Some(view) => {

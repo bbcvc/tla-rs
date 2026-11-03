@@ -6,8 +6,10 @@
 //! Like TLC, it keeps no state once it has expanded it ([`store`]), and rebuilds the behavior to
 //! a violation from the initial states by the fingerprints along it.
 
+mod live;
 mod store;
 
+use std::cell::RefCell;
 use std::collections::VecDeque;
 use std::sync::{Arc, Mutex};
 
@@ -16,6 +18,7 @@ use tla_resolve::DefId;
 use tla_value::{Symbol, Value};
 
 use crate::fingerprint::Fingerprinter;
+use crate::liveness::checker::{Checker, LiveSuccessor};
 use crate::plan::{Check, Plan};
 use store::Store;
 
@@ -68,6 +71,11 @@ pub enum Ending {
     /// as a liveness violation.
     PropertyViolation(String),
     Deadlock,
+    /// Liveness checking found a behavior that violates the temporal properties.
+    LivenessViolation,
+    /// Liveness checking found a behavior that violates the temporal properties as it added a
+    /// state to the behavior graph, which TLC reports as a violated property.
+    TemporalViolation,
     /// Evaluation failed.
     Error(String),
 }
@@ -109,11 +117,20 @@ impl Cursor {
     }
 }
 
-/// The end of the behavior to a violation: the stored state it goes through last, if any, and
-/// the state after it that wasn't stored.
-struct Trail {
-    stored: Option<usize>,
-    last: Option<State>,
+/// The behavior to a violation.
+enum Trail {
+    /// The behavior through the stored state `stored`, if any, to `last`, a state that wasn't
+    /// stored, if any.
+    Search { stored: Option<usize>, last: Option<State> },
+    /// A behavior the liveness checker found, by state index, which loops back to the state at
+    /// `cycle_start` unless that is its length.
+    Live { states: Vec<u32>, cycle_start: usize },
+}
+
+impl Trail {
+    fn at(stored: Option<usize>, last: Option<State>) -> Self {
+        Trail::Search { stored, last }
+    }
 }
 
 struct Explorer<'a, S: Successors + ?Sized> {
@@ -131,6 +148,9 @@ struct Explorer<'a, S: Successors + ?Sized> {
     depth: u32,
     /// The index of the state being expanded, once the initial states are done.
     expanding: Option<usize>,
+    liveness: Option<RefCell<Checker<'a>>>,
+    /// The successors in the model of the state being expanded, for the liveness checker.
+    live_successors: Vec<LiveSuccessor>,
 }
 
 /// What a visit to a state found.
@@ -146,6 +166,7 @@ pub fn search<S: Successors + ?Sized>(
     plan: &Plan,
     fingerprinter: &Fingerprinter,
     check_deadlock: bool,
+    liveness: Option<Checker<'_>>,
 ) -> Search {
     // Only `TLCExt!Trace` reads the behavior to a state while the search runs.
     let reads_behaviors =
@@ -182,13 +203,18 @@ pub fn search<S: Successors + ?Sized>(
         initial: 0,
         depth: 0,
         expanding: None,
+        liveness: liveness.map(RefCell::new),
+        live_successors: Vec::new(),
     };
     let (ending, trail) = explorer.run();
     let trace_length = match &trail {
-        Some(trail) => {
-            let stored =
-                trail.stored.map_or(0, |index| explorer.store.lock().unwrap().depth(index));
-            stored as usize + usize::from(trail.last.is_some())
+        Some(Trail::Search { stored, last }) => {
+            let stored = stored.map_or(0, |index| explorer.store.lock().unwrap().depth(index));
+            stored as usize + usize::from(last.is_some())
+        }
+        // TLC numbers the stuttering step at the end of a lasso like a state.
+        Some(Trail::Live { states, cycle_start }) => {
+            states.len() + usize::from(states.len().checked_sub(*cycle_start) == Some(1))
         }
         None => 0,
     };
@@ -260,7 +286,7 @@ impl<S: Successors + ?Sized> Explorer<'_, S> {
                 cursor.candidate = None;
                 cursor.expanding = None;
             }
-            let at_state = || Some(Trail { stored: Some(index), last: None });
+            let at_state = || Some(Trail::at(Some(index), None));
             if let Err(error) = result {
                 return (Ending::Error(error.to_string()), at_state());
             }
@@ -270,19 +296,37 @@ impl<S: Successors + ?Sized> Explorer<'_, S> {
             if count == 0 && self.check_deadlock {
                 return (Ending::Deadlock, at_state());
             }
+            let live = std::mem::take(&mut self.live_successors);
+            if let Some(ending) = self.add_live_state(index, &state, depth, &live) {
+                return ending;
+            }
             index += 1;
         }
         // The postconditions read the counts of the whole search.
         self.expanding = Some(self.store.lock().unwrap().len());
         self.update_statistics(None);
+        // TLC checks the temporal properties on the whole graph, with -lncheck final.
+        if let Some(ending) = self.find_live_violation() {
+            return ending;
+        }
         (Ending::Success, None)
     }
 
     /// The behavior that ends in `trail`, rebuilt as TLC rebuilds it: from the initial states,
     /// each step to the successor with the fingerprint stored for the next state along it.
     fn behavior(&self, trail: Trail) -> Vec<State> {
+        let (stored, last) = match trail {
+            Trail::Search { stored, last } => (stored, last),
+            Trail::Live { states, .. } => {
+                let store = self.store.lock().unwrap();
+                let fingerprints: Vec<u128> =
+                    states.iter().map(|&index| store.fingerprint(index as usize)).collect();
+                drop(store);
+                return self.replay(&fingerprints);
+            }
+        };
         let mut behavior = Vec::new();
-        if let Some(stored) = trail.stored {
+        if let Some(stored) = stored {
             let store = self.store.lock().unwrap();
             behavior = match store.path(stored) {
                 Some(path) => path,
@@ -297,7 +341,7 @@ impl<S: Successors + ?Sized> Explorer<'_, S> {
                 }
             };
         }
-        behavior.extend(trail.last);
+        behavior.extend(last);
         behavior
     }
 
@@ -306,6 +350,13 @@ impl<S: Successors + ?Sized> Explorer<'_, S> {
     fn replay(&self, fingerprints: &[u128]) -> Vec<State> {
         let mut behavior: Vec<State> = Vec::new();
         for &fingerprint in fingerprints {
+            // A behavior may stay in a state, as a lasso's cycle does.
+            if let Some(previous) = behavior.last()
+                && self.fingerprint(previous).is_ok_and(|found| found == fingerprint)
+            {
+                behavior.push(previous.clone());
+                continue;
+            }
             match self.find_again(behavior.last(), fingerprint) {
                 Some(state) => behavior.push(state),
                 None => break,
@@ -457,8 +508,9 @@ impl<S: Successors + ?Sized> Explorer<'_, S> {
         }
         if is_in_model {
             self.update_statistics(Some(1));
+            self.add_live_initial_state(&state)?;
         }
-        let trail = |state: &State| Trail { stored: None, last: Some(state.clone()) };
+        let trail = |state: &State| Trail::at(None, Some(state.clone()));
         if let Some(check) = self.first_failing(&self.plan.invariants, &state, None)? {
             let ending = Ending::InvariantViolation(check.name.clone());
             return Ok(Visit::Stop(ending, trail(&state)));
@@ -485,7 +537,8 @@ impl<S: Successors + ?Sized> Explorer<'_, S> {
         self.update_statistics(None);
         self.cursor.lock().unwrap().candidate = Some((successor.clone(), depth as i32 + 1));
         let fingerprint = self.fingerprint(&successor)?;
-        let is_found = self.is_found(fingerprint);
+        let found = self.store.lock().unwrap().find(fingerprint);
+        let is_found = found.is_some();
         let is_state_in_model = self.all_hold(&self.plan.constraints, &successor, None)?;
         if is_state_in_model {
             self.track_possible(&self.plan.possible, &successor, None)?;
@@ -496,10 +549,15 @@ impl<S: Successors + ?Sized> Explorer<'_, S> {
             self.track_possible(&self.plan.action_possible, state, Some(&successor))?;
         }
         let is_new = is_in_model && !is_found;
+        if self.liveness.is_some() && is_in_model {
+            let index = found.unwrap_or_else(|| self.store.lock().unwrap().len()) as u32;
+            self.live_successors
+                .push(LiveSuccessor { index: Some(index), state: successor.clone() });
+        }
         if is_new {
             self.update_statistics(Some(depth + 1));
         }
-        let trace = || Trail { stored: Some(parent), last: Some(successor.clone()) };
+        let trace = || Trail::at(Some(parent), Some(successor.clone()));
         // TLC checks the invariants of a state it hasn't stored, one the constraints exclude
         // included.
         if !(is_in_model && is_found)
