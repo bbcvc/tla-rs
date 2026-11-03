@@ -4,6 +4,7 @@
 //! and the current and next states. Errors are worded as TLC words them, following tla-ts, and
 //! located at the innermost expression that failed.
 
+mod analysis;
 mod bound;
 mod builtin;
 mod call;
@@ -13,8 +14,8 @@ use tla_ast::{Quantifier, Span};
 use tla_resolve::{DefId, Expr, ExprKind, Local, VarId};
 use tla_value::{LazySet, Symbol, Value};
 
+pub(crate) use self::analysis::recursive_functions;
 use self::builtin::describe;
-pub(crate) use self::function::recursive_functions;
 use crate::env::{Env, Slot};
 use crate::{EvalError, Evaluator, Result, State};
 
