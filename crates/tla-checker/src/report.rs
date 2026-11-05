@@ -47,7 +47,7 @@ pub struct Report {
     pub out_degrees: Option<Vec<u64>>,
     /// The violated assumption.
     pub assumption: Option<Assumption>,
-    /// The names of the temporal properties a counterexample may violate.
+    /// The names of the temporal properties a liveness counterexample violates.
     pub temporal_properties: Vec<String>,
 }
 

@@ -97,6 +97,8 @@ pub struct Search {
     /// For a lasso, the index of the state the trace loops back to, and the action of that step.
     pub loop_start: Option<usize>,
     pub loop_action: Option<String>,
+    /// The names of the temporal properties a liveness counterexample violates.
+    pub violated: Vec<String>,
     pub generated: u64,
     pub distinct: u64,
     pub depth: u64,
@@ -253,6 +255,13 @@ pub fn search<S: Successors + ?Sized>(
     };
     let trace = trail.map(|trail| explorer.behavior(trail)).unwrap_or_default();
     let (actions, loop_action) = explorer.actions(&trace, loop_start);
+    let violated = match (&ending, &explorer.liveness) {
+        (Ending::LivenessViolation | Ending::TemporalViolation, Some(liveness)) => {
+            let cycle_start = loop_start.unwrap_or(trace.len().saturating_sub(1));
+            liveness.borrow().violated_properties(&trace, cycle_start)
+        }
+        _ => Vec::new(),
+    };
     let distinct = explorer.store.lock().unwrap().len() as u64;
     Search {
         ending,
@@ -261,6 +270,7 @@ pub fn search<S: Successors + ?Sized>(
         actions,
         loop_start,
         loop_action,
+        violated,
         generated: explorer.generated,
         distinct,
         depth: if explorer.generated == 0 { 0 } else { u64::from(explorer.depth.max(1)) },

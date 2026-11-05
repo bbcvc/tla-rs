@@ -22,8 +22,12 @@ pub fn format_state(variables: &[(String, tla_eval::Value)]) -> String {
 /// TLC's headline for a violated temporal property.
 fn temporal_headline(names: &[String]) -> String {
     match names {
+        [] => "Temporal properties were violated.\n".into(),
         [name] => format!("Temporal property {name} was violated.\n"),
-        _ => "Temporal properties were violated.\n".into(),
+        [rest @ .., last] => {
+            let comma = if rest.len() > 1 { "," } else { "" };
+            format!("Temporal properties {}{comma} and {last} were violated.\n", rest.join(", "))
+        }
     }
 }
 
@@ -196,7 +200,11 @@ mod tests {
     #[test]
     fn names_the_violated_temporal_property() {
         assert_eq!(temporal_headline(&["P".into()]), "Temporal property P was violated.\n");
-        let both = ["P".into(), "Q".into()];
-        assert_eq!(temporal_headline(&both), "Temporal properties were violated.\n");
+        let two = ["P".into(), "Q".into()];
+        assert_eq!(temporal_headline(&two), "Temporal properties P and Q were violated.\n");
+        let three = ["P".into(), "Q".into(), "R".into()];
+        let headline = "Temporal properties P, Q, and R were violated.\n";
+        assert_eq!(temporal_headline(&three), headline);
+        assert_eq!(temporal_headline(&[]), "Temporal properties were violated.\n");
     }
 }

@@ -276,7 +276,7 @@ pub fn check<S: Successors>(
         liveness,
         &options.progress,
     );
-    let report = report(&evaluator, &plan, &tlc_order, &searched);
+    let report = report(&evaluator, &tlc_order, &searched);
     let outcome = match searched.ending {
         Ending::Success => postcondition::check(&evaluator, &plan).unwrap_or(Outcome {
             generated: Some(searched.generated),
@@ -311,12 +311,7 @@ pub fn check<S: Successors>(
 }
 
 /// What TLC prints about the search beyond its verdict.
-fn report(
-    evaluator: &Evaluator,
-    plan: &Plan,
-    tlc_order: &[usize],
-    searched: &search::Search,
-) -> Report {
+fn report(evaluator: &Evaluator, tlc_order: &[usize], searched: &search::Search) -> Report {
     let spec = evaluator.spec();
     let steps = searched
         .trace
@@ -335,19 +330,13 @@ fn report(
         loop_start: searched.loop_start,
         loop_action: searched.loop_action.clone(),
     });
-    let mut temporal_properties: Vec<String> = Vec::new();
-    for (name, _) in &plan.properties {
-        if !temporal_properties.contains(name) {
-            temporal_properties.push(name.clone());
-        }
-    }
     let is_complete = searched.ending == Ending::Success;
     Report {
         trace,
         counts: Some(searched.counts),
         out_degrees: is_complete.then(|| searched.out_degrees.clone()),
         assumption: None,
-        temporal_properties,
+        temporal_properties: searched.violated.clone(),
     }
 }
 
