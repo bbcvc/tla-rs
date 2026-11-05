@@ -10,6 +10,7 @@
 mod fingerprint;
 mod level;
 mod liveness;
+pub mod load;
 pub mod plan;
 mod postcondition;
 pub mod progress;
