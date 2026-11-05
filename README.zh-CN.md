@@ -77,12 +77,18 @@ Finished in 04s at (2026-11-05 14:35:30)
 
 ## 安装
 
-| 渠道 | 包名 | 状态 |
-| --- | --- | --- |
-| crates.io | [`tla-tools`](https://crates.io/crates/tla-tools) | 计划中：`cargo install tla-tools` |
-| npm | [`tla-rs`](https://www.npmjs.com/package/tla-rs) | 计划中：`npx tla-rs Spec.tla`，内含预编译二进制 |
+```shell
+npm install -g tla-rs        # 或者直接运行：npx tla-rs Spec.tla
+cargo install tla-tools      # 从源码编译，需要 Rust 1.85 或更高版本
+```
 
-两个渠道装出来的都是同一个 `tla-rs` 命令。正式发布前，请从源码编译（需要 Rust 1.85 或更高版本）：
+| 渠道 | 包名 | 说明 |
+| --- | --- | --- |
+| npm | [`tla-rs`](https://www.npmjs.com/package/tla-rs) | 预编译二进制，支持 macOS（arm64、x64）、Linux（arm64、x64，glibc）和 Windows（x64） |
+| crates.io | [`tla-tools`](https://crates.io/crates/tla-tools) | 在本机编译 |
+| GitHub Releases | [压缩包](https://github.com/bbcvc/tla-rs/releases) | 与 npm 相同的二进制，附 SHA256SUMS |
+
+三个渠道装出来的都是同一个 `tla-rs` 命令。从源码编译：
 
 ```shell
 git clone https://github.com/bbcvc/tla-rs.git && cd tla-rs
@@ -167,6 +173,7 @@ cargo run --release -p tla-tools-checker --example conformance -- $C/.corpora \
 - [x] 带公平性的活性检查，与 TLC 的 `-lncheck final` 相同
 - [x] 结果确定的并行广度优先搜索
 - [x] 与 TLC 兼容的命令行
+- [x] 发布到 crates.io 和 npm（含预编译二进制），并搭建 CI
 
 **待办**
 
@@ -180,7 +187,6 @@ cargo run --release -p tla-tools-checker --example conformance -- $C/.corpora \
 - [ ] 常驻工作线程与无锁指纹表
 - [ ] 支持磁盘存储状态队列和指纹表，以检查超出内存的状态空间
 - [ ] 模拟模式（`-simulate`）、搜索过程中的活性检查（`-lncheck`）、`-dump`、`-continue`
-- [ ] 把 `tla-tools` 发布到 crates.io，把带预编译二进制的 `tla-rs` 发布到 npm，并搭建 CI
 
 ## 文档
 

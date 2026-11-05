@@ -77,12 +77,18 @@ Other Rust TLA+ checkers either target a subset of the language (`fabracht/tla-r
 
 ## Installation
 
-| Channel | Package | Status |
-| --- | --- | --- |
-| crates.io | [`tla-tools`](https://crates.io/crates/tla-tools) | planned: `cargo install tla-tools` |
-| npm | [`tla-rs`](https://www.npmjs.com/package/tla-rs) | planned: `npx tla-rs Spec.tla`, with prebuilt binaries |
+```shell
+npm install -g tla-rs        # or run it once: npx tla-rs Spec.tla
+cargo install tla-tools      # builds from source; needs Rust 1.85 or newer
+```
 
-Both install the same `tla-rs` command. Until the first release, build from source. This needs Rust 1.85 or newer:
+| Channel | Package | Notes |
+| --- | --- | --- |
+| npm | [`tla-rs`](https://www.npmjs.com/package/tla-rs) | prebuilt binaries for macOS (arm64, x64), Linux (arm64, x64, glibc) and Windows (x64) |
+| crates.io | [`tla-tools`](https://crates.io/crates/tla-tools) | compiles on your machine |
+| GitHub Releases | [archives](https://github.com/bbcvc/tla-rs/releases) | the same binaries as npm, with SHA256SUMS |
+
+All three install the same `tla-rs` command. To build from source:
 
 ```shell
 git clone https://github.com/bbcvc/tla-rs.git && cd tla-rs
@@ -160,6 +166,7 @@ The conformance runner checks each model in its own process and compares the res
 - [x] Liveness checking with fairness, as TLC's `-lncheck final`
 - [x] Parallel breadth-first search with deterministic counts
 - [x] TLC-compatible command line
+- [x] Releases on crates.io and npm with prebuilt binaries, and CI
 
 **Next**
 
@@ -173,7 +180,6 @@ The conformance runner checks each model in its own process and compares the res
 - [ ] Persistent worker threads and a lock-free fingerprint set
 - [ ] Disk-backed state queue and fingerprint set for state spaces larger than memory
 - [ ] Simulation mode (`-simulate`), `-lncheck` during the search, `-dump`, `-continue`
-- [ ] Publish `tla-tools` to crates.io and `tla-rs` to npm with prebuilt binaries, and set up CI
 
 ## Documents
 
