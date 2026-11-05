@@ -49,6 +49,7 @@ a liveness counterexample), and the counts of the search.
 | 12 | An invariant or a safety property is violated. |
 | 13 | A liveness or action property is violated. |
 | 75 | Evaluating the spec failed. |
+| 76 | An invariant is not a state predicate. |
 | 150 | The spec can't be parsed. |
 | 151 | The configuration is wrong. |
 | 255 | Another error, or a model tla-rs doesn't support yet. |

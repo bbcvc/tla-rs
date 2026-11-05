@@ -8,6 +8,7 @@ pub const DEADLOCK: i32 = 11;
 pub const SAFETY_VIOLATION: i32 = 12;
 pub const LIVENESS_VIOLATION: i32 = 13;
 pub const SPEC_EVALUATION_FAILURE: i32 = 75;
+pub const SAFETY_EVALUATION_FAILURE: i32 = 76;
 pub const SPEC_PARSE_ERROR: i32 = 150;
 pub const CONFIG_PARSE_ERROR: i32 = 151;
 pub const ERROR: i32 = 255;
@@ -42,6 +43,8 @@ pub fn for_outcome(outcome: &Outcome) -> i32 {
 fn for_error(message: &str) -> i32 {
     if CONFIG_ERRORS.iter().any(|start| message.starts_with(start)) {
         CONFIG_PARSE_ERROR
+    } else if message.starts_with("The invariant") && message.contains("is not a state predicate") {
+        SAFETY_EVALUATION_FAILURE
     } else {
         SPEC_EVALUATION_FAILURE
     }
@@ -57,5 +60,8 @@ mod tests {
         assert_eq!(for_outcome(&config), CONFIG_PARSE_ERROR);
         assert_eq!(for_outcome(&Outcome::error("0^0 is undefined.")), SPEC_EVALUATION_FAILURE);
         assert_eq!(for_outcome(&Outcome::unsupported("RandomElement")), ERROR);
+        let invariant = "The invariant Inv is not a state predicate (one with no primes or \
+                         temporal operators).";
+        assert_eq!(for_outcome(&Outcome::error(invariant)), SAFETY_EVALUATION_FAILURE);
     }
 }
