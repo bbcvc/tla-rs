@@ -31,11 +31,14 @@ pub fn for_outcome(outcome: &Outcome) -> i32 {
         Status::InvariantViolation | Status::PropertyViolation => SAFETY_VIOLATION,
         Status::LivenessViolation => LIVENESS_VIOLATION,
         Status::Unsupported => ERROR,
+        // TLC exits with its general error status when computing a successor fails.
+        Status::Error if outcome.report.trace.is_some() => ERROR,
         Status::Error => for_error(outcome.message.as_deref().unwrap_or_default()),
     }
 }
 
-/// TLC's exit status for an error: one in the configuration, or one evaluating the spec.
+/// TLC's exit status for an error before the search expands a state: one in the
+/// configuration, or one evaluating the spec.
 fn for_error(message: &str) -> i32 {
     if CONFIG_ERRORS.iter().any(|start| message.starts_with(start)) {
         CONFIG_PARSE_ERROR

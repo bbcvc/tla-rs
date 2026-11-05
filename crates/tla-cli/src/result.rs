@@ -19,6 +19,21 @@ pub fn format_state(variables: &[(String, tla_eval::Value)]) -> String {
         .collect()
 }
 
+/// An evaluation error without the line tla-eval adds to say where it happened, which TLC
+/// reports in its stack of nested expressions instead.
+fn without_location(message: &str) -> &str {
+    match message.rsplit_once('\n') {
+        Some((text, last))
+            if last.starts_with("line ")
+                && last.contains(", column ")
+                && last.contains(" of module ") =>
+        {
+            text
+        }
+        _ => message,
+    }
+}
+
 /// TLC's headline for a violated temporal property.
 fn temporal_headline(names: &[String]) -> String {
     match names {
@@ -130,7 +145,7 @@ pub fn print_outcome(printer: &mut Printer, outcome: &Outcome, liveness: &mut Li
     let report = &outcome.report;
     match outcome.status {
         Status::Error | Status::Unsupported => {
-            let message = outcome.message.as_deref().unwrap_or_default();
+            let message = without_location(outcome.message.as_deref().unwrap_or_default());
             let text = match outcome.status {
                 Status::Unsupported => format!("tla-rs does not support this model yet: {message}"),
                 _ => message.to_owned(),
@@ -195,6 +210,13 @@ mod tests {
         assert_eq!(format_state(&one), "x = 1\n");
         let two = vec![("x".to_owned(), Value::Int(1)), ("y".to_owned(), Value::Bool(true))];
         assert_eq!(format_state(&two), "/\\ x = 1\n/\\ y = TRUE\n");
+    }
+
+    #[test]
+    fn leaves_out_the_location_of_an_evaluation_error() {
+        let message = "The second argument of \\div is 0.\nline 5, column 28 of module Err";
+        assert_eq!(without_location(message), "The second argument of \\div is 0.");
+        assert_eq!(without_location("Deadlock reached."), "Deadlock reached.");
     }
 
     #[test]
