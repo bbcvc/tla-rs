@@ -424,10 +424,8 @@ impl Planner<'_> {
                             "The property {name} is an action-level formula"
                         )));
                     }
-                    Level::Temporal => {
-                        let name = part.name.clone();
-                        self.temporal_properties.push((name, part));
-                    }
+                    // TLC names a temporal part by the property the configuration names.
+                    Level::Temporal => self.temporal_properties.push((name.to_string(), part)),
                 }
             }
         }

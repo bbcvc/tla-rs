@@ -32,6 +32,12 @@ pub fn tlc_fingerprint(values: &[Value]) -> std::result::Result<u64, String> {
     stdlib::tlc::tlc_fingerprint(values).map_err(|error| error.0)
 }
 
+/// TLC's pretty printer of a printed value (`Values.ppr`), which breaks it across lines of at
+/// most 80 columns, as TLC prints the values of a state.
+pub fn pretty_print(text: &str) -> String {
+    stdlib::tlc::pretty_print(text)
+}
+
 /// An evaluation error at a place in a module.
 #[derive(Clone, Debug, PartialEq, Eq, thiserror::Error)]
 #[error("{message}\nline {line}, column {column} of module {module}")]

@@ -10,8 +10,11 @@
 mod fingerprint;
 mod level;
 mod liveness;
+pub mod load;
 pub mod plan;
 mod postcondition;
+pub mod progress;
+pub mod report;
 pub mod search;
 #[cfg(test)]
 mod testing;
@@ -27,6 +30,8 @@ use tla_parser::ModelConfig;
 use tla_resolve::{ModuleId, Spec};
 
 pub use crate::plan::{Check, Plan};
+pub use crate::progress::{Counts, Event, Progress};
+pub use crate::report::Report;
 pub use crate::search::{Ending, Successors};
 
 /// A model TLC rejects before it explores any state, with TLC's wording, or one that uses what
@@ -112,6 +117,8 @@ pub struct Outcome {
     pub depth: Option<u64>,
     /// The error, or what the model uses that isn't supported.
     pub message: Option<String>,
+    /// What TLC prints about the check beyond the verdict.
+    pub report: Report,
 }
 
 impl Outcome {
@@ -124,6 +131,7 @@ impl Outcome {
             distinct: None,
             depth: None,
             message: None,
+            report: Report::default(),
         }
     }
 
@@ -154,6 +162,8 @@ pub struct Options {
     /// TLC's `-nowarning`, which also changes how many states a disjunction in an action
     /// generates once every variable has a value. TLC records its expected results with it.
     pub nowarning: bool,
+    /// Where the checker reports what it does as it runs.
+    pub progress: Progress,
 }
 
 /// Checks `spec` under `config`, with `successors` computing the states of the evaluator it is
@@ -241,6 +251,9 @@ pub fn check<S: Successors>(
         },
         false => None,
     };
+    if let Some(liveness) = &liveness {
+        options.progress.report(Event::TemporalBranches(liveness.branches()));
+    }
     if let Some(outcome) = check_assumptions(&evaluator, &assumptions) {
         return outcome;
     }
@@ -261,8 +274,10 @@ pub fn check<S: Successors>(
         config.check_deadlock,
         &tlc_order,
         liveness,
+        &options.progress,
     );
-    match searched.ending {
+    let report = report(&evaluator, &tlc_order, &searched);
+    let outcome = match searched.ending {
         Ending::Success => postcondition::check(&evaluator, &plan).unwrap_or(Outcome {
             generated: Some(searched.generated),
             distinct: Some(searched.distinct),
@@ -291,6 +306,37 @@ pub fn check<S: Successors>(
             ..Outcome::new(Status::PropertyViolation)
         },
         Ending::Error(message) => Outcome::error(message),
+    };
+    Outcome { report, ..outcome }
+}
+
+/// What TLC prints about the search beyond its verdict.
+fn report(evaluator: &Evaluator, tlc_order: &[usize], searched: &search::Search) -> Report {
+    let spec = evaluator.spec();
+    let steps = searched
+        .trace
+        .iter()
+        .zip(&searched.actions)
+        .map(|(state, action)| report::Step {
+            action: action.clone(),
+            variables: tlc_order
+                .iter()
+                .map(|&index| (spec.variables[index].name.to_string(), state[index].clone()))
+                .collect(),
+        })
+        .collect();
+    let trace = (!searched.trace.is_empty()).then(|| report::Trace {
+        steps,
+        loop_start: searched.loop_start,
+        loop_action: searched.loop_action.clone(),
+    });
+    let is_complete = searched.ending == Ending::Success;
+    Report {
+        trace,
+        counts: Some(searched.counts),
+        out_degrees: is_complete.then(|| searched.out_degrees.clone()),
+        assumption: None,
+        temporal_properties: searched.violated.clone(),
     }
 }
 
@@ -385,20 +431,35 @@ fn check_constants(evaluator: &Evaluator, plan: &mut Plan) -> Result<(), Error> 
 /// The first assumption that fails, as TLC checks them before it explores any state.
 fn check_assumptions(evaluator: &Evaluator, assumptions: &[tla_resolve::DefId]) -> Option<Outcome> {
     for &def in assumptions {
-        let violation = match evaluator.eval_def(def, None) {
+        let (violation, error) = match evaluator.eval_def(def, None) {
             Ok(value) if value.as_bool() == Some(true) => continue,
             Ok(value) if value.as_bool() == Some(false) => {
                 let def = evaluator.spec().def(def);
                 let module = evaluator.spec().modules[def.module.index()].name;
-                format!("assumption {} of module {module} is false", def.name)
+                (format!("assumption {} of module {module} is false", def.name), None)
             }
             // TLC reports an assumption it fails to evaluate as violated.
-            Ok(value) => format!("assumption evaluated to {value}"),
-            Err(error) => error.to_string(),
+            Ok(value) => {
+                let message = format!("assumption evaluated to {value}");
+                (message.clone(), Some(message))
+            }
+            Err(error) => (error.to_string(), Some(error.to_string())),
+        };
+        let spec = evaluator.spec();
+        let location = match &spec.def(def).body {
+            tla_resolve::DefBody::Expr(expr) => {
+                plan::describe_range(spec, spec.def(def).module, expr.span)
+            }
+            _ => spec.def(def).name.to_string(),
+        };
+        let report = Report {
+            assumption: Some(report::Assumption { location, error }),
+            ..Report::default()
         };
         return Some(Outcome {
             message: Some(violation),
             trace_length: Some(0),
+            report,
             ..Outcome::new(Status::AssumptionViolation)
         });
     }
