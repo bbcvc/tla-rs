@@ -4,6 +4,13 @@
 //! states generated, the distinct states, and the depth are those of the search with one
 //! worker.
 //!
+//! Under a `VIEW` or a `SYMMETRY`, states that differ share a fingerprint, and which of them the
+//! search keeps decides the successors it finds when the spec isn't symmetric, as with a `CHOOSE`
+//! over the symmetric set. So of the successors in a level that share a fingerprint, a worker
+//! keeps the one the search with one worker finds first: the first successor of the first state
+//! in the level's order. It checks the invariants of that one, and the level after keeps that
+//! order, so the search finds the states that search does.
+//!
 //! It only finds that a model holds. At a violation, a deadlock, or an error, it gives up, and
 //! the search with one worker runs instead, which finds what TLC reports with `-workers 1`: the
 //! first violation in TLC's order and the shortest behavior to it.
@@ -29,33 +36,76 @@ const CHUNK: usize = 16;
 /// The stack of each worker, as large as the search with one worker gets.
 const STACK: usize = 1 << 30;
 
+/// Where the search with one worker finds a successor: the index in the level of the state it
+/// expands, and the successor's place among those of that state.
+type Key = (u64, u32);
+
+/// A successor found in the level being expanded, the first with its fingerprint so far.
+struct Candidate {
+    fingerprint: u128,
+    key: Key,
+    state: State,
+}
+
+/// One shard of the fingerprints: those of the levels expanded, and the successors found in the
+/// level being expanded.
+#[derive(Default)]
+struct Shard {
+    seen: HashTable<u128>,
+    level: HashTable<Candidate>,
+}
+
 /// The fingerprints of the states found, in shards each with its own lock.
 struct Seen {
-    shards: Vec<Mutex<HashTable<u128>>>,
+    shards: Vec<Mutex<Shard>>,
 }
 
 impl Seen {
     fn new() -> Self {
-        Self { shards: (0..SHARDS).map(|_| Mutex::new(HashTable::new())).collect() }
+        Self { shards: (0..SHARDS).map(|_| Mutex::new(Shard::default())).collect() }
     }
 
-    fn shard(&self, fingerprint: u128) -> &Mutex<HashTable<u128>> {
+    fn shard(&self, fingerprint: u128) -> &Mutex<Shard> {
         &self.shards[(fingerprint >> 64) as usize & (SHARDS - 1)]
     }
 
     fn contains(&self, fingerprint: u128) -> bool {
         let shard = self.shard(fingerprint).lock().unwrap();
-        shard.find(fingerprint as u64, |&found| found == fingerprint).is_some()
+        shard.seen.find(fingerprint as u64, |&found| found == fingerprint).is_some()
     }
 
     /// Adds `fingerprint`, and returns whether it is new.
     fn insert(&self, fingerprint: u128) -> bool {
         let mut shard = self.shard(fingerprint).lock().unwrap();
-        if shard.find(fingerprint as u64, |&found| found == fingerprint).is_some() {
+        if shard.seen.find(fingerprint as u64, |&found| found == fingerprint).is_some() {
             return false;
         }
-        shard.insert_unique(fingerprint as u64, fingerprint, |&found| found as u64);
+        shard.seen.insert_unique(fingerprint as u64, fingerprint, |&found| found as u64);
         true
+    }
+
+    /// Offers a successor found in the level being expanded: it stays unless a level before has
+    /// its fingerprint, or a successor found before it in the order of the search with one
+    /// worker has.
+    fn offer(&self, fingerprint: u128, key: Key, state: &State) {
+        let mut shard = self.shard(fingerprint).lock().unwrap();
+        let shard = &mut *shard;
+        if shard.seen.find(fingerprint as u64, |&found| found == fingerprint).is_some() {
+            return;
+        }
+        match shard.level.find_mut(fingerprint as u64, |found| found.fingerprint == fingerprint) {
+            Some(found) if found.key <= key => {}
+            Some(found) => {
+                found.key = key;
+                found.state = state.clone();
+            }
+            None => {
+                let candidate = Candidate { fingerprint, key, state: state.clone() };
+                shard
+                    .level
+                    .insert_unique(fingerprint as u64, candidate, |found| found.fingerprint as u64);
+            }
+        }
     }
 }
 
@@ -69,23 +119,14 @@ struct Level<'a, S: Successors + Sync + ?Sized> {
     seen: &'a Seen,
     states: &'a [State],
     taken: AtomicUsize,
+    /// The next shard to settle.
+    settled: AtomicUsize,
     /// Set when a worker meets what the search with one worker must report.
     stopped: AtomicBool,
 }
 
-/// What one worker found in a level.
-struct Found {
-    next: Vec<State>,
-    generated: u64,
-    /// How many expanded states had each number of successors this worker found new.
-    out_degrees: Vec<u64>,
-}
-
-impl Default for Found {
-    fn default() -> Self {
-        Self { next: Vec::new(), generated: 0, out_degrees: vec![0; OUT_DEGREE_BUCKETS] }
-    }
-}
+/// The new states one worker settled in a level, with where they were found.
+type Settled = Vec<(Key, State)>;
 
 /// Searches with `workers` workers. Gives up when the model has a violation, a deadlock, or
 /// an error, which the search with one worker reports, with whether it reported the initial
@@ -147,29 +188,24 @@ pub fn search<S: Successors + Sync + ?Sized>(
             seen: &seen,
             states: &states,
             taken: AtomicUsize::new(0),
+            settled: AtomicUsize::new(0),
             stopped: AtomicBool::new(false),
         };
-        let found: Vec<Found> = std::thread::scope(|scope| {
-            let handles: Vec<_> = (0..workers)
-                .map(|_| {
-                    std::thread::Builder::new()
-                        .stack_size(STACK)
-                        .spawn_scoped(scope, || level.expand(next))
-                        .expect("a worker thread starts")
-                })
-                .collect();
-            handles.into_iter().map(|handle| handle.join().unwrap_or_default()).collect()
-        });
+        let found: Vec<u64> = level.run(workers, || 0, |generated| level.expand(next, generated));
         if level.stopped.load(Ordering::Relaxed) {
             return Err(true);
         }
-        generated += found.iter().map(|found| found.generated).sum::<u64>();
-        for found in &found {
-            for (total, count) in out_degrees.iter_mut().zip(&found.out_degrees) {
-                *total += count;
-            }
+        generated += found.iter().sum::<u64>();
+        let settled: Vec<Settled> =
+            level.run(workers, Settled::new, |settled| level.settle(settled));
+        if level.stopped.load(Ordering::Relaxed) {
+            return Err(true);
         }
-        states = found.into_iter().flat_map(|found| found.next).collect();
+        let mut next_states: Settled = settled.into_iter().flatten().collect();
+        // The order the search with one worker finds them in.
+        next_states.sort_unstable_by_key(|(key, _)| *key);
+        count_out_degrees(&mut out_degrees, states.len(), &next_states);
+        states = next_states.into_iter().map(|(_, state)| state).collect();
         distinct += states.len() as u64;
         if !states.is_empty() {
             depth += 1;
@@ -184,67 +220,143 @@ pub fn search<S: Successors + Sync + ?Sized>(
 }
 
 impl<S: Successors + Sync + ?Sized> Level<'_, S> {
-    /// One worker's share of the level.
-    fn expand(&self, next: tla_resolve::DefId) -> Found {
-        let mut found = Found::default();
+    /// Runs `work` on `workers` workers, each with its own result, which a worker that panics
+    /// leaves as `start` gives it.
+    fn run<T: Send>(
+        &self,
+        workers: usize,
+        start: impl Fn() -> T + Sync,
+        work: impl Fn(&mut T) + Sync,
+    ) -> Vec<T> {
+        std::thread::scope(|scope| {
+            let handles: Vec<_> = (0..workers)
+                .map(|_| {
+                    std::thread::Builder::new()
+                        .stack_size(STACK)
+                        .spawn_scoped(scope, || {
+                            let mut result = start();
+                            work(&mut result);
+                            result
+                        })
+                        .expect("a worker thread starts")
+                })
+                .collect();
+            handles
+                .into_iter()
+                .map(|handle| {
+                    handle.join().unwrap_or_else(|_| {
+                        self.stopped.store(true, Ordering::Relaxed);
+                        start()
+                    })
+                })
+                .collect()
+        })
+    }
+
+    /// One worker's share of the level, adding the states it generates to `generated`.
+    fn expand(&self, next: tla_resolve::DefId, generated: &mut u64) {
         loop {
             if self.stopped.load(Ordering::Relaxed) {
-                return found;
+                return;
             }
             let start = self.taken.fetch_add(CHUNK, Ordering::Relaxed);
             if start >= self.states.len() {
-                return found;
+                return;
             }
             let end = (start + CHUNK).min(self.states.len());
-            for state in &self.states[start..end] {
-                match self.expand_state(next, state, &mut found) {
+            for (index, state) in self.states[start..end].iter().enumerate() {
+                match self.expand_state(next, (start + index) as u64, state, generated) {
                     Ok(true) => {}
                     Ok(false) | Err(_) => {
                         self.stopped.store(true, Ordering::Relaxed);
-                        return found;
+                        return;
                     }
                 }
             }
         }
     }
 
-    /// Expands `state`, as the search with one worker does. `false` at what that search must
-    /// report.
+    /// Expands `state`, the one at `index` in the level, as the search with one worker does,
+    /// offering its successors in the model. `false` at what that search must report.
     fn expand_state(
         &self,
         next: tla_resolve::DefId,
+        index: u64,
         state: &State,
-        found: &mut Found,
+        generated: &mut u64,
     ) -> tla_eval::Result<bool> {
         let (evaluator, plan) = (self.evaluator, self.plan);
         let mut count = 0u64;
-        let mut added = 0usize;
         let mut holds = true;
         self.successors.next_states(next, state, &mut |successor| {
+            let place = count as u32;
             count += 1;
             let fingerprint =
                 self.fingerprinter.fingerprint(evaluator, &successor).map_err(fail)?;
             let is_in_model = all_hold(evaluator, &plan.constraints, &successor, None)?
                 && all_hold(evaluator, &plan.action_constraints, state, Some(&successor))?;
-            let is_new = is_in_model && self.seen.insert(fingerprint);
-            // The search with one worker checks the invariants of a state it hasn't stored.
-            let is_checked = is_new || !is_in_model;
-            if (is_checked && !all_hold(evaluator, &plan.invariants, &successor, None)?)
+            // The search with one worker checks the invariants of a state it doesn't store;
+            // those of the states it stores, once the level settles which they are.
+            if (!is_in_model && !all_hold(evaluator, &plan.invariants, &successor, None)?)
                 || !all_hold(evaluator, &plan.action_properties, state, Some(&successor))?
             {
                 holds = false;
                 return Ok(false);
             }
-            if is_new {
-                found.next.push(successor);
-                added += 1;
+            if is_in_model {
+                self.seen.offer(fingerprint, (index, place), &successor);
             }
             Ok(!self.stopped.load(Ordering::Relaxed))
         })?;
-        found.generated += count;
-        found.out_degrees[added.min(OUT_DEGREE_BUCKETS - 1)] += 1;
+        *generated += count;
         Ok(holds && !(count == 0 && self.check_deadlock))
     }
+
+    /// One worker's share of settling the level: the successors that stay in the shards it takes
+    /// are the new states, whose fingerprints join those of the levels before, and whose
+    /// invariants it checks.
+    fn settle(&self, settled: &mut Settled) {
+        loop {
+            if self.stopped.load(Ordering::Relaxed) {
+                return;
+            }
+            let index = self.settled.fetch_add(1, Ordering::Relaxed);
+            let Some(shard) = self.seen.shards.get(index) else { return };
+            let start = settled.len();
+            {
+                let mut shard = shard.lock().unwrap();
+                let shard = &mut *shard;
+                for candidate in shard.level.drain() {
+                    let fingerprint = candidate.fingerprint;
+                    shard
+                        .seen
+                        .insert_unique(fingerprint as u64, fingerprint, |&found| found as u64);
+                    settled.push((candidate.key, candidate.state));
+                }
+            }
+            for (_, state) in &settled[start..] {
+                if !all_hold(self.evaluator, &self.plan.invariants, state, None).unwrap_or(false) {
+                    self.stopped.store(true, Ordering::Relaxed);
+                    return;
+                }
+            }
+        }
+    }
+}
+
+/// Adds the out-degrees of the states of a level: how many new states each found, from the new
+/// states of the next level in their order.
+fn count_out_degrees(out_degrees: &mut [u64], expanded: usize, next: &[(Key, State)]) {
+    let mut with_new = 0usize;
+    let mut position = 0;
+    while position < next.len() {
+        let parent = next[position].0.0;
+        let run = next[position..].iter().take_while(|((found, _), _)| *found == parent).count();
+        out_degrees[run.min(OUT_DEGREE_BUCKETS - 1)] += 1;
+        with_new += 1;
+        position += run;
+    }
+    out_degrees[0] += (expanded - with_new) as u64;
 }
 
 fn success(
@@ -343,6 +455,37 @@ mod tests {
         let found = outcomes((SPEC, "SPECIFICATION Spec\nCHECK_DEADLOCK FALSE"));
         assert_eq!(summary(&found[0]), (Status::Success, Some(149), Some(51), Some(18), None));
         assert!(found.iter().all(|outcome| summary(outcome) == summary(&found[0])));
+    }
+
+    /// The states 0 to 63 go to 1000 and up, which share a view, so which of them the search
+    /// keeps decides what follows: 1000 + p goes to p + 1 states. The state 0 finds 1000 last
+    /// of its successors, after the other states found theirs.
+    fn shared_view(x: i32) -> Vec<i32> {
+        match x {
+            0 => (10_000..12_000).chain([1000]).collect(),
+            1..64 => vec![1000 + x],
+            1000..2000 => (0..=x - 1000).map(|step| 20_000 + 100 * (x - 1000) + step).collect(),
+            _ => Vec::new(),
+        }
+    }
+
+    #[test]
+    fn keeps_the_state_one_worker_finds_first_of_a_view() {
+        let body = "View == IF x >= 1000 /\\ x < 2000 THEN 1000 ELSE x\nInit == TRUE\n\
+            Next == TRUE\nSpec == Init /\\ [][Next]_x";
+        let config = "SPECIFICATION Spec\nVIEW View\nCHECK_DEADLOCK FALSE";
+        for _ in 0..10 {
+            let found: Vec<_> = [1, 2, 4, 8]
+                .into_iter()
+                .map(|workers| {
+                    let system = System { init: (0..64).collect(), next: shared_view };
+                    summary(&run_with_workers(body, config, system, workers))
+                })
+                .collect();
+            // 1000, found from 0, goes to 20000 alone.
+            assert_eq!(found[0].2, Some(64 + 2000 + 1 + 1));
+            assert!(found.iter().all(|outcome| *outcome == found[0]), "{found:?}");
+        }
     }
 
     #[test]
