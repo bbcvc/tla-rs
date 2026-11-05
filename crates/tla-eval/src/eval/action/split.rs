@@ -333,6 +333,19 @@ fn without_trailing_layout(source: &str, span: Span) -> Span {
     }
 }
 
+/// The context TLC splits the relation in: without states, so that an expression that reads a
+/// variable fails.
+fn constant_env(site: &Site) -> Env<'static> {
+    Env {
+        frame: site.frame.clone(),
+        module: site.module,
+        state: None,
+        next: None,
+        keep_lazy: false,
+        enabled: Enabled::Outside,
+    }
+}
+
 #[cfg(test)]
 mod layout_tests {
     use super::*;
@@ -345,18 +358,5 @@ mod layout_tests {
         let source = "x' = \"a \\\" (*\"  ";
         let span = Span::new(0, source.len());
         assert_eq!(without_trailing_layout(source, span).end as usize, source.len() - 2);
-    }
-}
-
-/// The context TLC splits the relation in: without states, so that an expression that reads a
-/// variable fails.
-fn constant_env(site: &Site) -> Env<'static> {
-    Env {
-        frame: site.frame.clone(),
-        module: site.module,
-        state: None,
-        next: None,
-        keep_lazy: false,
-        enabled: Enabled::Outside,
     }
 }
