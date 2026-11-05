@@ -1,0 +1,4 @@
+exit 10
+Starting... (DATE)
+Error: Assumption line 5, col 17 to line 5, col 21 of module Assumption is false.
+Finished in TIME at (DATE)

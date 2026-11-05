@@ -1,0 +1,37 @@
+exit 12
+Starting... (DATE)
+Computing initial states...
+Finished computing initial states: 1 distinct state generated at DATE.
+Error: Invariant Inv is violated.
+Error: The behavior up to this point is:
+State 1: <Initial predicate>
+/\ x = 0
+/\ y = 0
+/\ log = [ first |-> "a fairly long string value",
+  second |-> "another long string value",
+  n |-> 0 ]
+
+State 2: <A line 7, col 3 to line 9, col 25 of module Labels>
+/\ x = 1
+/\ y = 0
+/\ log = [ first |-> "a fairly long string value",
+  second |-> "another long string value",
+  n |-> 0 ]
+
+State 3: <A line 7, col 3 to line 9, col 25 of module Labels>
+/\ x = 2
+/\ y = 0
+/\ log = [ first |-> "a fairly long string value",
+  second |-> "another long string value",
+  n |-> 0 ]
+
+State 4: <B line 12, col 6 to line 15, col 39 of module Labels>
+/\ x = 2
+/\ y = 1
+/\ log = [ first |-> "a fairly long string value",
+  second |-> "another long string value",
+  n |-> 1 ]
+
+7 states generated, 6 distinct states found, 1 states left on queue.
+The depth of the complete state graph search is 4.
+Finished in TIME at (DATE)

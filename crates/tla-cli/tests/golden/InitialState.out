@@ -1,0 +1,8 @@
+exit 12
+Starting... (DATE)
+Computing initial states...
+Error: Invariant Positive is violated by the initial state:
+/\ x = 1
+/\ y = "s"
+
+Finished in TIME at (DATE)

@@ -1,0 +1,25 @@
+exit 13
+Starting... (DATE)
+Implied-temporal checking--satisfiability problem has 1 branches.
+Computing initial states...
+Finished computing initial states: 1 distinct state generated at DATE.
+Progress(3) at DATE: 4 states generated, 3 distinct states found, 0 states left on queue.
+Checking temporal properties for the complete state space with 3 total distinct states at (DATE)
+Error: Temporal property Ends was violated.
+
+Error: The following behavior constitutes a counter-example:
+
+State 1: <Initial predicate>
+x = 0
+
+State 2: <Next line 6, col 12 to line 6, col 30 of module Stutter>
+x = 1
+
+State 3: <Next line 6, col 12 to line 6, col 30 of module Stutter>
+x = 2
+
+State 4: Stuttering
+Finished checking temporal properties in TIME at DATE
+4 states generated, 3 distinct states found, 0 states left on queue.
+The depth of the complete state graph search is 3.
+Finished in TIME at (DATE)

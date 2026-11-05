@@ -1,0 +1,29 @@
+exit 12
+Starting... (DATE)
+Computing initial states...
+Finished computing initial states: 1 distinct state generated at DATE.
+Error: Invariant Inv is violated.
+Error: The behavior up to this point is:
+State 1: <Initial predicate>
+/\ x = 0
+/\ y = 0
+
+State 2: <IncX line 5, col 9 to line 5, col 42 of module Counter>
+/\ x = 1
+/\ y = 0
+
+State 3: <IncX line 5, col 9 to line 5, col 42 of module Counter>
+/\ x = 2
+/\ y = 0
+
+State 4: <IncX line 5, col 9 to line 5, col 42 of module Counter>
+/\ x = 3
+/\ y = 0
+
+State 5: <IncY line 6, col 9 to line 6, col 42 of module Counter>
+/\ x = 3
+/\ y = 1
+
+13 states generated, 10 distinct states found, 2 states left on queue.
+The depth of the complete state graph search is 5.
+Finished in TIME at (DATE)
