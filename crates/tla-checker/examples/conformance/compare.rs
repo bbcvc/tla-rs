@@ -142,7 +142,13 @@ impl Verdict {
 }
 
 /// tla-ts's `compareOutcome`: what differs, if anything.
-pub fn compare(expected: &Expected, actual: &Reported) -> (Verdict, Option<String>) {
+/// With `verdicts_only`, as for a search with several workers, only the status, the violation,
+/// and the distinct states are compared.
+pub fn compare(
+    expected: &Expected,
+    actual: &Reported,
+    verdicts_only: bool,
+) -> (Verdict, Option<String>) {
     if actual.status == Status::Unsupported.name() {
         return (Verdict::Unsupported, actual.message.clone());
     }
@@ -178,10 +184,12 @@ pub fn compare(expected: &Expected, actual: &Reported) -> (Verdict, Option<Strin
     };
     let text = |value: Option<u64>| value.map(|value| value.to_string());
     compare("violation", expected.violation.clone(), actual.violation.clone());
-    compare("generatedStates", text(expected.generated), text(actual.generated));
     compare("distinctStates", text(expected.distinct), text(actual.distinct));
-    compare("depth", text(expected.depth), text(actual.depth));
-    compare("traceLength", text(expected.trace_length), text(actual.trace_length));
+    if !verdicts_only {
+        compare("generatedStates", text(expected.generated), text(actual.generated));
+        compare("depth", text(expected.depth), text(actual.depth));
+        compare("traceLength", text(expected.trace_length), text(actual.trace_length));
+    }
     match differences.is_empty() {
         true => (Verdict::Match, None),
         false => (Verdict::Mismatch, Some(differences.join("; "))),
@@ -235,23 +243,23 @@ mod tests {
         let record = serde_json::json!({
             "status": "success", "generatedStates": 4, "distinctStates": 3, "depth": 2
         });
-        assert_eq!(compare(&expected(record), &success).0, Verdict::Match);
+        assert_eq!(compare(&expected(record), &success, false).0, Verdict::Match);
         let record = serde_json::json!({
             "status": "success", "generatedStates": 5, "distinctStates": 3, "depth": 2
         });
-        assert_eq!(compare(&expected(record), &success).0, Verdict::Mismatch);
+        assert_eq!(compare(&expected(record), &success, false).0, Verdict::Mismatch);
         // TLC exits as for a violated assumption when a postcondition fails.
         let postcondition =
             Reported { trace_length: Some(0), ..reported(Status::PostconditionViolation) };
         let record = serde_json::json!({ "status": "assumption-violation", "traceLength": 0 });
-        assert_eq!(compare(&expected(record), &postcondition).0, Verdict::Match);
+        assert_eq!(compare(&expected(record), &postcondition, false).0, Verdict::Match);
         let record = serde_json::json!({ "status": "liveness-violation", "traceLength": 2 });
         let live = Reported { trace_length: Some(2), ..reported(Status::LivenessViolation) };
-        assert_eq!(compare(&expected(record.clone()), &success).0, Verdict::Mismatch);
-        assert_eq!(compare(&expected(record), &live).0, Verdict::Match);
+        assert_eq!(compare(&expected(record.clone()), &success, false).0, Verdict::Mismatch);
+        assert_eq!(compare(&expected(record), &live, false).0, Verdict::Match);
         let record = serde_json::json!({ "status": "error" });
-        assert_eq!(compare(&expected(record.clone()), &success).0, Verdict::Mismatch);
-        assert_eq!(compare(&expected(record), &reported(Status::Error)).0, Verdict::Match);
+        assert_eq!(compare(&expected(record.clone()), &success, false).0, Verdict::Mismatch);
+        assert_eq!(compare(&expected(record), &reported(Status::Error), false).0, Verdict::Match);
     }
 
     #[test]

@@ -80,7 +80,14 @@ pub fn explore(mut spec: Spec, config: &str, system: System) -> crate::search::S
         config.check_deadlock,
         &order,
         None,
+        &Default::default(),
     )
+}
+
+/// Checks the module with `body` under `config` with `workers` workers, exploring `system`.
+pub fn run_with_workers(body: &str, config: &str, system: System, workers: usize) -> Outcome {
+    let config = tla_parser::parse_config(config).unwrap_or_else(|error| panic!("{error}"));
+    check(spec(body), &config, &Options { workers, ..Options::default() }, |_| system)
 }
 
 /// Checks the module with `body` under the configuration `config`, exploring `system`.

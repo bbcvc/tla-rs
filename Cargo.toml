@@ -17,6 +17,8 @@ tla-value = { path = "crates/tla-value" }
 tla-eval = { path = "crates/tla-eval" }
 tla-checker = { path = "crates/tla-checker" }
 
+chrono = { version = "0.4.45", default-features = false, features = ["clock"] }
+clap = { version = "4.6", features = ["derive"] }
 foldhash = "0.2"
 hashbrown = { version = "0.17", default-features = false, features = ["inline-more"] }
 lasso = { version = "0.7", features = ["multi-threaded"] }

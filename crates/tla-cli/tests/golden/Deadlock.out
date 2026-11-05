@@ -1,0 +1,18 @@
+exit 11
+Starting... (DATE)
+Computing initial states...
+Finished computing initial states: 2 distinct states generated at DATE.
+Error: Deadlock reached.
+Error: The behavior up to this point is:
+State 1: <Initial predicate>
+n = 1
+
+State 2: <Next line 5, col 9 to line 5, col 27 of module Deadlock>
+n = 2
+
+State 3: <Next line 5, col 9 to line 5, col 27 of module Deadlock>
+n = 3
+
+5 states generated, 4 distinct states found, 0 states left on queue.
+The depth of the complete state graph search is 3.
+Finished in TIME at (DATE)
