@@ -8,6 +8,7 @@
 
 mod live;
 mod store;
+mod trace;
 
 use std::cell::RefCell;
 use std::collections::VecDeque;
@@ -20,6 +21,8 @@ use tla_value::{Symbol, Value};
 use crate::fingerprint::Fingerprinter;
 use crate::liveness::checker::{Checker, LiveSuccessor};
 use crate::plan::{Check, Plan};
+use crate::progress::{Counts, Event, Progress, Ticker};
+use crate::report::OUT_DEGREE_BUCKETS;
 use store::Store;
 
 /// The states of a model, which the model checker explores: TLC's order of the initial states
@@ -89,9 +92,18 @@ pub struct Search {
     pub trace_length: usize,
     /// That behavior, rebuilt from the initial states, as far as it could be.
     pub trace: Vec<State>,
+    /// The action of each step of the trace, `None` for the initial state.
+    pub actions: Vec<Option<String>>,
+    /// For a lasso, the index of the state the trace loops back to, and the action of that step.
+    pub loop_start: Option<usize>,
+    pub loop_action: Option<String>,
     pub generated: u64,
     pub distinct: u64,
     pub depth: u64,
+    /// The counts as TLC reports them once the search ends.
+    pub counts: Counts,
+    /// How many expanded states had each number of new successors.
+    pub out_degrees: Vec<u64>,
 }
 
 /// What `TLCGet("level")` reads: the state the model checker expands, with its index, and the
@@ -153,6 +165,11 @@ struct Explorer<'a, S: Successors + ?Sized> {
     liveness: Option<RefCell<Checker<'a>>>,
     /// The successors in the model of the state being expanded, for the liveness checker.
     live_successors: Vec<LiveSuccessor>,
+    progress: &'a Progress,
+    ticker: Ticker,
+    /// The new successors of the state being expanded, and how many states had each number.
+    new_successors: u64,
+    out_degrees: Vec<u64>,
 }
 
 /// What a visit to a state found.
@@ -162,6 +179,7 @@ enum Visit {
 }
 
 /// Explores the states of `plan` breadth first.
+#[allow(clippy::too_many_arguments)]
 pub fn search<S: Successors + ?Sized>(
     successors: &S,
     evaluator: &Evaluator,
@@ -170,6 +188,7 @@ pub fn search<S: Successors + ?Sized>(
     check_deadlock: bool,
     tlc_order: &[usize],
     liveness: Option<Checker<'_>>,
+    progress: &Progress,
 ) -> Search {
     // Only `TLCExt!Trace` reads the behavior to a state while the search runs.
     let reads_behaviors =
@@ -209,6 +228,10 @@ pub fn search<S: Successors + ?Sized>(
         expanding: None,
         liveness: liveness.map(RefCell::new),
         live_successors: Vec::new(),
+        progress,
+        ticker: Ticker::new(),
+        new_successors: 0,
+        out_degrees: vec![0; OUT_DEGREE_BUCKETS],
     };
     let (ending, trail) = explorer.run();
     let trace_length = match &trail {
@@ -222,20 +245,33 @@ pub fn search<S: Successors + ?Sized>(
         }
         None => 0,
     };
+    let loop_start = match &trail {
+        Some(Trail::Live { states, cycle_start }) => {
+            Some(*cycle_start).filter(|start| *start < states.len())
+        }
+        _ => None,
+    };
     let trace = trail.map(|trail| explorer.behavior(trail)).unwrap_or_default();
+    let (actions, loop_action) = explorer.actions(&trace, loop_start);
     let distinct = explorer.store.lock().unwrap().len() as u64;
     Search {
         ending,
         trace_length,
         trace,
+        actions,
+        loop_start,
+        loop_action,
         generated: explorer.generated,
         distinct,
         depth: if explorer.generated == 0 { 0 } else { u64::from(explorer.depth.max(1)) },
+        counts: explorer.counts(),
+        out_degrees: explorer.out_degrees,
     }
 }
 
 impl<S: Successors + ?Sized> Explorer<'_, S> {
     fn run(&mut self) -> (Ending, Option<Trail>) {
+        self.progress.report(Event::InitialStatesStarted);
         let mut stopped = None;
         let (successors, init) = (self.successors, &self.plan.init);
         let result = successors.init_states(init, &mut |state| match self.visit_initial(state)? {
@@ -252,6 +288,8 @@ impl<S: Successors + ?Sized> Explorer<'_, S> {
         if let Some(stopped) = stopped {
             return stopped;
         }
+        let distinct = self.store.lock().unwrap().len() as u64;
+        self.progress.report(Event::InitialStatesComputed { generated: self.initial, distinct });
         let Some(next) = self.plan.next else {
             if self.queue.is_empty() {
                 return (Ending::Success, None);
@@ -269,6 +307,10 @@ impl<S: Successors + ?Sized> Explorer<'_, S> {
             self.cursor.lock().unwrap().expanding = Some((state.clone(), depth as i32, index));
             self.expanding = Some(index);
             self.update_statistics(None);
+            if self.progress.is_reported() && self.ticker.is_due() {
+                self.progress.report(Event::Progress(self.counts()));
+            }
+            self.new_successors = 0;
             // TLC seeds a worker's random choices with the fingerprint of the state it expands.
             self.evaluator.runtime().set_expanding(Some(state.clone()));
             let mut count = 0u64;
@@ -300,6 +342,7 @@ impl<S: Successors + ?Sized> Explorer<'_, S> {
             if count == 0 && self.check_deadlock {
                 return (Ending::Deadlock, at_state());
             }
+            self.out_degrees[(self.new_successors as usize).min(OUT_DEGREE_BUCKETS - 1)] += 1;
             let live = std::mem::take(&mut self.live_successors);
             if let Some(ending) = self.add_live_state(index, &state, depth, &live) {
                 return ending;
@@ -310,6 +353,15 @@ impl<S: Successors + ?Sized> Explorer<'_, S> {
         self.expanding = Some(self.store.lock().unwrap().len());
         self.update_statistics(None);
         // TLC checks the temporal properties on the whole graph, with -lncheck final.
+        if let Some(liveness) = &self.liveness {
+            let branches = liveness.borrow().branches();
+            let states = self.store.lock().unwrap().len() as u64;
+            self.progress.report(Event::LivenessStarted {
+                counts: self.counts(),
+                branches,
+                states,
+            });
+        }
         if let Some(ending) = self.find_live_violation() {
             return ending;
         }
@@ -390,6 +442,18 @@ impl<S: Successors + ?Sized> Explorer<'_, S> {
             }
         };
         result.ok().and(found)
+    }
+
+    /// The counts `update_statistics` last published.
+    fn counts(&self) -> Counts {
+        let statistics = self.evaluator.runtime().statistics().unwrap_or_default();
+        let count = |count: i64| count.max(0) as u64;
+        Counts {
+            generated: count(statistics.generated),
+            distinct: count(statistics.distinct),
+            queue: count(statistics.queue),
+            depth: count(statistics.diameter),
+        }
     }
 
     /// Publishes the counts `TLCGet` reads, as TLC keeps them while it explores: a state is
@@ -488,6 +552,7 @@ impl<S: Successors + ?Sized> Explorer<'_, S> {
 
     fn store(&mut self, fingerprint: u128, state: State, parent: Option<usize>, depth: u32) {
         self.depth = self.depth.max(depth);
+        self.new_successors += u64::from(parent.is_some());
         self.store.lock().unwrap().insert(fingerprint, &state, parent, depth);
         self.queue.push_back(state);
     }
