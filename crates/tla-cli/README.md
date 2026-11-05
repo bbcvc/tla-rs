@@ -24,7 +24,7 @@ module's operators is loaded as TLC loads it.
 | `-deadlock` | Don't check for deadlock. |
 | `-seed N` | The seed of TLC's random choices (default 0). |
 | `-nowarning` | Don't print warnings. |
-| `-workers N\|auto` | Accepted. tla-rs checks with one worker for now. |
+| `-workers N\|auto` | Workers of the breadth-first search (`auto`: one per core). The counts are those of one worker. |
 | `-fp N` | Only `0` is accepted: tla-rs fingerprints states as TLC does with `-fp 0`. |
 | `-lncheck final\|default\|...` | Accepted. tla-rs checks temporal properties once the search is done, as `final` does. |
 | `-metadir DIR` | Ignored: tla-rs keeps its states in memory. |
@@ -80,4 +80,4 @@ crates/tla-cli/scripts/smoke.py $C --per-status 8 --tla-ts ../tla-ts/packages/tl
 - An evaluation error is printed without TLC's stack of nested expressions.
 - The collision estimate from the actual fingerprints, which TLC adds for large state spaces,
   isn't printed.
-- `-workers`, `-lncheck`, `-dump`, `-tool`, and `-continue` aren't implemented.
+- `-lncheck`, `-dump`, `-tool`, and `-continue` aren't implemented.
