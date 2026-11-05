@@ -35,12 +35,17 @@ mod compare;
 mod timing;
 
 const USAGE: &str = "usage: conformance DIR --expected FILE [--library DIR]... [--timeout SECONDS] \
-                     [--jobs N] [--filter TEXT] [--outcomes FILE]";
+                     [--jobs N] [--workers N] [--filter TEXT] [--outcomes FILE]";
 
 /// TLC's `-seed` in tla-ts's recordings.
 const TLC_SEED: i64 = 4;
 
-fn check(spec_path: &Path, config_path: &Path, library: &HashMap<String, PathBuf>) -> Outcome {
+fn check(
+    spec_path: &Path,
+    config_path: &Path,
+    library: &HashMap<String, PathBuf>,
+    workers: usize,
+) -> Outcome {
     let config = std::fs::read_to_string(config_path).unwrap_or_default();
     // TLC reads the configuration first, which orders its strings and model values.
     let config = match tla_parser::parse_config(&config) {
@@ -82,17 +87,28 @@ fn check(spec_path: &Path, config_path: &Path, library: &HashMap<String, PathBuf
         })
         .collect();
     // TLC records the expected results with -nowarning.
-    let options =
-        Options { seed: TLC_SEED, classes, variable_order, nowarning: true, ..Options::default() };
+    let options = Options {
+        seed: TLC_SEED,
+        classes,
+        variable_order,
+        nowarning: true,
+        workers,
+        ..Options::default()
+    };
     tla_checker::check(spec, &config, &options, |evaluator| evaluator.clone())
 }
 
 /// Checks one model in this process, on a thread with a large stack.
-fn check_one(spec_path: PathBuf, config_path: PathBuf, library: HashMap<String, PathBuf>) {
+fn check_one(
+    spec_path: PathBuf,
+    config_path: PathBuf,
+    library: HashMap<String, PathBuf>,
+    workers: usize,
+) {
     std::panic::set_hook(Box::new(|_| {}));
     let outcome = std::thread::Builder::new()
         .stack_size(1 << 30)
-        .spawn(move || check(&spec_path, &config_path, &library))
+        .spawn(move || check(&spec_path, &config_path, &library, workers))
         .unwrap()
         .join()
         .unwrap_or_else(|panic| {
@@ -180,6 +196,7 @@ fn main() {
     let mut filter = None;
     let mut timeout = Duration::from_secs(60);
     let mut jobs = std::thread::available_parallelism().map_or(4, |count| count.get());
+    let mut workers = 1;
     while let Some(flag) = args.next() {
         let value = args.next().expect(USAGE);
         match flag.as_str() {
@@ -188,6 +205,10 @@ fn main() {
             "--filter" => filter = Some(value),
             "--timeout" => timeout = Duration::from_secs_f64(value.parse().expect(USAGE)),
             "--jobs" => jobs = value.parse().expect(USAGE),
+            "--workers" => {
+                workers = value.parse().expect(USAGE);
+                library_args.extend(["--workers".to_string(), value]);
+            }
             "--library" => {
                 // Absolute, since each child runs in its model's directory.
                 let value = std::fs::canonicalize(&value)
@@ -206,7 +227,7 @@ fn main() {
         }
     }
     if let Some((spec, config)) = one {
-        return check_one(spec, config, library);
+        return check_one(spec, config, library, workers);
     }
 
     let expected_path = expected_path.expect(USAGE);
@@ -237,7 +258,7 @@ fn main() {
                             (Verdict::Unjudged, Some(detail), run.encode())
                         }
                         Run::Done(reported) => {
-                            let (verdict, detail) = compare(expected, reported);
+                            let (verdict, detail) = compare(expected, reported, workers > 1);
                             (verdict, detail, run.encode())
                         }
                         Run::Timeout => (Verdict::Timeout, None, run.encode()),

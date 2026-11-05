@@ -12,6 +12,7 @@ mod level;
 mod liveness;
 pub mod plan;
 mod postcondition;
+mod purity;
 pub mod search;
 #[cfg(test)]
 mod testing;
@@ -154,12 +155,16 @@ pub struct Options {
     /// TLC's `-nowarning`, which also changes how many states a disjunction in an action
     /// generates once every variable has a value. TLC records its expected results with it.
     pub nowarning: bool,
+    /// TLC's `-workers`: how many threads expand states. With more than one, the search
+    /// expands each level of the state graph in parallel where the order can't show (see
+    /// [`search::parallel`]); with one, or where it can, it runs as TLC's `-workers 1` does.
+    pub workers: usize,
 }
 
 /// Checks `spec` under `config`, with `successors` computing the states of the evaluator it is
 /// given. TLC orders strings by when it reads them, so the caller sets that order
 /// ([`tla_eval::value::set_order`]) before it resolves the spec, which builds values.
-pub fn check<S: Successors>(
+pub fn check<S: Successors + Sync>(
     mut spec: Spec,
     config: &ModelConfig,
     options: &Options,
@@ -253,15 +258,40 @@ pub fn check<S: Successors>(
         };
     }
     let successors = successors(&evaluator);
-    let searched = search::search(
-        &successors,
-        &evaluator,
-        &plan,
-        &fingerprinter,
-        config.check_deadlock,
-        &tlc_order,
-        liveness,
-    );
+    // Several workers find the same states as one only for a model they search without
+    // liveness, postconditions, or effects; and only one worker reports a violation as TLC's
+    // first one, so they leave that to it.
+    let is_parallel = options.workers > 1
+        && liveness.is_none()
+        && plan.postconditions.is_empty()
+        && plan.possible.is_empty()
+        && plan.action_possible.is_empty()
+        && options.classes.is_empty()
+        && purity::is_pure(evaluator.spec(), &plan, &overrides);
+    let parallel = is_parallel
+        .then(|| {
+            search::parallel::search(
+                &successors,
+                &evaluator,
+                &plan,
+                &fingerprinter,
+                config.check_deadlock,
+                options.workers,
+            )
+        })
+        .flatten();
+    let searched = match parallel {
+        Some(searched) => searched,
+        None => search::search(
+            &successors,
+            &evaluator,
+            &plan,
+            &fingerprinter,
+            config.check_deadlock,
+            &tlc_order,
+            liveness,
+        ),
+    };
     match searched.ending {
         Ending::Success => postcondition::check(&evaluator, &plan).unwrap_or(Outcome {
             generated: Some(searched.generated),

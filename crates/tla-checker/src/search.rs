@@ -7,6 +7,7 @@
 //! a violation from the initial states by the fingerprints along it.
 
 mod live;
+pub mod parallel;
 mod store;
 
 use std::cell::RefCell;
