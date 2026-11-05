@@ -20,13 +20,14 @@
 //! states, the depth, and the length of the trace, where TLC's record has them. A model TLC
 //! stopped on with an error after its time limit has no verdict to compare with.
 
-use std::collections::{BTreeMap, HashMap};
+use std::collections::BTreeMap;
 use std::io::Read;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::sync::Mutex;
 use std::time::{Duration, Instant};
 
+use tla_checker::load::{self, Library};
 use tla_checker::{Options, Outcome};
 
 use compare::{Expected, Reported, Verdict, compare};
@@ -40,71 +41,25 @@ const USAGE: &str = "usage: conformance DIR --expected FILE [--library DIR]... [
 /// TLC's `-seed` in tla-ts's recordings.
 const TLC_SEED: i64 = 4;
 
-fn check(
-    spec_path: &Path,
-    config_path: &Path,
-    library: &HashMap<String, PathBuf>,
-    workers: usize,
-) -> Outcome {
-    let config = std::fs::read_to_string(config_path).unwrap_or_default();
-    // TLC reads the configuration first, which orders its strings and model values.
-    let config = match tla_parser::parse_config(&config) {
-        Ok(config) => config,
-        Err(error) => return Outcome::error(error.message),
+fn check(spec_path: &Path, config_path: &Path, library: &Library, workers: usize) -> Outcome {
+    let loaded = match load::load(spec_path, config_path, library) {
+        Ok(loaded) => loaded,
+        Err(error) => return Outcome::error(error.message()),
     };
-    let source = std::fs::read_to_string(spec_path).unwrap_or_default();
-    let directory = spec_path.parent().unwrap().to_path_buf();
-    let mut loader = |name: &str| {
-        std::fs::read_to_string(directory.join(format!("{name}.tla")))
-            .ok()
-            .or_else(|| library.get(name).and_then(|path| std::fs::read_to_string(path).ok()))
-    };
-    // TLC orders strings by when it interns them, which every sorted set and record built from
-    // here on depends on. The order is the process's, so each model runs in a process of its own.
-    if let Ok(order) = tla_resolve::tlc_string_order(&source, &config, &mut loader) {
-        tla_eval::value::set_order(order.iter().map(String::as_str));
-    }
-    let variable_order = tla_resolve::tlc_variable_order(&source, &mut loader).ok();
-    let spec = match tla_resolve::resolve(&source, &mut loader) {
-        Ok(spec) => spec,
-        Err(error) => return Outcome::error(error.to_string()),
-    };
-    // TLC requires the root module to be named after its file.
-    let stem = spec_path.file_stem().unwrap().to_string_lossy();
-    if spec.modules[0].name.as_str() != stem {
-        return Outcome::error(format!(
-            "File name '{stem}' does not match the name '{}' of the top level module it contains.",
-            spec.modules[0].name
-        ));
-    }
-    // TLC loads a class named after each module from beside the spec.
-    let classes = spec
-        .modules
-        .iter()
-        .filter_map(|module| {
-            let class = std::fs::read(directory.join(format!("{}.class", module.name))).ok()?;
-            Some((module.name.as_str().to_owned(), class))
-        })
-        .collect();
     // TLC records the expected results with -nowarning.
     let options = Options {
         seed: TLC_SEED,
-        classes,
-        variable_order,
+        classes: loaded.classes,
+        variable_order: loaded.variable_order,
         nowarning: true,
         workers,
         ..Options::default()
     };
-    tla_checker::check(spec, &config, &options, |evaluator| evaluator.clone())
+    tla_checker::check(loaded.spec, &loaded.config, &options, |evaluator| evaluator.clone())
 }
 
 /// Checks one model in this process, on a thread with a large stack.
-fn check_one(
-    spec_path: PathBuf,
-    config_path: PathBuf,
-    library: HashMap<String, PathBuf>,
-    workers: usize,
-) {
+fn check_one(spec_path: PathBuf, config_path: PathBuf, library: Library, workers: usize) {
     std::panic::set_hook(Box::new(|_| {}));
     let outcome = std::thread::Builder::new()
         .stack_size(1 << 30)
@@ -189,7 +144,7 @@ fn main() {
         _ => None,
     };
     let root = PathBuf::from(&first);
-    let mut library = HashMap::new();
+    let mut library_directories = Vec::new();
     let mut library_args = Vec::new();
     let mut expected_path = None;
     let mut outcomes_path = None;
@@ -213,21 +168,14 @@ fn main() {
                 // Absolute, since each child runs in its model's directory.
                 let value = std::fs::canonicalize(&value)
                     .map_or(value, |path| path.to_string_lossy().into_owned());
-                let mut files = Vec::new();
-                collect(Path::new(&value), &mut files);
-                for path in files {
-                    let name = path.file_stem().unwrap().to_string_lossy().into_owned();
-                    if !tla_resolve::is_standard_module(&name) {
-                        library.entry(name).or_insert(path);
-                    }
-                }
+                library_directories.push(PathBuf::from(&value));
                 library_args.extend(["--library".to_string(), value]);
             }
             _ => panic!("{USAGE}"),
         }
     }
     if let Some((spec, config)) = one {
-        return check_one(spec, config, library, workers);
+        return check_one(spec, config, Library::new(&library_directories), workers);
     }
 
     let expected_path = expected_path.expect(USAGE);
@@ -322,15 +270,5 @@ fn truncate(text: &str, length: usize) -> String {
     match text.char_indices().nth(length) {
         Some((index, _)) => format!("{}...", &text[..index]),
         None => text.to_owned(),
-    }
-}
-
-fn collect(path: &Path, files: &mut Vec<PathBuf>) {
-    if path.is_dir() {
-        for entry in std::fs::read_dir(path).into_iter().flatten().flatten() {
-            collect(&entry.path(), files);
-        }
-    } else if path.extension().is_some_and(|found| found == "tla") {
-        files.push(path.to_path_buf());
     }
 }

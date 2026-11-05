@@ -34,3 +34,12 @@ fn keeps_a_let_definition_that_reads_none_of_the_bindings_that_change() {
     );
     assert_eq!(value("\\A n \\in 1..3 : LET f[i \\in 1..n] == i IN DOMAIN f = 1..n"), "TRUE");
 }
+
+/// Outside an action, a definition that builds a set with `\cup` is kept as well.
+#[test]
+fn keeps_sets_a_let_builds_with_cup_in_an_expression() {
+    assert_eq!(
+        value("\\A x \\in 1..3 : LET y == {x} \\cup {0} IN y = {0, x} /\\ x \\in y"),
+        "TRUE"
+    );
+}

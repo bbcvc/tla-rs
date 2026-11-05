@@ -17,6 +17,8 @@ use tla_eval::{Evaluator, State, Statistics};
 use super::{Ending, Search, Successors};
 use crate::fingerprint::Fingerprinter;
 use crate::plan::{Check, Plan};
+use crate::progress::{Counts, Event, Progress, Ticker};
+use crate::report::OUT_DEGREE_BUCKETS;
 
 /// How many shards the set of fingerprints has, a power of two.
 const SHARDS: usize = 256;
@@ -72,14 +74,22 @@ struct Level<'a, S: Successors + Sync + ?Sized> {
 }
 
 /// What one worker found in a level.
-#[derive(Default)]
 struct Found {
     next: Vec<State>,
     generated: u64,
+    /// How many expanded states had each number of successors this worker found new.
+    out_degrees: Vec<u64>,
 }
 
-/// Searches with `workers` workers. `None` when the model has a violation, a deadlock, or an
-/// error, which the search with one worker reports.
+impl Default for Found {
+    fn default() -> Self {
+        Self { next: Vec::new(), generated: 0, out_degrees: vec![0; OUT_DEGREE_BUCKETS] }
+    }
+}
+
+/// Searches with `workers` workers. Gives up when the model has a violation, a deadlock, or
+/// an error, which the search with one worker reports, with whether it reported the initial
+/// states computed.
 pub fn search<S: Successors + Sync + ?Sized>(
     successors: &S,
     evaluator: &Evaluator,
@@ -87,7 +97,9 @@ pub fn search<S: Successors + Sync + ?Sized>(
     fingerprinter: &Fingerprinter,
     check_deadlock: bool,
     workers: usize,
-) -> Option<Search> {
+    progress: &Progress,
+) -> Result<Search, bool> {
+    progress.report(Event::InitialStatesStarted);
     let seen = Seen::new();
     let mut generated: u64 = 0;
     let mut initial: Vec<State> = Vec::new();
@@ -111,13 +123,19 @@ pub fn search<S: Successors + Sync + ?Sized>(
         Ok(true)
     });
     if result.is_err() || stopped {
-        return None;
+        return Err(false);
     }
     let mut distinct = initial.len() as u64;
+    progress.report(Event::InitialStatesComputed { generated, distinct });
     let mut depth: u64 = if generated == 0 { 0 } else { 1 };
+    let mut out_degrees = vec![0; OUT_DEGREE_BUCKETS];
     let Some(next) = plan.next else {
-        return initial.is_empty().then(|| success(evaluator, generated, distinct, depth));
+        return match initial.is_empty() {
+            true => Ok(success(evaluator, generated, distinct, depth, out_degrees)),
+            false => Err(true),
+        };
     };
+    let mut ticker = Ticker::new();
     let mut states = initial;
     while !states.is_empty() {
         let level = Level {
@@ -143,16 +161,26 @@ pub fn search<S: Successors + Sync + ?Sized>(
             handles.into_iter().map(|handle| handle.join().unwrap_or_default()).collect()
         });
         if level.stopped.load(Ordering::Relaxed) {
-            return None;
+            return Err(true);
         }
         generated += found.iter().map(|found| found.generated).sum::<u64>();
+        for found in &found {
+            for (total, count) in out_degrees.iter_mut().zip(&found.out_degrees) {
+                *total += count;
+            }
+        }
         states = found.into_iter().flat_map(|found| found.next).collect();
         distinct += states.len() as u64;
         if !states.is_empty() {
             depth += 1;
         }
+        // TLC reports every minute; the workers report between levels.
+        if progress.is_reported() && ticker.is_due() {
+            let queue = states.len() as u64;
+            progress.report(Event::Progress(Counts { generated, distinct, queue, depth }));
+        }
     }
-    Some(success(evaluator, generated, distinct, depth))
+    Ok(success(evaluator, generated, distinct, depth, out_degrees))
 }
 
 impl<S: Successors + Sync + ?Sized> Level<'_, S> {
@@ -190,6 +218,7 @@ impl<S: Successors + Sync + ?Sized> Level<'_, S> {
     ) -> tla_eval::Result<bool> {
         let (evaluator, plan) = (self.evaluator, self.plan);
         let mut count = 0u64;
+        let mut added = 0usize;
         let mut holds = true;
         self.successors.next_states(next, state, &mut |successor| {
             count += 1;
@@ -208,15 +237,23 @@ impl<S: Successors + Sync + ?Sized> Level<'_, S> {
             }
             if is_new {
                 found.next.push(successor);
+                added += 1;
             }
             Ok(!self.stopped.load(Ordering::Relaxed))
         })?;
         found.generated += count;
+        found.out_degrees[added.min(OUT_DEGREE_BUCKETS - 1)] += 1;
         Ok(holds && !(count == 0 && self.check_deadlock))
     }
 }
 
-fn success(evaluator: &Evaluator, generated: u64, distinct: u64, depth: u64) -> Search {
+fn success(
+    evaluator: &Evaluator,
+    generated: u64,
+    distinct: u64,
+    depth: u64,
+    out_degrees: Vec<u64>,
+) -> Search {
     evaluator.runtime().update_statistics(|statistics: &mut Statistics| {
         statistics.generated = generated as i64;
         statistics.distinct = distinct as i64;
@@ -227,9 +264,15 @@ fn success(evaluator: &Evaluator, generated: u64, distinct: u64, depth: u64) -> 
         ending: Ending::Success,
         trace_length: 0,
         trace: Vec::new(),
+        actions: Vec::new(),
+        loop_start: None,
+        loop_action: None,
+        violated: Vec::new(),
         generated,
         distinct,
         depth,
+        counts: Counts { generated, distinct, queue: 0, depth },
+        out_degrees,
     }
 }
 

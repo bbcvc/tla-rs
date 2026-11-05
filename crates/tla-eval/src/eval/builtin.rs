@@ -40,27 +40,50 @@ impl Evaluator {
             Builtin::Cdot => unsupported(
                 "The current version of TLC does not support action composition.  An incomplete implementation can be enabled via the tlc2.tool.impl.Tool.cdot=true java property.",
             ),
-            _ => {
-                let values = self.eval_all(args, env)?;
-                match (op, values.first()) {
-                    (Builtin::Domain, Some(value)) if !value.is_function() => {
-                        let message = format!(
-                            "Attempted to apply the operator DOMAIN to a non-function\n({})\n{}",
-                            describe(value),
-                            self.range(env, expr)
-                        );
-                        Err(self.error(env, expr, message))
-                    }
-                    (Builtin::SubsetEq, Some(value)) if !value.is_set() || is_overridden(value) => {
-                        let message = format!(
-                            "Attempted to evaluate an expression of form S \\subseteq T, but S was not enumerable.\n{}",
-                            self.range(env, expr)
-                        );
-                        Err(self.error(env, expr, message))
-                    }
-                    _ => self.apply_builtin(op, &values).at(self, env, expr),
+            // A built-in operator takes one or two arguments but in a few cases, which go on the
+            // stack.
+            _ => match args {
+                [arg] => {
+                    let values = [self.eval(arg, env)?];
+                    self.apply_evaluated(op, &values, expr, env)
                 }
+                [left, right] => {
+                    let values = [self.eval(left, env)?, self.eval(right, env)?];
+                    self.apply_evaluated(op, &values, expr, env)
+                }
+                _ => {
+                    let values = self.eval_all(args, env)?;
+                    self.apply_evaluated(op, &values, expr, env)
+                }
+            },
+        }
+    }
+
+    /// A built-in operator applied to the values of its arguments.
+    fn apply_evaluated(
+        &self,
+        op: Builtin,
+        values: &[Value],
+        expr: &Expr,
+        env: &Env<'_>,
+    ) -> Result<Value> {
+        match (op, values.first()) {
+            (Builtin::Domain, Some(value)) if !value.is_function() => {
+                let message = format!(
+                    "Attempted to apply the operator DOMAIN to a non-function\n({})\n{}",
+                    describe(value),
+                    self.range(env, expr)
+                );
+                Err(self.error(env, expr, message))
             }
+            (Builtin::SubsetEq, Some(value)) if !value.is_set() || is_overridden(value) => {
+                let message = format!(
+                    "Attempted to evaluate an expression of form S \\subseteq T, but S was not enumerable.\n{}",
+                    self.range(env, expr)
+                );
+                Err(self.error(env, expr, message))
+            }
+            _ => self.apply_builtin(op, values).at(self, env, expr),
         }
     }
 

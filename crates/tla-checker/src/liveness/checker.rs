@@ -15,6 +15,8 @@ use super::live::{AtomKind, Eval, Live};
 use super::tableau::{self, Solution};
 use crate::plan::Plan;
 
+mod violated;
+
 /// A successor of a state in the model, with its index in the search if it was stored.
 #[derive(Clone)]
 pub struct LiveSuccessor {
@@ -103,6 +105,8 @@ pub struct Checker<'e> {
     action_ids: usize,
     capacity: usize,
     cache: Cache,
+    /// The negation of each property, by its name, to tell which a counterexample violates.
+    negations: Vec<(String, Live)>,
 }
 
 fn key(state: &State) -> *const tla_eval::Value {
@@ -126,11 +130,12 @@ impl<'e> Checker<'e> {
         let mut translation = Translation::new(evaluator, overrides, &plan.enabled, plan.next);
         let fairness: Vec<Live> =
             plan.fairness.iter().map(|&def| translation.formula(def)).collect::<Result<_, _>>()?;
-        let mut negations: Vec<Live> = plan
+        let named: Vec<(String, Live)> = plan
             .properties
             .iter()
-            .map(|(_, def)| Ok(Live::not(translation.formula(*def)?)))
+            .map(|(name, def)| Ok((name.clone(), Live::not(translation.formula(*def)?))))
             .collect::<Result<_, String>>()?;
+        let mut negations: Vec<Live> = named.iter().map(|(_, negation)| negation.clone()).collect();
         let violation =
             if negations.len() == 1 { negations.pop().unwrap() } else { Live::or(negations) };
         let formula = if fairness.is_empty() {
@@ -167,6 +172,7 @@ impl<'e> Checker<'e> {
             action_ids: ids.len(),
             capacity: 1,
             cache: Cache { width, is_shared: !is_reduced, ..Cache::default() },
+            negations: named,
         }))
     }
 
