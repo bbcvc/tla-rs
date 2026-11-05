@@ -444,14 +444,14 @@ impl<S: Successors + ?Sized> Explorer<'_, S> {
         result.ok().and(found)
     }
 
-    /// The counts `update_statistics` last published.
+    /// The counts `update_statistics` last published, with the states queued to expand.
     fn counts(&self) -> Counts {
         let statistics = self.evaluator.runtime().statistics().unwrap_or_default();
         let count = |count: i64| count.max(0) as u64;
         Counts {
             generated: count(statistics.generated),
             distinct: count(statistics.distinct),
-            queue: count(statistics.queue),
+            queue: self.queue.len() as u64,
             depth: count(statistics.diameter),
         }
     }
