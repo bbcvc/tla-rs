@@ -5,7 +5,7 @@
 </p>
 
 <p align="center">
-  <img alt="License" src="https://img.shields.io/badge/license-MIT%20OR%20Apache--2.0-blue">
+  <a href="LICENSE"><img alt="License" src="https://img.shields.io/badge/license-MIT-blue"></a>
   <img alt="Rust" src="https://img.shields.io/badge/rust-1.85%2B-orange">
   <img alt="Conformance" src="https://img.shields.io/badge/TLC%20conformance-766%2F772%20match%2C%200%20mismatch-brightgreen">
 </p>
@@ -175,7 +175,7 @@ cargo run --release -p tla-checker --example conformance -- $C/.corpora \
 - [ ] 常驻工作线程与无锁指纹表
 - [ ] 支持磁盘存储状态队列和指纹表，以检查超出内存的状态空间
 - [ ] 模拟模式（`-simulate`）、搜索过程中的活性检查（`-lncheck`）、`-dump`、`-continue`
-- [ ] 预编译二进制、CI、LICENSE 文件，以及不与 `fabracht/tla-rs` 重名的 crate 名
+- [ ] 预编译二进制、CI，以及不与 `fabracht/tla-rs` 重名的 crate 名
 
 ## 文档
 
@@ -191,4 +191,4 @@ cargo run --release -p tla-checker --example conformance -- $C/.corpora \
 
 ## 许可证
 
-可任选 MIT 或 Apache-2.0 许可证。
+[MIT](LICENSE)

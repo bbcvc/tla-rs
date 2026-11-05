@@ -5,7 +5,7 @@
 </p>
 
 <p align="center">
-  <img alt="License" src="https://img.shields.io/badge/license-MIT%20OR%20Apache--2.0-blue">
+  <a href="LICENSE"><img alt="License" src="https://img.shields.io/badge/license-MIT-blue"></a>
   <img alt="Rust" src="https://img.shields.io/badge/rust-1.85%2B-orange">
   <img alt="Conformance" src="https://img.shields.io/badge/TLC%20conformance-766%2F772%20match%2C%200%20mismatch-brightgreen">
 </p>
@@ -168,7 +168,7 @@ The conformance runner checks each model in its own process and compares the res
 - [ ] Persistent worker threads and a lock-free fingerprint set
 - [ ] Disk-backed state queue and fingerprint set for state spaces larger than memory
 - [ ] Simulation mode (`-simulate`), `-lncheck` during the search, `-dump`, `-continue`
-- [ ] Prebuilt binaries, CI, LICENSE files, and a crate name that doesn't collide with `fabracht/tla-rs`
+- [ ] Prebuilt binaries, CI, and a crate name that doesn't collide with `fabracht/tla-rs`
 
 ## Documents
 
@@ -184,4 +184,4 @@ The conformance runner checks each model in its own process and compares the res
 
 ## License
 
-Licensed under either of MIT or Apache-2.0, at your option.
+[MIT](LICENSE)
