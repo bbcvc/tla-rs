@@ -13,14 +13,54 @@ use tla_resolve::{
 /// which could, is evaluated at each reference, as is one that builds a set with `UNION` or
 /// `\cup`, which TLC builds anew each time (tla-ts `getReevaluatedDefinitions`).
 pub(crate) fn cached_lets(spec: &Spec, is_computed_once: &[bool]) -> Vec<bool> {
-    let purity = Purity { spec, is_computed_once, allows_streamed_sets: false };
-    let mut is_pure: Vec<Option<bool>> = vec![None; spec.defs.len()];
+    // In an action TLC evaluates a `LET` definition at each reference, so one that builds a set
+    // with `UNION` or `\cup` builds it anew; in an expression it binds it to a `LazyValue`, as
+    // tla-ts keeps a thunk.
+    let in_action = Purity { spec, is_computed_once, allows_streamed_sets: false };
+    let in_expression = Purity { spec, is_computed_once, allows_streamed_sets: true };
+    let (mut pure_in_action, mut pure_in_expression) =
+        (vec![None; spec.defs.len()], vec![None; spec.defs.len()]);
+    let is_action = enclosing_actions(spec);
     (0..spec.defs.len())
         .map(|index| {
-            let def = spec.def(DefId(index as u32));
+            let id = DefId(index as u32);
+            let def = spec.def(id);
             def.depth > 0
                 && def.params.is_empty()
-                && purity.is_pure(DefId(index as u32), &mut is_pure)
+                && match is_action[index] {
+                    true => in_action.is_pure(id, &mut pure_in_action),
+                    false => in_expression.is_pure(id, &mut pure_in_expression),
+                }
+        })
+        .collect()
+}
+
+/// Whether each definition, by [`DefId`], sits in a module-level definition that is an action
+/// or a temporal formula, or in none that can be told: where a `LET` can be the `LET` of an
+/// action.
+fn enclosing_actions(spec: &Spec) -> Vec<bool> {
+    let is_action =
+        |index: usize| spec.levels.get(index).is_none_or(|levels| levels.level >= Level::Action);
+    let module_level: Vec<usize> =
+        (0..spec.defs.len()).filter(|&index| spec.defs[index].depth == 0).collect();
+    spec.defs
+        .iter()
+        .enumerate()
+        .map(|(index, def)| {
+            if def.depth == 0 {
+                return is_action(index);
+            }
+            // The span of a definition is its name's, and its body follows.
+            let enclosing = module_level.iter().find(|&&outer| {
+                let outer = &spec.defs[outer];
+                let end = match &outer.body {
+                    DefBody::Expr(body) | DefBody::Function { body, .. } => body.span.end,
+                };
+                outer.module == def.module
+                    && outer.span.start <= def.span.start
+                    && def.span.end <= end
+            });
+            enclosing.is_none_or(|&outer| is_action(outer))
         })
         .collect()
 }
