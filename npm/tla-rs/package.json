@@ -1,0 +1,28 @@
+{
+  "name": "tla-rs",
+  "version": "0.1.0",
+  "description": "A fast TLA+ model checker in Rust that gives the same answers as TLC, state for state",
+  "keywords": ["tla", "tlaplus", "tla+", "tlc", "model-checker", "formal-methods"],
+  "homepage": "https://github.com/bbcvc/tla-rs",
+  "bugs": "https://github.com/bbcvc/tla-rs/issues",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/bbcvc/tla-rs.git",
+    "directory": "npm/tla-rs"
+  },
+  "license": "MIT",
+  "bin": {
+    "tla-rs": "bin/tla-rs.js"
+  },
+  "files": ["bin"],
+  "engines": {
+    "node": ">=16"
+  },
+  "optionalDependencies": {
+    "tla-rs-darwin-arm64": "0.1.0",
+    "tla-rs-darwin-x64": "0.1.0",
+    "tla-rs-linux-arm64": "0.1.0",
+    "tla-rs-linux-x64": "0.1.0",
+    "tla-rs-win32-x64": "0.1.0"
+  }
+}

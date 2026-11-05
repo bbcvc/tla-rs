@@ -7,15 +7,19 @@ version = "0.1.0"
 edition = "2024"
 license = "MIT"
 rust-version = "1.85"
+repository = "https://github.com/bbcvc/tla-rs"
+homepage = "https://github.com/bbcvc/tla-rs"
+keywords = ["tla", "tlaplus", "model-checker", "tlc", "formal-methods"]
+categories = ["development-tools", "command-line-utilities"]
 
 [workspace.dependencies]
-tla-tools-intern = { path = "crates/tla-tools-intern" }
-tla-tools-ast = { path = "crates/tla-tools-ast" }
-tla-tools-parser = { path = "crates/tla-tools-parser" }
-tla-tools-resolve = { path = "crates/tla-tools-resolve" }
-tla-tools-value = { path = "crates/tla-tools-value" }
-tla-tools-eval = { path = "crates/tla-tools-eval" }
-tla-tools-checker = { path = "crates/tla-tools-checker" }
+tla-tools-intern = { version = "0.1.0", path = "crates/tla-tools-intern" }
+tla-tools-ast = { version = "0.1.0", path = "crates/tla-tools-ast" }
+tla-tools-parser = { version = "0.1.0", path = "crates/tla-tools-parser" }
+tla-tools-resolve = { version = "0.1.0", path = "crates/tla-tools-resolve" }
+tla-tools-value = { version = "0.1.0", path = "crates/tla-tools-value" }
+tla-tools-eval = { version = "0.1.0", path = "crates/tla-tools-eval" }
+tla-tools-checker = { version = "0.1.0", path = "crates/tla-tools-checker" }
 
 chrono = { version = "0.4.45", default-features = false, features = ["clock"] }
 clap = { version = "4.6", features = ["derive"] }

@@ -4,6 +4,11 @@ description = "Checks TLA+ models as TLC does: spec processing, breadth-first se
 version.workspace = true
 edition.workspace = true
 license.workspace = true
+rust-version.workspace = true
+repository.workspace = true
+homepage.workspace = true
+keywords.workspace = true
+categories.workspace = true
 
 [dependencies]
 foldhash.workspace = true

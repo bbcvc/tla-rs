@@ -4,6 +4,11 @@ description = "Checks a TLA+ spec and its model configuration as `java tlc2.TLC`
 version.workspace = true
 edition.workspace = true
 license.workspace = true
+rust-version.workspace = true
+repository.workspace = true
+homepage.workspace = true
+keywords.workspace = true
+categories.workspace = true
 
 [[bin]]
 name = "tla-rs"
