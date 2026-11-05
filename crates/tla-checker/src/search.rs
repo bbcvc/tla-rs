@@ -458,11 +458,13 @@ impl<S: Successors + ?Sized> Explorer<'_, S> {
     fn counts(&self) -> Counts {
         let statistics = self.evaluator.runtime().statistics().unwrap_or_default();
         let count = |count: i64| count.max(0) as u64;
+        // TLC reports a depth of 0 until it generates a state.
+        let depth = if self.generated == 0 { 0 } else { count(statistics.diameter) };
         Counts {
             generated: count(statistics.generated),
             distinct: count(statistics.distinct),
             queue: self.queue.len() as u64,
-            depth: count(statistics.diameter),
+            depth,
         }
     }
 
