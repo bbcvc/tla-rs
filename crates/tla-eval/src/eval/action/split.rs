@@ -286,7 +286,65 @@ impl Evaluator {
 
     /// TLC's `Action.getLocation`: the signature and the range of the action.
     pub(crate) fn label_action(&self, action: &NextAction) -> String {
-        format!("{} {}", action.signature(), self.range_of(action.module, action.span))
+        let source = &self.spec.modules[action.module.index()].source;
+        let span = without_trailing_layout(source, action.span);
+        format!("{} {}", action.signature(), self.range_of(action.module, span))
+    }
+}
+
+/// `span` up to its last token: the parser ends a bulleted list where the next line starts,
+/// after the whitespace and comments that follow it, and SANY ends it at its last token.
+fn without_trailing_layout(source: &str, span: Span) -> Span {
+    let Some(text) = source.get(span.start as usize..span.end as usize) else { return span };
+    let bytes = text.as_bytes();
+    let (mut index, mut end, mut depth) = (0, 0, 0usize);
+    while index < bytes.len() {
+        match (bytes[index], bytes.get(index + 1)) {
+            (b'(', Some(b'*')) => {
+                depth += 1;
+                index += 2;
+            }
+            (b'*', Some(b')')) if depth > 0 => {
+                depth -= 1;
+                index += 2;
+            }
+            _ if depth > 0 => index += 1,
+            (b'\\', Some(b'*')) => {
+                index = text[index..].find('\n').map_or(bytes.len(), |line| index + line);
+            }
+            (b'"', _) => {
+                index += 1;
+                while index < bytes.len() && bytes[index] != b'"' {
+                    index += if bytes[index] == b'\\' { 2 } else { 1 };
+                }
+                index += 1;
+                end = index.min(bytes.len());
+            }
+            (byte, _) if byte.is_ascii_whitespace() => index += 1,
+            _ => {
+                index += 1;
+                end = index;
+            }
+        }
+    }
+    match end {
+        0 => span,
+        end => Span::new(span.start as usize, span.start as usize + end),
+    }
+}
+
+#[cfg(test)]
+mod layout_tests {
+    use super::*;
+
+    #[test]
+    fn ends_a_span_at_its_last_token() {
+        let source = "/\\ x' = 1 \\* done\n  (* more *)\n\n";
+        let span = Span::new(0, source.len());
+        assert_eq!(without_trailing_layout(source, span), Span::new(0, 9));
+        let source = "x' = \"a \\\" (*\"  ";
+        let span = Span::new(0, source.len());
+        assert_eq!(without_trailing_layout(source, span).end as usize, source.len() - 2);
     }
 }
 
