@@ -85,7 +85,7 @@ Finished in 04s at (2026-11-05 14:35:30)
 两个渠道装出来的都是同一个 `tla-rs` 命令。正式发布前，请从源码编译（需要 Rust 1.85 或更高版本）：
 
 ```shell
-git clone <repo-url> tla-rs && cd tla-rs
+git clone https://github.com/bbcvc/tla-rs.git && cd tla-rs
 cargo build --release -p tla-tools
 # 可执行文件在 target/release/tla-rs
 ```

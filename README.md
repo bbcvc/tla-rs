@@ -85,7 +85,7 @@ Other Rust TLA+ checkers either target a subset of the language (`fabracht/tla-r
 Both install the same `tla-rs` command. Until the first release, build from source. This needs Rust 1.85 or newer:
 
 ```shell
-git clone <repo-url> tla-rs && cd tla-rs
+git clone https://github.com/bbcvc/tla-rs.git && cd tla-rs
 cargo build --release -p tla-tools
 # the binary is target/release/tla-rs
 ```
