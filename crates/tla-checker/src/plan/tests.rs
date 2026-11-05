@@ -55,7 +55,8 @@ fn sorts_the_parts_of_properties() {
     assert_eq!(names(&plan.action_properties), ["Up"]);
     assert_eq!(names(&plan.initial_predicates), ["Start"]);
     let properties: Vec<&str> = plan.properties.iter().map(|(name, _)| name.as_str()).collect();
-    assert_eq!(properties, ["Eventually"]);
+    // TLC names a temporal part by the property the configuration names.
+    assert_eq!(properties, ["All"]);
 }
 
 #[test]
