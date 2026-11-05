@@ -1,0 +1,22 @@
+[package]
+name = "tla-tools-checker"
+description = "Checks TLA+ models as TLC does: spec processing, breadth-first search, and conformance"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+foldhash.workspace = true
+hashbrown.workspace = true
+tla-tools-ast.workspace = true
+tla-tools-eval.workspace = true
+tla-tools-parser.workspace = true
+tla-tools-resolve.workspace = true
+tla-tools-value.workspace = true
+
+[dev-dependencies]
+serde_json.workspace = true
+
+[[example]]
+name = "conformance"
+test = true

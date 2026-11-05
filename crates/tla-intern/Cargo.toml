@@ -1,9 +1,0 @@
-[package]
-name = "tla-intern"
-description = "Process-wide string interner for TLA+ identifiers and strings"
-version.workspace = true
-edition.workspace = true
-license.workspace = true
-
-[dependencies]
-lasso.workspace = true

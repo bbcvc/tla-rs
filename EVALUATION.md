@@ -38,13 +38,13 @@ None of them targets full TLC conformance with an interpreter, so starting fresh
 
 **R1. Value ordering can't be derived.** TLC orders strings and model values by when it first interned their text: configuration values first, then TLC's startup strings, then each module's tokens in the order SANY parses them. It orders sets by size and then element by element, functions by domain size and then keys and values, and intervals by size and then lower bound. `CHOOSE` returns the first element in this order, so a derived `Ord` changes what `CHOOSE` returns and therefore the state count. `Value` gets a hand-written comparison ported from `compareValues` in `values.ts`. Comparing values of different kinds is an error in TLC, not an ordering.
 
-The string order is ported from `getTlcStringOrder` in `tlc/order.ts`. `tla_resolve::tlc_string_order` lists the texts TLC interns before it checks a spec, from the source text with a port of tla-ts's lexer. It agrees with tla-ts on all 920 models of the corpus. `set_order` publishes them once per spec as a table of sort keys indexed by intern number, which `Symbol::cmp` reads. Other symbols follow in this process's intern order, as strings TLC creates at runtime follow its startup strings. Comparing two strings costs one more table lookup: sorting 200,000 strings takes 9.2 ms instead of 7.6 ms, and 200,000 records 86 ms instead of 81 ms. The order is process-wide, so a process checks one spec at a time, and sets the order before it builds the spec's values.
+The string order is ported from `getTlcStringOrder` in `tlc/order.ts`. `tla_tools_resolve::tlc_string_order` lists the texts TLC interns before it checks a spec, from the source text with a port of tla-ts's lexer. It agrees with tla-ts on all 920 models of the corpus. `set_order` publishes them once per spec as a table of sort keys indexed by intern number, which `Symbol::cmp` reads. Other symbols follow in this process's intern order, as strings TLC creates at runtime follow its startup strings. Comparing two strings costs one more table lookup: sorting 200,000 strings takes 9.2 ms instead of 7.6 ms, and 200,000 records 86 ms instead of 81 ms. The order is process-wide, so a process checks one spec at a time, and sets the order before it builds the spec's values.
 
 **R2. Integers are 32-bit.** TLC's integers are Java `int`s (tla-ts: `MAXIMUM_INTEGER = 2147483647`), and overflow is an error. `Value` stores small integers with TLC's overflow checks and drops `num-bigint`. This is also a large speed win.
 
 **R3. Equality and hashing must be semantic.** `1..3 = {1, 2, 3}` is `TRUE`, and so is equality between any lazy set and its explicit form. A derived `PartialEq` and `Hash` over an enum that mixes lazy and explicit forms gets this wrong. Values stored in a state are normalized (lazy sets are enumerated, as TLC does when it fingerprints them), and comparisons between lazy and explicit forms go through a semantic equality. Fingerprints only need to agree with that equality. They don't need to reproduce TLC's FP64 bits.
 
-Normalization still shows in what TLC prints, so `tla-value` tracks it where it does:
+Normalization still shows in what TLC prints, so `tla-tools-value` tracks it where it does:
 
 - A record, or a function with string keys that `@@` builds, keeps the order the spec writes its fields in until TLC normalizes it, which TLC does to compare or fingerprint it. `ToString`, `Assert`, and error messages print that order. `Print` and `PrintT` normalize the value first and print the fields sorted. The written order is a permutation stored beside the sorted keys, so equality, ordering, and fingerprints never read it, and a record written in sorted order carries none.
 - A set enumeration TLC can't sort, such as `{1, "a"}`, stays as written until something needs its order. TLC sorts it to print it, so an error message that prints it fails with the comparison that sorting makes.
@@ -54,7 +54,7 @@ Normalization still shows in what TLC prints, so `tla-value` tracks it where it 
 
 `Evaluator::init_states` and `Evaluator::next_states` implement this, ported from tla-ts `successors.ts`. The walk carries the state being assigned as a vector of optional values, and expressions read it through a view in which an unassigned variable is undefined. What remains to walk after a conjunct is a continuation built on the stack, so `\/`, `\E`, and `x' \in S` assign a variable, run the continuation, and undo the assignment. The walk enters calls of definitions, arguments that are actions, and instances. Once every variable has a value, the conjuncts left are predicates, as in TLC, which decides how many states a later disjunction generates. `ENABLED` runs the same walk and stops at the first successor.
 
-Three more things decide the states generated. `x' \in S` takes the elements of `S` as TLC's `Enumerator` streams them: a lazy `UNION` or `\cup` yields the elements of each set it combines, duplicates included, until TLC caches the set. TLC caches a set as the receiver of `equals`, `compareTo`, `size`, and `fingerPrint`, so tla-value marks a lazy set cached by allocation at those points, and a set kept between evaluations, such as a constant definition's value, stays cached. An argument keeps its value while the state being assigned is unchanged, as tla-ts caches a thunk. A function of actions applied in an action, as `Actions[p]`, is walked at the argument. `Evaluator::next_actions` is TLC's split of the relation into named actions, which words an incomplete successor and labels a step.
+Three more things decide the states generated. `x' \in S` takes the elements of `S` as TLC's `Enumerator` streams them: a lazy `UNION` or `\cup` yields the elements of each set it combines, duplicates included, until TLC caches the set. TLC caches a set as the receiver of `equals`, `compareTo`, `size`, and `fingerPrint`, so tla-tools-value marks a lazy set cached by allocation at those points, and a set kept between evaluations, such as a constant definition's value, stays cached. An argument keeps its value while the state being assigned is unchanged, as tla-ts caches a thunk. A function of actions applied in an action, as `Actions[p]`, is walked at the argument. `Evaluator::next_actions` is TLC's split of the relation into named actions, which words an incomplete successor and labels a step.
 
 **R5. Liveness is part of done.** 66 recorded results are liveness or property violations, and successful runs of specs with `PROPERTY` need the checker too. Liveness becomes its own phase instead of an optional extra.
 
@@ -64,7 +64,7 @@ Three more things decide the states generated. `x' \in S` takes the elements of 
 
 **R8. Performance targets are stretch goals.** tla-ts measures 1.1–2.4× faster than TLC. A Rust interpreter with 32-bit integers and interned strings can plausibly beat tla-ts by several times on one thread, but 10–20× TLC is unproven. Measure it after conformance, not before.
 
-**R9. WebAssembly needs a C sysroot.** tree-sitter is written in C. A spike building `tla-parser` for `wasm32-unknown-unknown` fails in the grammar's build script: `src/tree_sitter/parser.h` includes `<stdlib.h>`, which the system clang has no headers for when it targets WebAssembly. The WebAssembly build needs wasi-sdk (or another sysroot) in CI, or a `wasm32-wasip1` target. Decide before the CLI work in step 6.
+**R9. WebAssembly needs a C sysroot.** tree-sitter is written in C. A spike building `tla-tools-parser` for `wasm32-unknown-unknown` fails in the grammar's build script: `src/tree_sitter/parser.h` includes `<stdlib.h>`, which the system clang has no headers for when it targets WebAssembly. The WebAssembly build needs wasi-sdk (or another sysroot) in CI, or a `wasm32-wasip1` target. Decide before the CLI work in step 6.
 
 ## Revised order of work
 
@@ -77,7 +77,7 @@ Three more things decide the states generated. `x' \in S` takes the elements of 
 
 ## Frontend results
 
-`crates/tla-parser/examples/parse_corpus.rs` parses every `.tla` and `.cfg` file in the 16 conformance corpora (2,052 modules and 1,108 configurations). 2,008 modules and 1,103 configurations parse, up from 1,996 modules before the AST kept labels and subexpression references and the parser read operator symbols ending them. Matched against `expected.json` by path, 8 of the failures are the root module or configuration of a recorded model, all models TLC also rejects.
+`crates/tla-tools-parser/examples/parse_corpus.rs` parses every `.tla` and `.cfg` file in the 16 conformance corpora (2,052 modules and 1,108 configurations). 2,008 modules and 1,103 configurations parse, up from 1,996 modules before the AST kept labels and subexpression references and the parser read operator symbols ending them. Matched against `expected.json` by path, 8 of the failures are the root module or configuration of a recorded model, all models TLC also rejects.
 
 tree-sitter-tlaplus 1.5.0 reads an operator symbol between `!`s, as in `COp2!lab!:!++!lab`, and at the end with arguments, as in `COp(1, 2)!(3)!++(4, 5)`, but not at the end without them, as in `OOp5(COp!@!++, 1, 2, 3, 4, 5)` or `BY DEF Cases!\oplus`. There it leaves the symbol in an `ERROR` node, or reads it as an infix operator of what follows. Neither a later release nor an upstream issue or pull request handles it. So when a parse fails, the parser replaces each operator symbol after a `!` that isn't followed by `(` or `!` with an identifier of the same length, and parses again. It keeps the new tree only if it has no errors and each identifier is the last part of a reference, and lowering reads each one back as its operator. Any other failure keeps the error of the first parse. TLC's `test206`, `test219`, and `test219a` and tlapm's `ModuleSemanticsTheorems` parse this way.
 
@@ -85,15 +85,15 @@ Three SANY behaviors the grammar doesn't share are handled during or before lowe
 
 ## Resolution results
 
-`tla-resolve` turns a root module and the modules it uses into a `Spec` whose expressions refer to state variables, constants, local slots, and definitions. TLC's standard modules are bundled as TLA+ source, as TLC bundles them, and the evaluator will replace their placeholder definitions the way TLC's Java overrides do. Each `INSTANCE` substitution becomes a definition in the instance's scope, and a parameterized instance adds a frame, so instantiated definitions are closures like `LET` definitions.
+`tla-tools-resolve` turns a root module and the modules it uses into a `Spec` whose expressions refer to state variables, constants, local slots, and definitions. TLC's standard modules are bundled as TLA+ source, as TLC bundles them, and the evaluator will replace their placeholder definitions the way TLC's Java overrides do. Each `INSTANCE` substitution becomes a definition in the instance's scope, and a parameterized instance adds a frame, so instantiated definitions are closures like `LET` definitions.
 
-`crates/tla-resolve/examples/resolve_corpus.rs` compares the result with tla-ts's records:
+`crates/tla-tools-resolve/examples/resolve_corpus.rs` compares the result with tla-ts's records:
 
 ```shell
 C=../tla-ts/packages/tla-ts/tests/conformance
 L="--library $C/.corpora/tlapm/library --library $C/.corpora/community/modules"
-cargo run --release -p tla-resolve --example resolve_corpus -- $C/.corpora --all $L --sany $C/sany.json
-cargo run --release -p tla-resolve --example resolve_corpus -- $C/.corpora $L --expected $C/expected.json
+cargo run --release -p tla-tools-resolve --example resolve_corpus -- $C/.corpora --all $L --sany $C/sany.json
+cargo run --release -p tla-tools-resolve --example resolve_corpus -- $C/.corpora $L --expected $C/expected.json
 ```
 
 The parser and resolver agree with SANY on 1,865 of the 1,873 modules SANY was recorded on. Every one of the 823 models TLC was recorded on that TLC checks resolves.
@@ -113,7 +113,7 @@ TLC also requires the root module to be named after its file. The resolver takes
 
 The AST keeps labels and subexpression references such as `Inv!2`, `Op(a)!lab(b)!<<`, `Op!@`, and `I!Op!:`, and resolution follows SANY's `Generator.selectorToNode` as tla-ts `subexpressions.ts` ports it. A reference resolves to a definition of its own, made beside the definition it selects from: at its depth, in the frames of its instance, and in the names of its module's elaboration. Its parameters are those of the definition, of the labels, and of the binders on the way to the selected part, and its body is the part, inside the `LET`s around it. The reference applies it to the arguments it gives, or passes it as an operator when it gives none, as in `OOp2(SOp1a!@, 2, 2)`. Labels are otherwise transparent, except that SANY's level checks don't see an action under a label as an operator application.
 
-With them, the parser and resolver agree with SANY on 1,860 modules, up from 1,852, and the models that fail to resolve although TLC checks them go from 7 to 2. `crates/tla-eval/examples/check_assumptions.rs` agrees with TLC on the assumptions of every model that uses them except `test206` and `test219`: `MCPaxos`, `MCVoting`, `test209`, and `test216` hold, and `EWD998ChanTrace` violates one as TLC reports. Its disagreements with TLC go from 8 to 3, those two and `NormalizationAssume`. Once the parser reads an operator symbol ending a reference (see Frontend results), `test206` and `test219` resolve and their assumptions hold, as TLC reports, which leaves 1,864 modules agreeing with SANY, no model TLC checks failing to resolve, and `NormalizationAssume` the one disagreement on assumptions.
+With them, the parser and resolver agree with SANY on 1,860 modules, up from 1,852, and the models that fail to resolve although TLC checks them go from 7 to 2. `crates/tla-tools-eval/examples/check_assumptions.rs` agrees with TLC on the assumptions of every model that uses them except `test206` and `test219`: `MCPaxos`, `MCVoting`, `test209`, and `test216` hold, and `EWD998ChanTrace` violates one as TLC reports. Its disagreements with TLC go from 8 to 3, those two and `NormalizationAssume`. Once the parser reads an operator symbol ending a reference (see Frontend results), `test206` and `test219` resolve and their assumptions hold, as TLC reports, which leaves 1,864 modules agreeing with SANY, no model TLC checks failing to resolve, and `NormalizationAssume` the one disagreement on assumptions.
 
 What resolution leaves out:
 
@@ -126,7 +126,7 @@ What resolution leaves out:
 
 ### Level checking
 
-A level pass after resolution (`crates/tla-resolve/src/levels/`) computes SANY's level of every definition, with the highest level each parameter allows, its weights, and whether it is Leibniz in each parameter, and stores them in `Spec::levels`. It reports the first level error SANY reports. It follows tla-ts `levels.ts` for the levels, `sany/levels.ts` for SANY's checks, and `substitution-levels.ts` for `INSTANCE` substitutions.
+A level pass after resolution (`crates/tla-tools-resolve/src/levels/`) computes SANY's level of every definition, with the highest level each parameter allows, its weights, and whether it is Leibniz in each parameter, and stores them in `Spec::levels`. It reports the first level error SANY reports. It follows tla-ts `levels.ts` for the levels, `sany/levels.ts` for SANY's checks, and `substitution-levels.ts` for `INSTANCE` substitutions.
 
 Before the pass, the parser and resolver agreed with SANY on 1,849 modules. With it they agree on 1,852: `test213`, `test215`, and `test217` now fail with the first message SANY reports for each. No module SANY accepts gets a level error, and the 7 models that fail although TLC checks them are the same 7.
 
@@ -143,7 +143,7 @@ What the pass leaves out:
 
 ## Evaluation results
 
-`tla-value` implements TLC's values. Equality and ordering cross representations (`1..3 = {1, 2, 3}`) and fail where TLC fails (`1 = "a"`). Sets and function domains are sorted in TLC's order, and sets TLC keeps symbolic, such as `SUBSET S`, `[S -> T]`, `Nat` and filters over them, stay lazy. Printing and fingerprints follow TLC. `tla-eval` evaluates the resolved program:
+`tla-tools-value` implements TLC's values. Equality and ordering cross representations (`1..3 = {1, 2, 3}`) and fail where TLC fails (`1 = "a"`). Sets and function domains are sorted in TLC's order, and sets TLC keeps symbolic, such as `SUBSET S`, `[S -> T]`, `Nat` and filters over them, stay lazy. Printing and fingerprints follow TLC. `tla-tools-eval` evaluates the resolved program:
 
 - Definition arguments are lazy, as in TLC, so `p'` primes the argument passed for `p`.
 - Recursive and `LET` functions are lazy. Applying one evaluates its body at the argument, without building the function at each step of the recursion.
@@ -155,11 +155,11 @@ What the pass leaves out:
 - A Java class named after a module beside the spec overrides the module's operators, as TLC loads it, where its methods return constants (`BoolValue.ValTrue`, `IntValue.gen(n)`, a new `StringValue`); one that computes its value is unsupported.
 - `Evaluator::with_community_modules` adds the community module IOUtils, as TLC has it when `CommunityModules-deps.jar` is on its class path. That covers `IOEnv`, `atoi`, the `IOExec` family, and plain text `Serialize` and `Deserialize`. Without the jar, TLC evaluates IOUtils' TLA+ placeholders. The commands only run once `Runtime::allow_exec` allows them. Java's object serialization (`IOSerialize`, `IODeserialize`) isn't ported and fails with an error.
 
-`crates/tla-eval/examples/check_assumptions.rs` checks every model's `ASSUME`s, as TLC does before it explores any state, and compares the outcome with TLC's recorded status. Each model runs in a child process with a timeout. `--outcomes FILE` writes every model's outcome, so two builds can be compared model by model.
+`crates/tla-tools-eval/examples/check_assumptions.rs` checks every model's `ASSUME`s, as TLC does before it explores any state, and compares the outcome with TLC's recorded status. Each model runs in a child process with a timeout. `--outcomes FILE` writes every model's outcome, so two builds can be compared model by model.
 
 ```shell
 C=../tla-ts/packages/tla-ts/tests/conformance
-cargo run --release -p tla-eval --example check_assumptions -- $C/.corpora \
+cargo run --release -p tla-tools-eval --example check_assumptions -- $C/.corpora \
   --library $C/.corpora/tlapm/library --library $C/.corpora/community/modules \
   --expected $C/expected.json --timeout 20
 ```
@@ -197,7 +197,7 @@ Still missing from evaluation:
 
 ## Model checking results
 
-`tla-checker` checks a model as TLC does with `-workers 1`. `check` takes a resolved spec, the model configuration, and a function that gives it the states (`Successors`). The evaluator implements `Successors` with its initial and next state generation. The tests implement it with small hand-written transition systems, so the search is tested apart from successor generation. `check` follows TLC's order:
+`tla-tools-checker` checks a model as TLC does with `-workers 1`. `check` takes a resolved spec, the model configuration, and a function that gives it the states (`Successors`). The evaluator implements `Successors` with its initial and next state generation. The tests implement it with small hand-written transition systems, so the search is tested apart from successor generation. `check` follows TLC's order:
 
 1. Bind the configuration.
 2. Process the spec.
@@ -231,7 +231,7 @@ The modules:
   The runtime's statistics are published as each state is found, so `TLCGet("distinct")` already counts a new state while its invariants are checked. `TLCGet("level")` is the depth of the state being checked. `TLCSet("exit", TRUE)` stops the search between expansions.
 - **`fingerprint`** tells states apart by the variables or by the `VIEW`. With a `SYMMETRY`, it closes the permutations under composition and takes the smallest fingerprint over the orbit.
 - **`liveness`** is TLC's liveness checking with `-lncheck final`, ported from tla-ts `liveness.ts`, `tableau.ts` and `liveness-checker.ts`:
-  - Spec processing makes each temporal part of the properties and of the spec a module-level definition, and adds a definition `ENABLED <<A>>_v` beside each fairness condition. When the checker is built, it translates them as tla-ts `toLiveExpression` does, with values at hand: it expands the definitions a formula applies in the frames of their calls, recursive ones included, decides `IF`s with constant conditions, unrolls quantifiers over constant sets, and takes each part below temporal level as one formula it evaluates in its frames. tla-eval's scope API (`scope.rs`: `module_frames`, `call_frames`, `bind`, `eval_in`) keeps those frames.
+  - Spec processing makes each temporal part of the properties and of the spec a module-level definition, and adds a definition `ENABLED <<A>>_v` beside each fairness condition. When the checker is built, it translates them as tla-ts `toLiveExpression` does, with values at hand: it expands the definitions a formula applies in the frames of their calls, recursive ones included, decides `IF`s with constant conditions, unrolls quantifiers over constant sets, and takes each part below temporal level as one formula it evaluates in its frames. tla-tools-eval's scope API (`scope.rs`: `module_frames`, `call_frames`, `bind`, `eval_in`) keeps those frames.
   - The negated properties, conjoined with the fairness, go to disjunctive normal form. Each disjunct is sorted into conditions on a cycle (`<>[]A`, `[]<>S`, `[]<>A`) and a temporal rest, whose tableau the behavior graph is the product with.
   - The search adds each new initial state, and each expanded state with its successors in the model, to the behavior graph of each solution, with the results of the solution's checks. The successors go in the order TLC's `SetOfStates` iterates them, by TLC's fingerprint of each state over its variables in TLC's order.
   - Once the search is done, a Tarjan search finds a strongly connected component that satisfies a model, and the lasso TLC prints through it, whose length TLC reports with the stuttering step at the end of a one-state cycle.
@@ -247,11 +247,11 @@ The modules:
   | cf1s_folklore | 143.1 s | one worker: it has temporal properties | | |
 - **`postcondition`** runs after a search that finds no violation. A postcondition TLC computed at startup is an error. A `_POSSIBLE` predicate that no state or step in the model witnessed is a violation, and so is a postcondition that is false or fails. TLC exits as for a violated assumption in both cases.
 
-`crates/tla-checker/examples/conformance/` checks every recorded model and compares it with TLC the way tla-ts's `compareOutcome` does: status, violation name, states generated, distinct states, depth, and trace length. Each model runs in a child process, because TLC's string order is the process's, on a thread with a 1 GB stack and under a timeout. `--filter` selects models and `--outcomes FILE` writes each model's outcome with the milliseconds its child process ran. The run ends with the time against TLC's recorded time on the models that match: the median ratio, how many are faster, and the slowest ratios.
+`crates/tla-tools-checker/examples/conformance/` checks every recorded model and compares it with TLC the way tla-ts's `compareOutcome` does: status, violation name, states generated, distinct states, depth, and trace length. Each model runs in a child process, because TLC's string order is the process's, on a thread with a 1 GB stack and under a timeout. `--filter` selects models and `--outcomes FILE` writes each model's outcome with the milliseconds its child process ran. The run ends with the time against TLC's recorded time on the models that match: the median ratio, how many are faster, and the slowest ratios.
 
 ```shell
 C=../tla-ts/packages/tla-ts/tests/conformance
-cargo run --release -p tla-checker --example conformance -- $C/.corpora \
+cargo run --release -p tla-tools-checker --example conformance -- $C/.corpora \
   --library $C/.corpora/tlapm/library --library $C/.corpora/community/modules \
   --expected $C/expected.json --timeout 60 --jobs 8
 ```
@@ -270,7 +270,7 @@ All 823 models run in 10 minutes on 8 jobs. 755 of the 772 models with a TLC ver
 - **Timeouts (17)** are all models TLC took more than 60 s on. With a 600 s timeout, 4 at a time, 18 of the 19 models TLC finishes in 60–290 s match TLC's counts; `TLCSailfish1` (TLC 77 s) still times out, in membership tests over tuples and records. `cf1s_folklore` (TLC 271 s) spends its time evaluating its fairness action, a part of its next-state relation, on every step of the behavior graph.
 - **Slower than TLC:** `MCTxnsMoveRange`, `MCMoveRange` and `S2C` take about twice TLC's time, mostly in the action walk, and so do some of the long models (`VR_STATE_TRANSFER`, `VR_APP_STATE`, `BufferAsWAL`, `S2CFencing`, `MCCheckpointCoordination`).
 
-All 70 models liveness checking decides match. TLC's liveness counterexamples depend on TLC's order of the variables, the reverse of the root module's SANY `Context` enumeration (`tla_resolve::tlc_variable_order`, which agrees with tla-ts on all 912 models both read): it decides TLC's fingerprint of a state, which orders a state's successors in the behavior graph.
+All 70 models liveness checking decides match. TLC's liveness counterexamples depend on TLC's order of the variables, the reverse of the root module's SANY `Context` enumeration (`tla_tools_resolve::tlc_variable_order`, which agrees with tla-ts on all 912 models both read): it decides TLC's fingerprint of a state, which orders a state's successors in the behavior graph.
 
 The first run found these; they are fixed:
 

@@ -77,11 +77,16 @@ Other Rust TLA+ checkers either target a subset of the language (`fabracht/tla-r
 
 ## Installation
 
-Build from source. This needs Rust 1.85 or newer.
+| Channel | Package | Status |
+| --- | --- | --- |
+| crates.io | [`tla-tools`](https://crates.io/crates/tla-tools) | planned: `cargo install tla-tools` |
+| npm | [`tla-rs`](https://www.npmjs.com/package/tla-rs) | planned: `npx tla-rs Spec.tla`, with prebuilt binaries |
+
+Both install the same `tla-rs` command. Until the first release, build from source. This needs Rust 1.85 or newer:
 
 ```shell
 git clone <repo-url> tla-rs && cd tla-rs
-cargo build --release -p tla-cli
+cargo build --release -p tla-tools
 # the binary is target/release/tla-rs
 ```
 
@@ -107,26 +112,26 @@ Exit codes follow TLC:
 | `75` | evaluation failed |
 | `150` | parse error |
 
-See [crates/tla-cli/README.md](crates/tla-cli/README.md) for every option and exit code.
+See [crates/tla-tools/README.md](crates/tla-tools/README.md) for every option and exit code.
 
 ## Architecture
 
 ```
-source ─► tla-parser ─► tla-resolve ─► tla-eval ─► tla-checker ─► tla-cli
-                                         ▲
-                                     tla-value
+source ─► tla-tools-parser ─► tla-tools-resolve ─► tla-tools-eval ─► tla-tools-checker ─► tla-tools
+                                                          ▲
+                                                   tla-tools-value
 ```
 
 | Crate | Role |
 | --- | --- |
-| `tla-intern` | Process-wide interner with TLC's string order |
-| `tla-ast` | Syntax tree for TLA+ modules |
-| `tla-parser` | TLA+ modules (via tree-sitter-tlaplus) and TLC configuration files |
-| `tla-resolve` | Name resolution, `INSTANCE`, level checking |
-| `tla-value` | Values with TLC's equality, ordering, printing and fingerprints |
-| `tla-eval` | Expressions, initial and next states, `ENABLED`, standard modules |
-| `tla-checker` | Spec processing, BFS (single and parallel), liveness, symmetry |
-| `tla-cli` | The `tla-rs` binary |
+| `tla-tools-intern` | Process-wide interner with TLC's string order |
+| `tla-tools-ast` | Syntax tree for TLA+ modules |
+| `tla-tools-parser` | TLA+ modules (via tree-sitter-tlaplus) and TLC configuration files |
+| `tla-tools-resolve` | Name resolution, `INSTANCE`, level checking |
+| `tla-tools-value` | Values with TLC's equality, ordering, printing and fingerprints |
+| `tla-tools-eval` | Expressions, initial and next states, `ENABLED`, standard modules |
+| `tla-tools-checker` | Spec processing, BFS (single and parallel), liveness, symmetry |
+| `tla-tools` | The `tla-rs` binary (the crate published to crates.io) |
 
 Matching TLC state for state takes more than a correct evaluator. tla-rs reproduces TLC's ordering of strings and values, which decides what `CHOOSE` returns. It also reproduces TLC's order of variables, the way TLC enumerates successors, its 32-bit integer overflow, and the order in which its liveness checker explores the behavior graph. [EVALUATION.md](EVALUATION.md) records each of these choices.
 
@@ -137,7 +142,7 @@ cargo test --workspace
 
 # the full conformance suite (needs the tla-ts repository next to this one)
 C=../tla-ts/packages/tla-ts/tests/conformance
-cargo run --release -p tla-checker --example conformance -- $C/.corpora \
+cargo run --release -p tla-tools-checker --example conformance -- $C/.corpora \
   --library $C/.corpora/tlapm/library --library $C/.corpora/community/modules \
   --expected $C/expected.json --timeout 60 --jobs 4 [--workers 4] [--filter NAME]
 ```
@@ -168,13 +173,13 @@ The conformance runner checks each model in its own process and compares the res
 - [ ] Persistent worker threads and a lock-free fingerprint set
 - [ ] Disk-backed state queue and fingerprint set for state spaces larger than memory
 - [ ] Simulation mode (`-simulate`), `-lncheck` during the search, `-dump`, `-continue`
-- [ ] Prebuilt binaries, CI, and a crate name that doesn't collide with `fabracht/tla-rs`
+- [ ] Publish `tla-tools` to crates.io and `tla-rs` to npm with prebuilt binaries, and set up CI
 
 ## Documents
 
 - [DESIGN.md](DESIGN.md): the original design
 - [EVALUATION.md](EVALUATION.md): the revisions needed to match TLC, and results for each phase
-- [crates/tla-cli/README.md](crates/tla-cli/README.md): command-line options, output, and remaining differences from TLC
+- [crates/tla-tools/README.md](crates/tla-tools/README.md): command-line options, output, and remaining differences from TLC
 
 ## Acknowledgements
 

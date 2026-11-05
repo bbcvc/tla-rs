@@ -1,0 +1,16 @@
+[package]
+name = "tla-tools"
+description = "Checks a TLA+ spec and its model configuration as `java tlc2.TLC` does"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[[bin]]
+name = "tla-rs"
+path = "src/main.rs"
+
+[dependencies]
+chrono.workspace = true
+clap.workspace = true
+tla-tools-checker.workspace = true
+tla-tools-eval.workspace = true

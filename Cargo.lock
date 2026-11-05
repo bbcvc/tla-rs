@@ -610,82 +610,82 @@ dependencies = [
 ]
 
 [[package]]
-name = "tla-ast"
+name = "tla-tools"
 version = "0.1.0"
 dependencies = [
- "tla-intern",
+ "chrono",
+ "clap",
+ "tla-tools-checker",
+ "tla-tools-eval",
 ]
 
 [[package]]
-name = "tla-checker"
+name = "tla-tools-ast"
+version = "0.1.0"
+dependencies = [
+ "tla-tools-intern",
+]
+
+[[package]]
+name = "tla-tools-checker"
 version = "0.1.0"
 dependencies = [
  "foldhash",
  "hashbrown 0.17.1",
  "serde_json",
- "tla-ast",
- "tla-eval",
- "tla-parser",
- "tla-resolve",
- "tla-value",
+ "tla-tools-ast",
+ "tla-tools-eval",
+ "tla-tools-parser",
+ "tla-tools-resolve",
+ "tla-tools-value",
 ]
 
 [[package]]
-name = "tla-cli"
-version = "0.1.0"
-dependencies = [
- "chrono",
- "clap",
- "tla-checker",
- "tla-eval",
-]
-
-[[package]]
-name = "tla-eval"
+name = "tla-tools-eval"
 version = "0.1.0"
 dependencies = [
  "serde_json",
  "stacker",
  "thiserror",
- "tla-ast",
- "tla-parser",
- "tla-resolve",
- "tla-value",
+ "tla-tools-ast",
+ "tla-tools-parser",
+ "tla-tools-resolve",
+ "tla-tools-value",
 ]
 
 [[package]]
-name = "tla-intern"
+name = "tla-tools-intern"
 version = "0.1.0"
 dependencies = [
  "lasso",
 ]
 
 [[package]]
-name = "tla-parser"
+name = "tla-tools-parser"
 version = "0.1.0"
 dependencies = [
  "thiserror",
- "tla-ast",
+ "tla-tools-ast",
  "tree-sitter",
  "tree-sitter-tlaplus",
 ]
 
 [[package]]
-name = "tla-resolve"
+name = "tla-tools-resolve"
 version = "0.1.0"
 dependencies = [
  "serde_json",
  "thiserror",
- "tla-ast",
- "tla-parser",
+ "tla-tools-ast",
+ "tla-tools-parser",
 ]
 
 [[package]]
-name = "tla-value"
+name = "tla-tools-value"
 version = "0.1.0"
 dependencies = [
  "thiserror",
- "tla-intern",
+ "tla-tools-intern",
 ]
 
 [[package]]

@@ -1,0 +1,10 @@
+[package]
+name = "tla-tools-value"
+description = "TLA+ values with TLC's equality, ordering, and printing"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+tla-tools-intern.workspace = true
+thiserror.workspace = true

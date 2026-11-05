@@ -1,0 +1,17 @@
+[package]
+name = "tla-tools-eval"
+description = "Evaluates resolved TLA+ specifications"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+stacker.workspace = true
+thiserror.workspace = true
+tla-tools-ast.workspace = true
+tla-tools-parser.workspace = true
+tla-tools-resolve.workspace = true
+tla-tools-value.workspace = true
+
+[dev-dependencies]
+serde_json.workspace = true

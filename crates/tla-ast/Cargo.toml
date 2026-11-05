@@ -1,9 +1,0 @@
-[package]
-name = "tla-ast"
-description = "Syntax tree for TLA+ modules"
-version.workspace = true
-edition.workspace = true
-license.workspace = true
-
-[dependencies]
-tla-intern.workspace = true

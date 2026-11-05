@@ -77,11 +77,16 @@ Finished in 04s at (2026-11-05 14:35:30)
 
 ## 安装
 
-从源码编译，需要 Rust 1.85 或更高版本。
+| 渠道 | 包名 | 状态 |
+| --- | --- | --- |
+| crates.io | [`tla-tools`](https://crates.io/crates/tla-tools) | 计划中：`cargo install tla-tools` |
+| npm | [`tla-rs`](https://www.npmjs.com/package/tla-rs) | 计划中：`npx tla-rs Spec.tla`，内含预编译二进制 |
+
+两个渠道装出来的都是同一个 `tla-rs` 命令。正式发布前，请从源码编译（需要 Rust 1.85 或更高版本）：
 
 ```shell
 git clone <repo-url> tla-rs && cd tla-rs
-cargo build --release -p tla-cli
+cargo build --release -p tla-tools
 # 可执行文件在 target/release/tla-rs
 ```
 
@@ -107,26 +112,26 @@ tla-rs Spec.tla -library path/to/CommunityModules
 | `75` | 求值出错 |
 | `150` | 解析错误 |
 
-完整的选项和退出码见 [crates/tla-cli/README.md](crates/tla-cli/README.md)。
+完整的选项和退出码见 [crates/tla-tools/README.md](crates/tla-tools/README.md)。
 
 ## 架构
 
 ```
-源码 ─► tla-parser ─► tla-resolve ─► tla-eval ─► tla-checker ─► tla-cli
-                                       ▲
-                                   tla-value
+源码 ─► tla-tools-parser ─► tla-tools-resolve ─► tla-tools-eval ─► tla-tools-checker ─► tla-tools
+                                                        ▲
+                                                 tla-tools-value
 ```
 
 | Crate | 作用 |
 | --- | --- |
-| `tla-intern` | 全进程共用的字符串驻留表，按 TLC 的字符串顺序排序 |
-| `tla-ast` | TLA+ 模块的语法树 |
-| `tla-parser` | 解析 TLA+ 模块（基于 tree-sitter-tlaplus）和 TLC 配置文件 |
-| `tla-resolve` | 名字解析、`INSTANCE`、级别检查 |
-| `tla-value` | 值的表示，相等、排序、打印和指纹规则都与 TLC 相同 |
-| `tla-eval` | 表达式求值、初始状态与后继状态、`ENABLED`、标准模块 |
-| `tla-checker` | 规约处理、广度优先搜索（单线程与并行）、活性检查、对称性 |
-| `tla-cli` | `tla-rs` 可执行文件 |
+| `tla-tools-intern` | 全进程共用的字符串驻留表，按 TLC 的字符串顺序排序 |
+| `tla-tools-ast` | TLA+ 模块的语法树 |
+| `tla-tools-parser` | 解析 TLA+ 模块（基于 tree-sitter-tlaplus）和 TLC 配置文件 |
+| `tla-tools-resolve` | 名字解析、`INSTANCE`、级别检查 |
+| `tla-tools-value` | 值的表示，相等、排序、打印和指纹规则都与 TLC 相同 |
+| `tla-tools-eval` | 表达式求值、初始状态与后继状态、`ENABLED`、标准模块 |
+| `tla-tools-checker` | 规约处理、广度优先搜索（单线程与并行）、活性检查、对称性 |
+| `tla-tools` | `tla-rs` 可执行文件（即发布到 crates.io 的包） |
 
 要做到状态数与 TLC 完全一致，光把求值写对还不够。tla-rs 还复现了 TLC 的这些行为：
 - 字符串和值的排序方式，它决定了 `CHOOSE` 返回哪个值；
@@ -144,7 +149,7 @@ cargo test --workspace
 
 # 完整的一致性测试（需要把 tla-ts 仓库放在本仓库旁边）
 C=../tla-ts/packages/tla-ts/tests/conformance
-cargo run --release -p tla-checker --example conformance -- $C/.corpora \
+cargo run --release -p tla-tools-checker --example conformance -- $C/.corpora \
   --library $C/.corpora/tlapm/library --library $C/.corpora/community/modules \
   --expected $C/expected.json --timeout 60 --jobs 4 [--workers 4] [--filter NAME]
 ```
@@ -175,13 +180,13 @@ cargo run --release -p tla-checker --example conformance -- $C/.corpora \
 - [ ] 常驻工作线程与无锁指纹表
 - [ ] 支持磁盘存储状态队列和指纹表，以检查超出内存的状态空间
 - [ ] 模拟模式（`-simulate`）、搜索过程中的活性检查（`-lncheck`）、`-dump`、`-continue`
-- [ ] 预编译二进制、CI，以及不与 `fabracht/tla-rs` 重名的 crate 名
+- [ ] 把 `tla-tools` 发布到 crates.io，把带预编译二进制的 `tla-rs` 发布到 npm，并搭建 CI
 
 ## 文档
 
 - [DESIGN.md](DESIGN.md)：最初的设计
 - [EVALUATION.md](EVALUATION.md)：为了与 TLC 一致所做的设计修订，以及各阶段的结果
-- [crates/tla-cli/README.md](crates/tla-cli/README.md)：命令行选项、输出格式，以及目前与 TLC 的差异
+- [crates/tla-tools/README.md](crates/tla-tools/README.md)：命令行选项、输出格式，以及目前与 TLC 的差异
 
 ## 致谢
 
