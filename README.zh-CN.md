@@ -174,10 +174,10 @@ cargo run --release -p tla-tools-checker --example conformance -- $C/.corpora \
 - [x] 结果确定的并行广度优先搜索
 - [x] 与 TLC 兼容的命令行
 - [x] 发布到 crates.io 和 npm（含预编译二进制），并搭建 CI
+- [x] 在 TLC 打印的位置显示 `Print`、`PrintT` 的输出
 
 **待办**
 
-- [ ] 显示 `Print`、`PrintT` 打印的内容
 - [ ] 反例轨迹支持 `ALIAS`
 - [ ] 与 SANY 完全一致的解析信息和警告；求值出错时输出 TLC 那样的嵌套表达式调用栈
 - [ ] 降低每次调用的求值开销：约有十个大模型（VR_*、S2C、MoveRange 等）仍比 TLC 慢 2 倍左右

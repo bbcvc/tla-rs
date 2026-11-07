@@ -1,6 +1,6 @@
 //! What the model checker reports as it runs, for a front end that prints TLC's messages as TLC
 //! prints them: when it computes the initial states, how far the search got, and when it starts
-//! checking the temporal properties.
+//! checking the temporal properties, and what the spec prints.
 
 use std::fmt;
 use std::sync::Arc;
@@ -33,6 +33,8 @@ pub enum Event {
     /// The search is done and the liveness checker starts checking the temporal properties on
     /// the behavior graph of each branch, with this many states.
     LivenessStarted { counts: Counts, branches: usize, states: u64 },
+    /// The spec printed this line with `Print` or `PrintT`.
+    Printed(String),
 }
 
 type Reporter = dyn Fn(&Event) + Send + Sync;
@@ -61,6 +63,13 @@ impl Progress {
             Event::InitialStatesComputed { .. } if computed => {}
             event => report(event),
         })
+    }
+
+    /// Reports each line the spec prints with `Print` or `PrintT` as [`Event::Printed`].
+    pub(crate) fn report_printed(&self, runtime: &tla_tools_eval::Runtime) {
+        if let Some(report) = self.0.clone() {
+            runtime.set_printer(move |line| report(&Event::Printed(line)));
+        }
     }
 
     pub(crate) fn is_reported(&self) -> bool {

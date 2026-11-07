@@ -11,6 +11,8 @@ pub mod parallel;
 mod store;
 mod trace;
 
+pub use trace::Steps;
+
 use std::cell::RefCell;
 use std::collections::VecDeque;
 use std::sync::{Arc, Mutex};
@@ -93,11 +95,14 @@ pub struct Search {
     pub trace_length: usize,
     /// That behavior, rebuilt from the initial states, as far as it could be.
     pub trace: Vec<State>,
-    /// The action of each step of the trace, `None` for the initial state.
-    pub actions: Vec<Option<String>>,
-    /// For a lasso, the index of the state the trace loops back to, and the action of that step.
+    /// The action of each step of the trace and of the step back for a lasso, and what the spec
+    /// printed as TLC computed them again.
+    pub steps: Steps,
+    /// For a lasso, the index of the state the trace loops back to.
     pub loop_start: Option<usize>,
-    pub loop_action: Option<String>,
+    /// How many states of the trace TLC computes again before it prints the behavior, which
+    /// puts what the spec prints computing them before the behavior's heading.
+    pub printed_before: usize,
     /// The names of the temporal properties a liveness counterexample violates.
     pub violated: Vec<String>,
     pub generated: u64,
@@ -237,16 +242,28 @@ pub fn search<S: Successors + ?Sized>(
         out_degrees: vec![0; OUT_DEGREE_BUCKETS],
     };
     let (ending, trail) = explorer.run();
-    let trace_length = match &trail {
-        Some(Trail::Search { stored, last }) => {
-            let stored = stored.map_or(0, |index| explorer.store.lock().unwrap().depth(index));
-            stored as usize + usize::from(last.is_some())
+    // The states stored on the way to the violation, the last of them the one it was found from.
+    let stored = match &trail {
+        Some(Trail::Search { stored: Some(index), .. }) => {
+            explorer.store.lock().unwrap().depth(*index) as usize
         }
+        _ => 0,
+    };
+    let trace_length = match &trail {
+        Some(Trail::Search { last, .. }) => stored + usize::from(last.is_some()),
         // TLC numbers the stuttering step at the end of a lasso like a state.
         Some(Trail::Live { states, cycle_start }) => {
             states.len() + usize::from(states.len().checked_sub(*cycle_start) == Some(1))
         }
         None => 0,
+    };
+    // TLC's `printTrace` computes again the stored states before the last one, and then prints
+    // the behavior, computing the last stored state and the violating successor again as it
+    // prints them. It computes the initial state only when another stored state follows it.
+    // It computes a liveness counterexample again as it prints it.
+    let (computes_initial, printed_before) = match &trail {
+        Some(Trail::Search { .. }) => (stored >= 2, stored.saturating_sub(1)),
+        _ => (true, 0),
     };
     let loop_start = match &trail {
         Some(Trail::Live { states, cycle_start }) => {
@@ -254,8 +271,11 @@ pub fn search<S: Successors + ?Sized>(
         }
         _ => None,
     };
-    let trace = trail.map(|trail| explorer.behavior(trail)).unwrap_or_default();
-    let (actions, loop_action) = explorer.actions(&trace, loop_start);
+    // What the spec prints finding the behavior again isn't what TLC prints.
+    let runtime = explorer.evaluator.runtime();
+    let trace = runtime.capture(|| trail.map(|trail| explorer.behavior(trail))).0;
+    let trace = trace.unwrap_or_default();
+    let steps = explorer.steps(&trace, loop_start, computes_initial);
     let violated = match (&ending, &explorer.liveness) {
         (Ending::LivenessViolation | Ending::TemporalViolation, Some(liveness)) => {
             let cycle_start = loop_start.unwrap_or(trace.len().saturating_sub(1));
@@ -268,9 +288,9 @@ pub fn search<S: Successors + ?Sized>(
         ending,
         trace_length,
         trace,
-        actions,
+        steps,
         loop_start,
-        loop_action,
+        printed_before,
         violated,
         generated: explorer.generated,
         distinct,

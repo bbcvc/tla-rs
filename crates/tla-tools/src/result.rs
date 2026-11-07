@@ -3,7 +3,7 @@
 
 use std::time::Instant;
 
-use tla_tools_checker::report::{Step, Trace};
+use tla_tools_checker::report::Trace;
 use tla_tools_checker::{Outcome, Status};
 
 use crate::printer::{self, Level, Printer};
@@ -46,11 +46,21 @@ fn temporal_headline(names: &[String]) -> String {
     }
 }
 
-fn print_trace(printer: &mut Printer, steps: &[Step], heading: &str) {
+/// Prints the behavior, with what the spec printed as TLC computed its states again: those it
+/// computes before it prints the heading, then each other one right before its state.
+fn print_trace(printer: &mut Printer, trace: &Trace, heading: &str) {
+    let steps = &trace.steps;
+    let before = trace.printed_before.min(steps.len());
+    for step in &steps[..before] {
+        print_lines(printer, &step.printed);
+    }
     if !steps.is_empty() {
         printer.print(Level::Error, heading);
     }
     for (index, step) in steps.iter().enumerate() {
+        if index >= before {
+            print_lines(printer, &step.printed);
+        }
         let action = match (&step.action, index) {
             (Some(action), _) => action.as_str(),
             (None, 0) => "Initial predicate",
@@ -58,6 +68,12 @@ fn print_trace(printer: &mut Printer, steps: &[Step], heading: &str) {
         };
         let state = format_state(&step.variables);
         printer.print(Level::State, &format!("{}: <{action}>\n{state}", index + 1));
+    }
+}
+
+fn print_lines(printer: &mut Printer, lines: &[String]) {
+    for line in lines {
+        printer.print(Level::None, line);
     }
 }
 
@@ -109,11 +125,12 @@ fn print_violation(printer: &mut Printer, outcome: &Outcome) -> bool {
     let is_property = outcome.status == Status::PropertyViolation;
     let is_lasso = loop_start.is_some() && !is_property;
     let heading = if is_property || is_lasso { COUNTER_EXAMPLE } else { BEHAVIOR };
-    print_trace(printer, &trace.steps, heading);
+    print_trace(printer, trace, heading);
     if let (Some(start), true) = (loop_start, is_lasso) {
         if start + 1 == trace.steps.len() {
             printer.print(Level::State, &format!("{}: Stuttering", start + 2));
         } else {
+            print_lines(printer, &trace.loop_printed);
             let action = trace.loop_action.as_ref().map(|action| format!(": <{action}>\n"));
             println!("Back to state {}{}", start + 1, action.unwrap_or_default());
         }
@@ -152,7 +169,7 @@ pub fn print_outcome(printer: &mut Printer, outcome: &Outcome, liveness: &mut Li
             };
             printer.print(Level::Error, &text);
             if let Some(trace) = &report.trace {
-                print_trace(printer, &trace.steps, BEHAVIOR);
+                print_trace(printer, trace, BEHAVIOR);
             }
             if report.counts.is_none() {
                 return;

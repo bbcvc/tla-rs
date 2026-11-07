@@ -107,4 +107,5 @@ golden! {
     action_property_violation: "ActionProperty",
     initial_state_violation: "InitialState",
     spec_without_variables: "Constants",
+    print_and_print_t: "Print",
 }

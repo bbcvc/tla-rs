@@ -13,6 +13,8 @@ pub struct Step {
     pub action: Option<String>,
     /// The variables and their values, in TLC's order of the variables.
     pub variables: Vec<(String, Value)>,
+    /// What the spec printed with `Print` and `PrintT` as TLC computed the state again.
+    pub printed: Vec<String>,
 }
 
 /// The behavior that leads to a violation.
@@ -24,6 +26,12 @@ pub struct Trace {
     pub loop_start: Option<usize>,
     /// The action of the step from the last state back to the one at `loop_start`.
     pub loop_action: Option<String>,
+    /// What the spec printed as TLC computed the step back to the one at `loop_start` again.
+    pub loop_printed: Vec<String>,
+    /// How many steps TLC computes again before it prints the behavior's heading, which prints
+    /// what the spec printed computing them before the heading. TLC prints what the spec
+    /// printed computing each other step right before the step.
+    pub printed_before: usize,
 }
 
 /// An assumption that doesn't hold.

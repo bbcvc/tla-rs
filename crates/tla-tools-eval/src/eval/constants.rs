@@ -24,6 +24,7 @@ pub(crate) fn constant_definitions(spec: &Spec) -> Vec<bool> {
             let id = DefId(index as u32);
             let def = spec.def(id);
             def.depth == 0
+                && !def.is_part
                 && def.params.is_empty()
                 && spec.level(id) == Level::Constant
                 && !analysis.uses_state_level(id)

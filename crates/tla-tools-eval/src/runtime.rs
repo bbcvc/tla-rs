@@ -18,8 +18,13 @@ use crate::State;
 use crate::stdlib::tlc::{JavaRandom, tlc_fingerprint};
 
 pub struct Runtime {
-    /// Lines printed by `Print` and `PrintT`, in order.
+    /// Lines printed by `Print` and `PrintT`, in order, unless [`Runtime::set_printer`] gave
+    /// them somewhere to go.
     pub output: Mutex<Vec<String>>,
+    /// Where lines printed by `Print` and `PrintT` go as they are printed.
+    printer: RwLock<Option<Printer>>,
+    /// The lines printed while [`Runtime::capture`] runs, which go nowhere else.
+    captured: Mutex<Option<Vec<String>>>,
     /// The registers of `TLCSet` and `TLCGet`.
     pub registers: Mutex<Registers>,
     /// Whether `TLCSet("exit", TRUE)` asked the model checker to stop.
@@ -106,6 +111,9 @@ pub struct Statistics {
     pub diameter: i64,
 }
 
+/// Takes each line `Print` and `PrintT` print.
+pub type Printer = Box<dyn Fn(String) + Send + Sync>;
+
 type Hook<T> = Box<dyn Fn(&State) -> T + Send + Sync>;
 
 #[derive(Default)]
@@ -146,6 +154,8 @@ impl Default for Runtime {
     fn default() -> Self {
         Self {
             output: Mutex::default(),
+            printer: RwLock::default(),
+            captured: Mutex::default(),
             registers: Mutex::default(),
             is_stopped: AtomicBool::new(false),
             allows_exec: AtomicBool::new(false),
@@ -204,8 +214,33 @@ impl Runtime {
         values.entry(key).or_default().push((closure, value));
     }
 
+    /// Prints a line of `Print` or `PrintT`: hands it to the printer, or keeps it in
+    /// [`Runtime::output`] without one.
     pub fn print(&self, line: String) {
-        self.output.lock().unwrap().push(line);
+        if let Some(captured) = &mut *self.captured.lock().unwrap() {
+            captured.push(line);
+            return;
+        }
+        match &*self.printer.read().unwrap() {
+            Some(printer) => printer(line),
+            None => self.output.lock().unwrap().push(line),
+        }
+    }
+
+    /// Sends the lines `Print` and `PrintT` print to `printer` as they are printed, as TLC
+    /// prints them to standard output, instead of keeping them in [`Runtime::output`].
+    pub fn set_printer(&self, printer: impl Fn(String) + Send + Sync + 'static) {
+        *self.printer.write().unwrap() = Some(Box::new(printer));
+    }
+
+    /// Runs `run` and returns the lines `Print` and `PrintT` print meanwhile, instead of
+    /// printing them, as the model checker does to print them where TLC does.
+    pub fn capture<T>(&self, run: impl FnOnce() -> T) -> (T, Vec<String>) {
+        let outer = self.captured.lock().unwrap().replace(Vec::new());
+        let result = run();
+        let mut captured = self.captured.lock().unwrap();
+        let lines = std::mem::replace(&mut *captured, outer).unwrap_or_default();
+        (result, lines)
     }
 
     /// Lets IOUtils' `IOExec`, `IOEnvExec`, `IOExecTemplate`, and `IOEnvExecTemplate` run the
@@ -452,6 +487,26 @@ mod tests {
         assert!(
             CheckerOptions::for_config(&tla_tools_parser::ModelConfig::default()).check_deadlock
         );
+    }
+
+    #[test]
+    fn prints_to_the_printer_or_keeps_the_lines() {
+        let runtime = Runtime::default();
+        runtime.print("kept".into());
+        assert_eq!(*runtime.output.lock().unwrap(), ["kept"]);
+        let printed = Arc::new(std::sync::Mutex::new(Vec::new()));
+        let sink = printed.clone();
+        runtime.set_printer(move |line| sink.lock().unwrap().push(line));
+        runtime.print("printed".into());
+        let ((), captured) = runtime.capture(|| {
+            runtime.print("outer".into());
+            let ((), inner) = runtime.capture(|| runtime.print("inner".into()));
+            assert_eq!(inner, ["inner"]);
+        });
+        assert_eq!(captured, ["outer"]);
+        runtime.print("after".into());
+        assert_eq!(*printed.lock().unwrap(), ["printed", "after"]);
+        assert_eq!(*runtime.output.lock().unwrap(), ["kept"]);
     }
 
     #[test]

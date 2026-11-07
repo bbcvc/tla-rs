@@ -176,6 +176,9 @@ pub struct Def {
     /// Whether the definition elaborates a module under the substitutions of an `INSTANCE`,
     /// where TLC evaluates applications in the context of the instance.
     pub is_instantiated: bool,
+    /// Whether the model checker made the definition from part of a formula, so that it isn't
+    /// one of the spec's definitions TLC computes when it starts.
+    pub is_part: bool,
 }
 
 #[derive(Clone, Debug)]

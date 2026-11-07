@@ -167,10 +167,10 @@ The conformance runner checks each model in its own process and compares the res
 - [x] Parallel breadth-first search with deterministic counts
 - [x] TLC-compatible command line
 - [x] Releases on crates.io and npm with prebuilt binaries, and CI
+- [x] Show the output of `Print` and `PrintT`, where TLC prints it
 
 **Next**
 
-- [ ] Show the output of `Print` and `PrintT`
 - [ ] Support `ALIAS` in counterexample traces
 - [ ] Print SANY's parse messages and warnings exactly, and TLC's stack of nested expressions in evaluation errors
 - [ ] Cut per-call evaluation overhead; about ten large models (VR_*, S2C, MoveRange) are still around 2× slower than TLC

@@ -95,6 +95,7 @@ fn print_event(printer: &mut Printer, liveness: &mut Liveness, event: &Event) {
             );
             printer.print(Level::None, &text);
         }
+        Event::Printed(line) => printer.print(Level::None, line),
     }
 }
 

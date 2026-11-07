@@ -148,6 +148,7 @@ impl Planner<'_> {
             frame_size: owner.frame_size,
             depth: owner.depth,
             is_instantiated: owner.is_instantiated,
+            is_part: true,
         };
         self.spec.defs.push(def);
         self.spec.levels.push(DefLevels {

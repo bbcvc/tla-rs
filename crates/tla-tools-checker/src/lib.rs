@@ -223,6 +223,7 @@ pub fn check<S: Successors + Sync>(
         evaluator = evaluator.with_community_modules();
     }
     let runtime = evaluator.runtime();
+    options.progress.report_printed(runtime);
     runtime.allow_exec(options.allow_exec);
     runtime.set_warnings(!options.nowarning);
     runtime.set_seed(options.seed);
@@ -353,19 +354,23 @@ fn report(evaluator: &Evaluator, tlc_order: &[usize], searched: &search::Search)
     let steps = searched
         .trace
         .iter()
-        .zip(&searched.actions)
-        .map(|(state, action)| report::Step {
+        .zip(&searched.steps.actions)
+        .zip(&searched.steps.printed)
+        .map(|((state, action), printed)| report::Step {
             action: action.clone(),
             variables: tlc_order
                 .iter()
                 .map(|&index| (spec.variables[index].name.to_string(), state[index].clone()))
                 .collect(),
+            printed: printed.clone(),
         })
         .collect();
     let trace = (!searched.trace.is_empty()).then(|| report::Trace {
         steps,
         loop_start: searched.loop_start,
-        loop_action: searched.loop_action.clone(),
+        loop_action: searched.steps.loop_action.clone(),
+        loop_printed: searched.steps.loop_printed.clone(),
+        printed_before: searched.printed_before,
     });
     let is_complete = searched.ending == Ending::Success;
     Report {

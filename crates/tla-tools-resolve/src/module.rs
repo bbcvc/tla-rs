@@ -660,6 +660,7 @@ impl Resolver<'_> {
             frame_size: 0,
             depth,
             is_instantiated: self.is_instantiating,
+            is_part: false,
         });
         self.layout.defs.push(DefLayout {
             qualifier: self.qualifier.clone(),
