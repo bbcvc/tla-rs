@@ -3,7 +3,7 @@ resolver = "3"
 members = ["crates/*"]
 
 [workspace.package]
-version = "0.1.0"
+version = "0.2.0"
 edition = "2024"
 license = "MIT"
 rust-version = "1.85"
@@ -13,13 +13,13 @@ keywords = ["tla", "tlaplus", "model-checker", "tlc", "formal-methods"]
 categories = ["development-tools", "command-line-utilities"]
 
 [workspace.dependencies]
-tla-tools-intern = { version = "0.1.0", path = "crates/tla-tools-intern" }
-tla-tools-ast = { version = "0.1.0", path = "crates/tla-tools-ast" }
-tla-tools-parser = { version = "0.1.0", path = "crates/tla-tools-parser" }
-tla-tools-resolve = { version = "0.1.0", path = "crates/tla-tools-resolve" }
-tla-tools-value = { version = "0.1.0", path = "crates/tla-tools-value" }
-tla-tools-eval = { version = "0.1.0", path = "crates/tla-tools-eval" }
-tla-tools-checker = { version = "0.1.0", path = "crates/tla-tools-checker" }
+tla-tools-intern = { version = "0.2.0", path = "crates/tla-tools-intern" }
+tla-tools-ast = { version = "0.2.0", path = "crates/tla-tools-ast" }
+tla-tools-parser = { version = "0.2.0", path = "crates/tla-tools-parser" }
+tla-tools-resolve = { version = "0.2.0", path = "crates/tla-tools-resolve" }
+tla-tools-value = { version = "0.2.0", path = "crates/tla-tools-value" }
+tla-tools-eval = { version = "0.2.0", path = "crates/tla-tools-eval" }
+tla-tools-checker = { version = "0.2.0", path = "crates/tla-tools-checker" }
 
 chrono = { version = "0.4.45", default-features = false, features = ["clock"] }
 clap = { version = "4.6", features = ["derive"] }
