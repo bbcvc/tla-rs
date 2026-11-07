@@ -93,6 +93,21 @@ impl Evaluator {
     }
 
     pub(crate) fn eval(&self, expr: &Expr, env: &mut Env<'_>) -> Result<Value> {
+        self.eval_node(expr, env).map_err(|error| self.called(error, env.module, expr))
+    }
+
+    /// Adds `expr` of `module` to the call stack of an error that passes through it, when the
+    /// runtime records call stacks.
+    #[cold]
+    #[inline(never)]
+    pub(crate) fn called(&self, mut error: EvalError, module: ModuleId, expr: &Expr) -> EvalError {
+        if self.runtime.records_call_stack() {
+            error.call_stack.push(crate::CallSite { module, span: expr.span });
+        }
+        error
+    }
+
+    fn eval_node(&self, expr: &Expr, env: &mut Env<'_>) -> Result<Value> {
         match &expr.kind {
             ExprKind::Bool(value) => Ok(Value::Bool(*value)),
             ExprKind::Int(value) => self.int(*value, expr, env),
@@ -345,17 +360,16 @@ impl Evaluator {
         env: &mut Env<'_>,
     ) -> Result<Value> {
         for (index, item) in items.iter().enumerate() {
-            match self.eval(item, env)? {
+            let value = match self.eval(item, env) {
+                Ok(value) => value,
+                Err(error) => return Err(self.prefixes(error, env.module, expr, items, index + 1)),
+            };
+            match value {
                 Value::Bool(value) if value != is_and => return Ok(Value::Bool(value)),
                 Value::Bool(_) => {}
                 value => {
                     let kind = describe(&value);
-                    let source = &self.spec.modules[env.module.index()].source;
-                    let text = source.get(expr.span.start as usize..).unwrap_or_default();
-                    let is_bulleted = ["/\\", "\\/", "\\land", "\\lor"]
-                        .iter()
-                        .any(|bullet| text.starts_with(bullet));
-                    return Err(if is_bulleted {
+                    let error = if self.is_bulleted(env.module, expr) {
                         let formula = if is_and { "conjunction" } else { "disjunction" };
                         self.error(
                             env,
@@ -372,7 +386,7 @@ impl Evaluator {
                         );
                         // TLC nests an infix chain to the left, so the junction that fails ends
                         // with the operand that failed, or the second one.
-                        let end = items[index.max(1).min(items.len() - 1)].span.end;
+                        let end = self.prefix_end(env.module, items, index.max(1) + 1);
                         let junction = Expr::new(
                             ExprKind::Bool(false),
                             Span::new(expr.span.start as usize, end as usize),
@@ -385,11 +399,64 @@ impl Evaluator {
                                 self.range(env, &junction)
                             ),
                         )
-                    });
+                    };
+                    return Err(self.prefixes(error, env.module, expr, items, index + 1));
                 }
             }
         }
         Ok(Value::Bool(is_and))
+    }
+
+    /// Whether the junction `expr` of `module` is a bulleted list rather than an infix chain,
+    /// which SANY nests to the left: `A /\ B /\ C` is `(A /\ B) /\ C`.
+    pub(crate) fn is_bulleted(&self, module: ModuleId, expr: &Expr) -> bool {
+        let source = &self.spec.modules[module.index()].source;
+        let text = source.get(expr.span.start as usize..).unwrap_or_default();
+        ["/\\", "\\/", "\\land", "\\lor", "∧", "∨"].iter().any(|bullet| text.starts_with(bullet))
+    }
+
+    /// Where the junction of the first `count` operands of an infix chain ends: after the last
+    /// of them, and after the parentheses around it.
+    pub(crate) fn prefix_end(&self, module: ModuleId, items: &[Expr], count: usize) -> u32 {
+        let source = self.spec.modules[module.index()].source.as_bytes();
+        let mut end = items[count.clamp(1, items.len()) - 1].span.end as usize;
+        let mut next = end;
+        while next < source.len() {
+            match source[next] {
+                b' ' | b'\t' | b'\r' | b'\n' => next += 1,
+                b')' => {
+                    next += 1;
+                    end = next;
+                }
+                _ => break,
+            }
+        }
+        end as u32
+    }
+
+    /// Adds to the call stack of an error the junctions of an infix chain `expr` of `module`
+    /// that hold the operands from the first `count` on, innermost first: the ones that
+    /// TLC's nesting of the chain evaluates around the operand that failed. The chain itself
+    /// is left to whatever evaluates it.
+    #[cold]
+    #[inline(never)]
+    pub(crate) fn prefixes(
+        &self,
+        mut error: EvalError,
+        module: ModuleId,
+        expr: &Expr,
+        items: &[Expr],
+        count: usize,
+    ) -> EvalError {
+        if !self.runtime.records_call_stack() || self.is_bulleted(module, expr) {
+            return error;
+        }
+        for count in count.max(2)..items.len() {
+            let end = self.prefix_end(module, items, count) as usize;
+            let span = Span::new(expr.span.start as usize, end);
+            error.call_stack.push(crate::CallSite { module, span });
+        }
+        error
     }
 
     #[inline(never)]

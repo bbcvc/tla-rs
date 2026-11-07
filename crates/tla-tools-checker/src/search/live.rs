@@ -14,6 +14,7 @@ fn failure(message: String) -> EvalError {
         line: 0,
         column: 0,
         incomplete: None,
+        call_stack: Vec::new(),
     }
 }
 

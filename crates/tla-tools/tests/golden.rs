@@ -110,4 +110,6 @@ golden! {
     print_and_print_t: "Print",
     alias: "Alias",
     alias_of_a_lasso: "AliasLasso",
+    call_stack_of_an_error_in_an_action: "CallStack",
+    call_stack_of_an_error_in_the_initial_predicate: "InitCallStack",
 }

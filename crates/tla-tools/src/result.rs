@@ -71,6 +71,21 @@ fn print_lines(printer: &mut Printer, lines: &[String]) {
     }
 }
 
+/// TLC's message with the call stack of an error, from the outermost expression in.
+fn nested_expressions(call_stack: &[String]) -> String {
+    let positions = match call_stack {
+        [] => "    The error call stack is empty.\n".to_owned(),
+        _ => {
+            let lines = call_stack.iter().enumerate();
+            let lines: String = lines.map(|(index, line)| format!("{index}. {line}\n")).collect();
+            format!("{lines}\n")
+        }
+    };
+    format!(
+        "The error occurred when TLC was evaluating the nested\nexpressions at the following positions:\n{positions}"
+    )
+}
+
 const BEHAVIOR: &str = "The behavior up to this point is:";
 const COUNTER_EXAMPLE: &str = "The following behavior constitutes a counter-example:\n";
 
@@ -167,6 +182,10 @@ pub fn print_outcome(printer: &mut Printer, outcome: &Outcome, liveness: &mut Li
             if let Some(trace) = &report.trace {
                 print_trace(printer, trace, BEHAVIOR);
                 print_lines(printer, &trace.printed_last);
+            }
+            if let Some(failure) = &report.failure {
+                print_lines(printer, &failure.printed);
+                printer.print(Level::Error, &nested_expressions(&failure.call_stack));
             }
             if report.counts.is_none() {
                 return;

@@ -61,6 +61,19 @@ pub struct Report {
     pub assumption: Option<Assumption>,
     /// The names of the temporal properties a liveness counterexample violates.
     pub temporal_properties: Vec<String>,
+    /// Where an error computing the initial states or the successors of a state occurred.
+    pub failure: Option<Failure>,
+}
+
+/// Where an error computing the initial states or the successors of a state occurred, which TLC
+/// prints after the behavior to the state.
+#[derive(Clone, Debug, Default)]
+pub struct Failure {
+    /// What the spec printed as TLC computed them again to find where the error occurred.
+    pub printed: Vec<String>,
+    /// TLC's description of each expression being evaluated, outermost first, as in
+    /// `Line 3, column 9 to line 3, column 20 in M`.
+    pub call_stack: Vec<String>,
 }
 
 /// TLC's buckets of the outdegree.

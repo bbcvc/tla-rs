@@ -388,7 +388,35 @@ fn report(evaluator: &Evaluator, tlc_order: &[usize], searched: &search::Search)
         out_degrees: is_complete.then(|| searched.out_degrees.clone()),
         assumption: None,
         temporal_properties: searched.violated.clone(),
+        failure: searched.failure.as_ref().map(|failure| report::Failure {
+            printed: failure.printed.clone(),
+            call_stack: call_stack(spec, &failure.call_stack),
+        }),
     }
+}
+
+/// TLC's `CallStack.toString`: the range of each expression, skipping one that it evaluates
+/// again right inside itself.
+fn call_stack(spec: &Spec, sites: &[tla_tools_eval::CallSite]) -> Vec<String> {
+    let mut lines = Vec::new();
+    for (index, site) in sites.iter().enumerate() {
+        if index > 0 && sites[index - 1] == *site {
+            continue;
+        }
+        let module = &spec.modules[site.module.index()];
+        let (line, column) = site.span.line_column(&module.source);
+        // An expression ends at its last token, not at the white space after it.
+        let text = &module.source[site.span.start as usize..site.span.end as usize];
+        let end = site.span.start as usize + text.trim_end().len();
+        let last = end.saturating_sub(1).max(site.span.start as usize);
+        let (end_line, end_column) =
+            tla_tools_ast::Span::new(last, last + 1).line_column(&module.source);
+        lines.push(format!(
+            "Line {line}, column {column} to line {end_line}, column {end_column} in {}",
+            module.name
+        ));
+    }
+    lines
 }
 
 /// TLC's check of the definitions the configuration substitutes for constants, as in `C <- Foo`,

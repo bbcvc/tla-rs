@@ -18,7 +18,7 @@ use std::cell::RefCell;
 use std::collections::VecDeque;
 use std::sync::{Arc, Mutex};
 
-use tla_tools_eval::{EvalError, Evaluator, Result, State, Statistics};
+use tla_tools_eval::{CallSite, EvalError, Evaluator, Result, State, Statistics};
 use tla_tools_resolve::DefId;
 use tla_tools_value::{Symbol, Value};
 
@@ -110,6 +110,18 @@ pub struct Search {
     pub counts: Counts,
     /// How many expanded states had each number of new successors.
     pub out_degrees: Vec<u64>,
+    /// Where an error computing the initial states or the successors of a state occurred.
+    pub failure: Option<Failure>,
+}
+
+/// Where an error computing the initial states or the successors of a state occurred, which
+/// TLC finds by computing them again with its CallStackTool.
+#[derive(Clone, Debug, Default)]
+pub struct Failure {
+    /// What the spec printed as TLC computed them again.
+    pub printed: Vec<String>,
+    /// The expressions being evaluated when the error occurred, outermost first.
+    pub call_stack: Vec<CallSite>,
 }
 
 /// What `TLCGet("level")` reads: the state the model checker expands, with its index, and the
@@ -176,6 +188,7 @@ struct Explorer<'a, S: Successors + ?Sized> {
     /// The new successors of the state being expanded, and how many states had each number.
     new_successors: u64,
     out_degrees: Vec<u64>,
+    failure: Option<Failure>,
 }
 
 /// What a visit to a state found.
@@ -238,6 +251,7 @@ pub fn search<S: Successors + ?Sized>(
         ticker: Ticker::new(),
         new_successors: 0,
         out_degrees: vec![0; OUT_DEGREE_BUCKETS],
+        failure: None,
     };
     let (ending, trail) = explorer.run();
     // The states stored on the way to the violation, the last of them the one it was found from.
@@ -292,6 +306,7 @@ pub fn search<S: Successors + ?Sized>(
         depth: if explorer.generated == 0 { 0 } else { u64::from(explorer.depth.max(1)) },
         counts: explorer.counts(),
         out_degrees: explorer.out_degrees,
+        failure: explorer.failure,
     }
 }
 
@@ -299,16 +314,24 @@ impl<S: Successors + ?Sized> Explorer<'_, S> {
     fn run(&mut self) -> (Ending, Option<Trail>) {
         self.progress.report(Event::InitialStatesStarted);
         let mut stopped = None;
+        let mut has_failed_check = false;
         let (successors, init) = (self.successors, &self.plan.init);
-        let result = successors.init_states(init, &mut |state| match self.visit_initial(state)? {
-            Visit::Continue => Ok(true),
-            Visit::Stop(ending, trail) => {
+        let result = successors.init_states(init, &mut |state| match self.visit_initial(state) {
+            Ok(Visit::Continue) => Ok(true),
+            Ok(Visit::Stop(ending, trail)) => {
                 stopped = Some((ending, Some(trail)));
                 Ok(false)
+            }
+            Err(error) => {
+                has_failed_check = true;
+                Err(error)
             }
         });
         self.cursor.lock().unwrap().candidate = None;
         if let Err(error) = result {
+            if !has_failed_check {
+                self.failure = Some(self.find_failure(None));
+            }
             return (Ending::Error(error.to_string()), None);
         }
         if let Some(stopped) = stopped {
@@ -341,17 +364,25 @@ impl<S: Successors + ?Sized> Explorer<'_, S> {
             self.evaluator.runtime().set_expanding(Some(state.clone()));
             let mut count = 0u64;
             let mut stopped = None;
+            let mut has_failed_check = false;
             let successors = self.successors;
             let result = successors.next_states(next, &state, &mut |successor| {
                 count += 1;
-                match self.visit_successor(index, &state, depth, successor)? {
-                    Visit::Continue => Ok(true),
-                    Visit::Stop(ending, trail) => {
+                match self.visit_successor(index, &state, depth, successor) {
+                    Ok(Visit::Continue) => Ok(true),
+                    Ok(Visit::Stop(ending, trail)) => {
                         stopped = Some((ending, Some(trail)));
                         Ok(false)
                     }
+                    Err(error) => {
+                        has_failed_check = true;
+                        Err(error)
+                    }
                 }
             });
+            if result.is_err() && !has_failed_check {
+                self.failure = Some(self.find_failure(Some((&state, depth, index))));
+            }
             self.evaluator.runtime().set_expanding(None);
             {
                 let mut cursor = self.cursor.lock().unwrap();
@@ -392,6 +423,34 @@ impl<S: Successors + ?Sized> Explorer<'_, S> {
             return ending;
         }
         (Ending::Success, None)
+    }
+
+    /// Where computing the initial states, or the successors of `expanding` at its depth and
+    /// index in the store, fails: TLC computes them again, recording the expressions it evaluates, and prints where
+    /// the error occurred.
+    fn find_failure(&self, expanding: Option<(&State, u32, usize)>) -> Failure {
+        let runtime = self.evaluator.runtime();
+        let compute = || match expanding {
+            None => self.successors.init_states(&self.plan.init, &mut |_| Ok(true)),
+            Some((state, depth, index)) => {
+                let Some(next) = self.plan.next else { return Ok(()) };
+                self.cursor.lock().unwrap().expanding = Some((state.clone(), depth as i32, index));
+                runtime.set_expanding(Some(state.clone()));
+                // TLC computes the successors of each action it splits the relation into.
+                let result = self.evaluator.next_actions(next).and_then(|actions| {
+                    actions.iter().try_for_each(|action| {
+                        self.evaluator.action_states(action, state, &mut |_| Ok(true))
+                    })
+                });
+                runtime.set_expanding(None);
+                self.cursor.lock().unwrap().expanding = None;
+                result
+            }
+        };
+        let (result, printed) = runtime.capture(|| runtime.record_call_stack(compute));
+        let mut call_stack = result.err().map(|error| error.call_stack).unwrap_or_default();
+        call_stack.reverse();
+        Failure { printed, call_stack }
     }
 
     /// The behavior that ends in `trail`, rebuilt as TLC rebuilds it: from the initial states,
@@ -529,6 +588,7 @@ impl<S: Successors + ?Sized> Explorer<'_, S> {
             line,
             column,
             incomplete: None,
+            call_stack: Vec::new(),
         }
     }
 
@@ -575,6 +635,7 @@ impl<S: Successors + ?Sized> Explorer<'_, S> {
             line: 0,
             column: 0,
             incomplete: None,
+            call_stack: Vec::new(),
         })
     }
 

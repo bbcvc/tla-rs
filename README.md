@@ -169,10 +169,12 @@ The conformance runner checks each model in its own process and compares the res
 - [x] Releases on crates.io and npm with prebuilt binaries, and CI
 - [x] Show the output of `Print` and `PrintT`, where TLC prints it
 - [x] `ALIAS` in counterexample traces
+- [x] TLC's stack of nested expressions for an error computing the initial states or the successors of a state
 
 **Next**
 
-- [ ] Print SANY's parse messages and warnings exactly, and TLC's stack of nested expressions in evaluation errors
+- [ ] Print SANY's parse messages and warnings exactly
+- [ ] TLC's fingerprint stack trace, for an error in a value TLC evaluates lazily
 - [ ] Cut per-call evaluation overhead; about ten large models (VR_*, S2C, MoveRange) are still around 2× slower than TLC
 - [ ] Bring the 15 models that time out at 60 s on one worker under the limit
 - [ ] Parallel liveness checking (temporal properties run on one worker today)

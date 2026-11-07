@@ -50,6 +50,17 @@ pub struct EvalError {
     /// The state, when an initial predicate or an action leaves variables of it unassigned,
     /// which TLC reports with the partial state.
     pub incomplete: Option<Box<Incomplete>>,
+    /// The expressions being evaluated when the error occurred, innermost first, as TLC's
+    /// CallStackTool records them. Only an evaluation under [`Runtime::record_call_stack`]
+    /// records them.
+    pub call_stack: Vec<CallSite>,
+}
+
+/// An expression on the call stack of an error: where it is written.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct CallSite {
+    pub module: ModuleId,
+    pub span: Span,
 }
 
 /// A state an initial predicate or an action leaves with variables unassigned.
@@ -72,7 +83,15 @@ impl EvalError {
     ) -> Self {
         let info = &spec.modules[module.index()];
         let (line, column) = span.line_column(&info.source);
-        Self { message: message.into(), module: info.name, span, line, column, incomplete: None }
+        Self {
+            message: message.into(),
+            module: info.name,
+            span,
+            line,
+            column,
+            incomplete: None,
+            call_stack: Vec::new(),
+        }
     }
 }
 

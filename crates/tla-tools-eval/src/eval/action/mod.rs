@@ -160,7 +160,8 @@ impl Evaluator {
                 }
                 return self.resume(run, action, rest);
             }
-            if !is_walked(first) {
+            // TLC walks a guard as it walks any conjunct, which its call stack shows.
+            if !is_walked(first) && !self.runtime.records_call_stack() {
                 if !self.holds(first, site, run, true)? {
                     return Ok(());
                 }
@@ -172,8 +173,21 @@ impl Evaluator {
         }
     }
 
-    /// Walks the predicate `expr` of `site`, continuing with `rest` for each way it holds.
+    /// Walks the predicate `expr` of `site`, continuing with `rest` for each way it holds. What
+    /// follows `expr` is walked inside it, so an error there passes through it too, as in TLC.
     fn act(
+        &self,
+        expr: &Expr,
+        site: &Site,
+        run: &mut Run<'_>,
+        action: Action,
+        rest: &Rest<'_>,
+    ) -> Result<()> {
+        self.act_node(expr, site, run, action, rest)
+            .map_err(|error| self.called(error, site.module, expr))
+    }
+
+    fn act_node(
         &self,
         expr: &Expr,
         site: &Site,
@@ -185,12 +199,16 @@ impl Evaluator {
             return Ok(());
         }
         match &expr.kind {
-            ExprKind::And(items) | ExprKind::Builtin { op: Builtin::And, args: items } => {
-                self.conjoin(items, true, site, run, action, rest)
-            }
+            // SANY nests an infix chain to the left, so its first operand, and what follows it,
+            // is walked inside each of the junctions of its first operands.
+            ExprKind::And(items) | ExprKind::Builtin { op: Builtin::And, args: items } => self
+                .conjoin(items, true, site, run, action, rest)
+                .map_err(|error| self.prefixes(error, site.module, expr, items, 2)),
             ExprKind::Or(items) | ExprKind::Builtin { op: Builtin::Or, args: items } => {
-                for item in items {
-                    self.act(item, site, run, action, rest)?;
+                for (index, item) in items.iter().enumerate() {
+                    if let Err(error) = self.act(item, site, run, action, rest) {
+                        return Err(self.prefixes(error, site.module, expr, items, index + 1));
+                    }
                     if run.is_stopped {
                         break;
                     }

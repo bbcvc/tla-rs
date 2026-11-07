@@ -82,8 +82,11 @@ crates/tla-tools/scripts/smoke.py $C --per-status 8 --tla-ts ../tla-ts/packages/
 - With temporal properties to check, a spec's `Print` and `PrintT` may print more or fewer
   times while the search runs than in TLC, which evaluates the actions again for the liveness
   checker. Without them, and in a counterexample, they print as in TLC.
-- An evaluation error is printed without TLC's stack of nested expressions, and without what
-  `Print` and `PrintT` print as TLC evaluates the failing step again to find it.
+- An error computing the initial states or the successors of a state is printed with TLC's
+  stack of nested expressions, but an error in a value TLC evaluates lazily, such as a set
+  filter TLC fingerprints, isn't printed with TLC's fingerprint stack trace, and an error TLC
+  raises as a Java exception, such as an index out of a tuple's bounds, isn't worded as TLC's
+  unexpected exception.
 - The collision estimate from the actual fingerprints, which TLC adds for large state spaces,
   isn't printed.
 - `-lncheck`, `-dump`, `-tool`, and `-continue` aren't implemented.

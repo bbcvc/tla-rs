@@ -1,0 +1,45 @@
+exit 255
+Starting... (DATE)
+Computing initial states...
+"init"
+Finished computing initial states: 1 distinct state generated at DATE.
+<<"next", 0>>
+<<"next", 1>>
+<<"next", 2>>
+Error: The second argument of \div is 0.
+"init"
+<<"next", 0>>
+Error: The behavior up to this point is:
+State 1: <Initial predicate>
+x = 0
+
+State 2: <Next line 6, col 9 to line 7, col 66 of module CallStack>
+x = 1
+
+<<"next", 1>>
+State 3: <Next line 6, col 9 to line 7, col 66 of module CallStack>
+x = 2
+
+"init"
+<<"next", 0>>
+<<"next", 1>>
+<<"next", 2>>
+Error: The error occurred when TLC was evaluating the nested
+expressions at the following positions:
+0. Line 6, column 9 to line 7, column 66 in CallStack
+1. Line 6, column 12 to line 6, column 32 in CallStack
+2. Line 7, column 12 to line 7, column 66 in CallStack
+3. Line 7, column 12 to line 7, column 30 in CallStack
+4. Line 7, column 12 to line 7, column 16 in CallStack
+5. Line 7, column 21 to line 7, column 30 in CallStack
+6. Line 7, column 35 to line 7, column 66 in CallStack
+7. Line 7, column 40 to line 7, column 66 in CallStack
+8. Line 7, column 40 to line 7, column 62 in CallStack
+9. Line 7, column 40 to line 7, column 58 in CallStack
+10. Line 7, column 40 to line 7, column 47 in CallStack
+11. Line 5, column 13 to line 5, column 27 in CallStack
+
+
+3 states generated, 3 distinct states found, 0 states left on queue.
+The depth of the complete state graph search is 3.
+Finished in TIME at (DATE)

@@ -29,6 +29,8 @@ pub struct Runtime {
     pub registers: Mutex<Registers>,
     /// Whether `TLCSet("exit", TRUE)` asked the model checker to stop.
     pub is_stopped: AtomicBool,
+    /// Whether an error records the expressions it passes through, as TLC's CallStackTool does.
+    records_call_stack: AtomicBool,
     /// Whether IOUtils' `IOExec` and its kin may run commands.
     allows_exec: AtomicBool,
     /// Whether TLC reports warnings, which its `-nowarning` turns off.
@@ -158,6 +160,7 @@ impl Default for Runtime {
             captured: Mutex::default(),
             registers: Mutex::default(),
             is_stopped: AtomicBool::new(false),
+            records_call_stack: AtomicBool::new(false),
             allows_exec: AtomicBool::new(false),
             warnings: AtomicBool::new(true),
             environment: OnceLock::new(),
@@ -241,6 +244,21 @@ impl Runtime {
         let mut captured = self.captured.lock().unwrap();
         let lines = std::mem::replace(&mut *captured, outer).unwrap_or_default();
         (result, lines)
+    }
+
+    /// Runs `run` with each error recording the expressions it passes through in its
+    /// [`EvalError::call_stack`](crate::EvalError::call_stack), as TLC's CallStackTool does when
+    /// TLC computes the initial states or the successors of a state again to find where an
+    /// error occurred.
+    pub fn record_call_stack<T>(&self, run: impl FnOnce() -> T) -> T {
+        let outer = self.records_call_stack.swap(true, Ordering::SeqCst);
+        let result = run();
+        self.records_call_stack.store(outer, Ordering::SeqCst);
+        result
+    }
+
+    pub(crate) fn records_call_stack(&self) -> bool {
+        self.records_call_stack.load(Ordering::Relaxed)
     }
 
     /// Lets IOUtils' `IOExec`, `IOEnvExec`, `IOExecTemplate`, and `IOEnvExecTemplate` run the
