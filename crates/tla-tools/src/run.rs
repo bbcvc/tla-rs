@@ -5,13 +5,14 @@ use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 use std::time::Instant;
 
-use tla_tools_checker::load::{self, Library, LoadError, Loaded};
+use tla_tools_checker::load::{self, Library, LoadError};
 use tla_tools_checker::{Event, Options, Progress};
 
 use crate::args::Args;
 use crate::exit;
 use crate::printer::{self, Level, Printer};
 use crate::result::{self, Liveness};
+use crate::sany;
 
 /// Prints TLC's version and the options of the search.
 fn print_banner(printer: &mut Printer, seed: i64, workers: usize) {
@@ -24,18 +25,6 @@ fn print_banner(printer: &mut Printer, seed: i64, workers: usize) {
         "Running breadth-first search Model-Checking with fp 0 and seed {seed} with {workers} worker{plural} on {cores} cores with 0MB heap and 0MB offheap memory [pid: {pid}] ({os} {arch}, tla-rs, MemFPSet, MemStateQueue)."
     );
     printer.print(Level::None, &text);
-}
-
-/// What SANY prints as it reads the modules: each file it parses, and each module it processes,
-/// the modules a module uses first.
-fn print_parsing(loaded: &Loaded) {
-    for (_, path) in &loaded.files {
-        let path = std::fs::canonicalize(path).unwrap_or_else(|_| path.clone());
-        println!("Parsing file {}", path.display());
-    }
-    for module in loaded.spec.modules.iter().rev() {
-        println!("Semantic processing of module {}", module.name);
-    }
 }
 
 /// Prints how long TLC ran, which it prints however it ends.
@@ -129,8 +118,9 @@ pub fn run(args: &Args) -> i32 {
                     printer.print(Level::Error, &message);
                     exit::CONFIG_PARSE_ERROR
                 }
-                LoadError::Parse(message) => {
-                    println!("{message}\n");
+                LoadError::Parse(failure) => {
+                    let name = spec_path.file_stem().unwrap_or_default().to_string_lossy();
+                    print!("{}", sany::rejected(&failure, &spec_path, &name));
                     let text = format!("Starting... ({})", printer::now());
                     printer.print(Level::None, &text);
                     printer.print(Level::Error, "Parsing or semantic analysis failed.");
@@ -141,7 +131,7 @@ pub fn run(args: &Args) -> i32 {
             return code;
         }
     };
-    print_parsing(&loaded);
+    print!("{}", sany::accepted(&loaded.modules, &spec_path));
     printer.lock().unwrap().print(Level::None, &format!("Starting... ({})", printer::now()));
     if args.deadlock {
         loaded.config.check_deadlock = false;

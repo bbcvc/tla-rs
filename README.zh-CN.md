@@ -177,10 +177,11 @@ cargo run --release -p tla-tools-checker --example conformance -- $C/.corpora \
 - [x] 在 TLC 打印的位置显示 `Print`、`PrintT` 的输出
 - [x] 反例轨迹支持 `ALIAS`
 - [x] 计算初始状态或后继状态出错时，输出 TLC 那样的嵌套表达式调用栈
+- [x] 与 SANY 一致地报告解析、分析、lint 的模块，以及语义错误和致命错误
 
 **待办**
 
-- [ ] 与 SANY 完全一致的解析信息和警告
+- [ ] SANY 的警告；一次报告 spec 的全部语义错误，而不只是第一个；语法错误使用 SANY 自己的措辞
 - [ ] 对 TLC 惰性求值的值出错时，输出 TLC 的 fingerprint 调用栈
 - [ ] 降低每次调用的求值开销：约有十个大模型（VR_*、S2C、MoveRange 等）仍比 TLC 慢 2 倍左右
 - [ ] 让单线程下超过 60 秒的 15 个模型进入时限

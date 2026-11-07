@@ -268,6 +268,11 @@ fn follows_sany_visibility_rules() {
 fn rejects_what_sany_rejects_in_definitions() {
     let redefined = "---- MODULE A ----\nG == 1\nX == LET G == 0 IN G\n====\n";
     assert_eq!(error(redefined, &[]), "Operator G already defined or declared.");
+    // SANY reports it where the definition is, as `line 3, col 10 to line 3, col 15`.
+    let failure = resolve_with(redefined, &[]).unwrap_err();
+    let range = (failure.line, failure.column, failure.end_line, failure.end_column);
+    assert_eq!(range, (3, 10, 3, 15));
+    assert_eq!(failure.kind, tla_tools_resolve::ErrorKind::Semantic);
     let imported = "---- MODULE A ----\nEXTENDS Naturals\nNat == 1\n====\n";
     assert_eq!(error(imported, &[]), "Operator Nat already defined or declared.");
     let fields = "---- MODULE A ----\nX == [a |-> 1, a |-> 2]\n====\n";

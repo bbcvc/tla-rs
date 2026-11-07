@@ -7,6 +7,7 @@ use std::path::{Path, PathBuf};
 
 use tla_tools_parser::ModelConfig;
 use tla_tools_resolve::Spec;
+pub use tla_tools_resolve::{ErrorKind, ResolveError, SanyModuleOrder, is_standard_module};
 
 /// The modules of the library directories, by name: TLC's `TLA-Library`.
 #[derive(Clone, Debug, Default)]
@@ -60,18 +61,37 @@ pub enum LoadError {
     /// The configuration can't be read or parsed.
     Config(String),
     /// A module can't be read, parsed, or resolved.
-    Parse(String),
+    Parse(ParseFailure),
+}
+
+/// Why SANY rejects a spec, with what it read before.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ParseFailure {
+    pub message: String,
+    /// The error the resolver reports, if it reports one.
+    pub error: Option<ResolveError>,
+    pub modules: Modules,
 }
 
 impl LoadError {
     pub fn message(&self) -> &str {
         match self {
-            LoadError::Config(message) | LoadError::Parse(message) => message,
+            LoadError::Config(message) => message,
+            LoadError::Parse(failure) => &failure.message,
         }
     }
 }
 
-/// A spec and its configuration, ready to check.
+/// The modules of a spec as SANY reads them: the orders it parses and analyzes them in, and the
+/// file each module that isn't a standard module was read from.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct Modules {
+    pub order: SanyModuleOrder,
+    /// The files the modules were read from, by module name, in the order they were first read.
+    pub files: Vec<(String, PathBuf)>,
+}
+
+/// A spec and its model configuration, read.
 pub struct Loaded {
     pub spec: Spec,
     pub config: ModelConfig,
@@ -79,8 +99,7 @@ pub struct Loaded {
     pub classes: HashMap<String, Vec<u8>>,
     /// TLC's order of the variables.
     pub variable_order: Option<Vec<String>>,
-    /// The files the modules were read from, by module name, in the order they were first read.
-    pub files: Vec<(String, PathBuf)>,
+    pub modules: Modules,
 }
 
 /// Reads the spec at `spec_path` and the configuration at `config_path`, finding the modules
@@ -95,8 +114,10 @@ pub fn load(spec_path: &Path, config_path: &Path, library: &Library) -> Result<L
     // TLC reads the configuration first, which orders its strings and model values.
     let config = tla_tools_parser::parse_config(&config)
         .map_err(|error| LoadError::Config(error.message))?;
-    let source = std::fs::read_to_string(spec_path)
-        .map_err(|error| LoadError::Parse(format!("{}: {error}", spec_path.display())))?;
+    let source = std::fs::read_to_string(spec_path).map_err(|error| {
+        let message = format!("{}: {error}", spec_path.display());
+        LoadError::Parse(ParseFailure { message, error: None, modules: Modules::default() })
+    })?;
     let directory = spec_path.parent().map_or_else(PathBuf::new, Path::to_path_buf);
     let mut files: Vec<(String, PathBuf)> = vec![(stem(spec_path), spec_path.to_path_buf())];
     let mut loader = |name: &str| {
@@ -117,15 +138,24 @@ pub fn load(spec_path: &Path, config_path: &Path, library: &Library) -> Result<L
         tla_tools_eval::value::set_order(order.iter().map(String::as_str));
     }
     let variable_order = tla_tools_resolve::tlc_variable_order(&source, &mut loader).ok();
-    let spec = tla_tools_resolve::resolve(&source, &mut loader)
-        .map_err(|error| LoadError::Parse(error.to_string()))?;
+    let order = tla_tools_resolve::sany_module_order(&source, &mut loader);
+    let resolved = tla_tools_resolve::resolve(&source, &mut loader);
+    let modules = Modules { order, files };
+    let spec = match resolved {
+        Ok(spec) => spec,
+        Err(error) => {
+            let message = error.to_string();
+            return Err(LoadError::Parse(ParseFailure { message, error: Some(error), modules }));
+        }
+    };
     // TLC requires the root module to be named after its file.
     let stem = stem(spec_path);
     if spec.modules[0].name.as_str() != stem {
-        return Err(LoadError::Parse(format!(
+        let message = format!(
             "File name '{stem}' does not match the name '{}' of the top level module it contains.",
             spec.modules[0].name
-        )));
+        );
+        return Err(LoadError::Parse(ParseFailure { message, error: None, modules }));
     }
     // TLC loads a class named after each module from beside the spec.
     let classes = spec
@@ -136,7 +166,7 @@ pub fn load(spec_path: &Path, config_path: &Path, library: &Library) -> Result<L
             Some((module.name.as_str().to_owned(), class))
         })
         .collect();
-    Ok(Loaded { spec, config, classes, variable_order, files })
+    Ok(Loaded { spec, config, classes, variable_order, modules })
 }
 
 fn stem(path: &Path) -> String {

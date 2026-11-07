@@ -1,7 +1,7 @@
 use tla_tools_parser::parse_config;
 
 use super::lexer::tokenize;
-use super::{parsed_texts, tlc_string_order};
+use super::{parsed_texts, sany_module_order, tlc_string_order};
 
 fn order(source: &str, config: &str, modules: &[(&str, &str)]) -> Vec<String> {
     let config = parse_config(config).unwrap();
@@ -78,4 +78,26 @@ fn orders_variables_as_the_root_modules_sany_context_enumerates_them() {
     let lock = "---- MODULE Lock ----\nVARIABLES pc, lock\nvars == << pc, lock >>\nI == INSTANCE M\n====\n";
     let mut loader = |name: &str| (name == "M").then(|| source.to_owned());
     assert_eq!(super::tlc_variable_order(lock, &mut loader).unwrap(), ["lock", "pc"]);
+}
+
+#[test]
+fn orders_the_modules_as_sany_parses_and_analyzes_them() {
+    // As TLC prints them for this spec: SANY parses the modules each module extends before
+    // those it instantiates, and analyzes a module after those it extends and instantiates.
+    let source =
+        "---- MODULE R ----\nEXTENDS Naturals, TLCExt\nVARIABLE x\nI == INSTANCE M\n====\n";
+    let helper = "---- MODULE M ----\nEXTENDS Sequences\nH == <<>>\n====\n";
+    let mut loader = |name: &str| (name == "M").then(|| helper.to_owned());
+    let order = sany_module_order(source, &mut loader);
+    let parsed = ["R", "Naturals", "TLCExt", "M", "Sequences", "TLC", "Integers", "FiniteSets"];
+    assert_eq!(order.parsed, parsed);
+    let analyzed = ["Naturals", "Sequences", "FiniteSets", "TLC", "Integers", "TLCExt", "M", "R"];
+    assert_eq!(order.analyzed, analyzed);
+    assert_eq!(order.error, None);
+    // SANY stops at a module it can't find, after the modules it parsed.
+    let source = "---- MODULE R ----\nEXTENDS Naturals, Missing\n====\n";
+    let order = sany_module_order(source, &mut |_: &str| None);
+    assert_eq!(order.parsed, ["R", "Naturals"]);
+    let error = "Cannot find source file for module Missing imported in module R.";
+    assert_eq!(order.error.as_deref(), Some(error));
 }

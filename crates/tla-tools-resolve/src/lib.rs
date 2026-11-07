@@ -22,7 +22,7 @@ use std::collections::{HashMap, HashSet};
 use std::rc::Rc;
 
 pub use ir::*;
-pub use order::{tlc_string_order, tlc_variable_order};
+pub use order::{SanyModuleOrder, sany_module_order, tlc_string_order, tlc_variable_order};
 use tla_tools_ast::{Span, Symbol};
 
 use crate::expr::FrameScope;
@@ -48,6 +48,22 @@ pub struct ResolveError {
     pub span: Span,
     pub line: usize,
     pub column: usize,
+    /// The line and column of the last character of what the error is about, which SANY's
+    /// range of it ends at.
+    pub end_line: usize,
+    pub end_column: usize,
+    pub kind: ErrorKind,
+}
+
+/// Which part of SANY reports an error.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ErrorKind {
+    /// The parser rejects the text of a module.
+    Syntax,
+    /// The semantic analysis or the level checking of a module rejects it.
+    Semantic,
+    /// SANY can't read a module it needs.
+    Fatal,
 }
 
 impl ResolveError {
@@ -58,7 +74,27 @@ impl ResolveError {
         message: impl Into<String>,
     ) -> Self {
         let (line, column) = span.line_column(source);
-        Self { message: message.into(), module, span, line, column }
+        // What the error is about ends at its last token, not at the white space after it.
+        let text = source.get(span.start as usize..span.end as usize).unwrap_or_default();
+        let end = span.start as usize + text.trim_end().len();
+        let last = end.saturating_sub(1).max(span.start as usize);
+        let (end_line, end_column) = Span::new(last, last + 1).line_column(source);
+        let kind = ErrorKind::Semantic;
+        Self { message: message.into(), module, span, line, column, end_line, end_column, kind }
+    }
+
+    /// A syntax error the parser reports in `module`.
+    fn syntax(module: Symbol, error: tla_tools_parser::ParseError) -> Self {
+        Self {
+            message: error.message,
+            module,
+            span: error.span,
+            line: error.line,
+            column: error.column,
+            end_line: error.line,
+            end_column: error.column,
+            kind: ErrorKind::Syntax,
+        }
     }
 }
 
@@ -66,13 +102,8 @@ pub(crate) type Result<T> = std::result::Result<T, ResolveError>;
 
 /// Parses `source` as the root module and resolves it with the modules it uses.
 pub fn resolve(source: &str, loader: &mut dyn ModuleLoader) -> Result<Spec> {
-    let modules = tla_tools_parser::parse_modules(source).map_err(|error| ResolveError {
-        message: error.message,
-        module: Symbol::intern(""),
-        span: error.span,
-        line: error.line,
-        column: error.column,
-    })?;
+    let modules = tla_tools_parser::parse_modules(source)
+        .map_err(|error| ResolveError::syntax(Symbol::intern(""), error))?;
     let mut resolver = Resolver {
         loader,
         spec: Spec {

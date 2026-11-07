@@ -45,6 +45,40 @@ pub fn tlc_string_order(
     Ok(order.texts)
 }
 
+/// The modules of a spec in the orders SANY handles them, by name.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct SanyModuleOrder {
+    /// The modules in the order SANY parses them, the root module first.
+    pub parsed: Vec<String>,
+    /// The modules in the order SANY analyzes them, each after the modules it extends and then
+    /// those it instantiates, the root module last.
+    pub analyzed: Vec<String>,
+    /// Why SANY can't read a module the spec needs, as in `Cannot find source file for module M
+    /// imported in module N.`
+    pub error: Option<String>,
+}
+
+/// The order SANY parses and analyzes the modules of the spec whose root module is `source`.
+/// When SANY would fail to read a module, the modules it parsed before.
+pub fn sany_module_order(source: &str, loader: &mut dyn ModuleLoader) -> SanyModuleOrder {
+    let mut parse = Parse::default();
+    let result = Modules::new(source, loader)
+        .and_then(|mut modules| parse.run(&mut modules, &mut Order::default()));
+    let root = || {
+        let tokens = tokenize(source).unwrap_or_default();
+        tokens.get(2).map_or_else(String::new, |token| token.text.clone())
+    };
+    let name = |name: &Option<String>| name.clone().unwrap_or_else(root);
+    SanyModuleOrder {
+        parsed: parse.parsed.iter().map(name).collect(),
+        analyzed: match result {
+            Ok(()) => parse.analyzed.iter().map(name).collect(),
+            Err(_) => Vec::new(),
+        },
+        error: result.err(),
+    }
+}
+
 /// Texts in the order they were first interned.
 #[derive(Default)]
 struct Order {
@@ -321,6 +355,10 @@ struct Parse {
     extends: Vec<HashSet<String>>,
     /// The modules each module was found to depend on, as `key>name`.
     relations: HashSet<String>,
+    /// The modules in the order SANY parses them, `None` for the root module.
+    parsed: Vec<Option<String>>,
+    /// The modules in the order SANY analyzes them.
+    analyzed: Vec<Option<String>>,
 }
 
 impl Parse {
@@ -441,8 +479,9 @@ impl Parse {
         Ok(None)
     }
 
-    fn run(mut self, modules: &mut Modules<'_>, order: &mut Order) -> Result<(), String> {
+    fn run(&mut self, modules: &mut Modules<'_>, order: &mut Order) -> Result<(), String> {
         let root_tokens = modules.tokens(None)?;
+        self.parsed.push(None);
         for (index, text) in parsed_texts(&root_tokens).iter().enumerate() {
             if index == 3 {
                 strings::SANY_NODE_NAMES.iter().for_each(|name| order.intern(name));
@@ -473,6 +512,7 @@ impl Parse {
                     "Cannot find source file for module {name} imported in module {importer}."
                 ));
             }
+            self.parsed.push(Some(name.clone()));
             let tokens = modules.tokens(Some(&name))?;
             parsed_texts(&tokens).iter().for_each(|text| order.intern(text));
         }
@@ -501,6 +541,7 @@ impl Parse {
         for dependency in extended.into_iter().chain(instantiated) {
             self.analyze(modules, Some(dependency), dependencies, analyzed, order)?;
         }
+        self.analyzed.push(name.clone());
         for token in modules.tokens(name.as_deref())? {
             if token.kind == Kind::String {
                 order.intern(&token.text);

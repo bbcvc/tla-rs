@@ -79,7 +79,16 @@ fn resolve(spec_path: &Path, library: &HashMap<String, PathBuf>) -> Result<(), R
     let message = format!(
         "File name '{stem}' does not match the name '{root}' of the top level module it contains."
     );
-    Err(ResolveError { message, module: root, span: Default::default(), line: 1, column: 1 })
+    Err(ResolveError {
+        message,
+        module: root,
+        span: Default::default(),
+        line: 1,
+        column: 1,
+        end_line: 1,
+        end_column: 1,
+        kind: tla_tools_resolve::ErrorKind::Fatal,
+    })
 }
 
 fn main() {

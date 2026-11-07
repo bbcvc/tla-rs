@@ -155,11 +155,12 @@ impl Resolver<'_> {
     /// Resolves an operator definition, at module level or in a `LET`.
     /// Claims `name` for an operator or function defined at the current depth: the `RECURSIVE`
     /// declaration awaiting it, or else a new definition. Like SANY's `Generator`, rejects a
-    /// definition of a name that is already visible.
+    /// definition of a name that is already visible, at `extent`, where the definition is.
     pub(crate) fn claim_def(
         &mut self,
         elab: &Elab,
         name: Name,
+        extent: Span,
         params: Vec<usize>,
         is_function: bool,
     ) -> Result<DefId> {
@@ -194,7 +195,7 @@ impl Resolver<'_> {
                 }
                 _ => format!("Operator {} already defined or declared.", name.symbol),
             };
-            return Err(self.error(elab.module, name.span, message));
+            return Err(self.error(elab.module, extent, message));
         }
         let def = self.new_def(elab.module, name, params, depth);
         self.layout.defs[def.index()].section = self.pending_section(elab.module);
@@ -204,7 +205,9 @@ impl Resolver<'_> {
     /// Resolves an operator definition, at module level or in a `LET`.
     pub(crate) fn operator(&mut self, elab: &Elab, definition: &ast::OperatorDef) -> Result<DefId> {
         let arities = definition.params.iter().map(|param| param.arity).collect();
-        let def = self.claim_def(elab, definition.name, arities, false)?;
+        let extent =
+            Span::new(definition.name.span.start as usize, definition.body.span.end as usize);
+        let def = self.claim_def(elab, definition.name, extent, arities, false)?;
         let names = definition.params.iter().map(|param| param.name.symbol).collect();
         self.spec.param_names.insert(def, names);
         self.push_frame(Vec::new());
@@ -499,7 +502,8 @@ impl Resolver<'_> {
                     self.frames.last_mut().unwrap().lets.push(def);
                 }
                 Unit::Function(definition) => {
-                    let def = self.claim_def(elab, definition.name, Vec::new(), true)?;
+                    let extent = function_extent(definition);
+                    let def = self.claim_def(elab, definition.name, extent, Vec::new(), true)?;
                     self.bind_def(elab, definition.name, 0, def)?;
                     self.function(elab, def, definition)?;
                     self.frames.last_mut().unwrap().lets.push(def);
@@ -837,4 +841,9 @@ fn body_span(unit: &Unit) -> tla_tools_ast::Span {
         Unit::Constants(decls) => decls.first().map(|decl| decl.name.span).unwrap_or_default(),
         _ => tla_tools_ast::Span::default(),
     }
+}
+
+/// Where a function definition is: from its name to the end of its body.
+pub(crate) fn function_extent(definition: &ast::FunctionDef) -> Span {
+    Span::new(definition.name.span.start as usize, definition.body.span.end as usize)
 }

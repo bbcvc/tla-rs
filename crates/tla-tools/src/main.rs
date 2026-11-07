@@ -6,6 +6,7 @@ mod exit;
 mod printer;
 mod result;
 mod run;
+mod sany;
 
 use std::io::Write;
 

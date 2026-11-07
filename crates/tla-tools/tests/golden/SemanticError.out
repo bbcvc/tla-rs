@@ -1,0 +1,13 @@
+exit 150
+Semantic errors:
+
+*** Errors: 1
+
+line 5, col 14 to line 5, col 22 of module SemanticError
+
+Unknown operator: `Successor'.
+
+
+Starting... (DATE)
+Error: Parsing or semantic analysis failed.
+Finished in TIME at (DATE)

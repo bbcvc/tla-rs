@@ -170,10 +170,11 @@ The conformance runner checks each model in its own process and compares the res
 - [x] Show the output of `Print` and `PrintT`, where TLC prints it
 - [x] `ALIAS` in counterexample traces
 - [x] TLC's stack of nested expressions for an error computing the initial states or the successors of a state
+- [x] SANY's report of the modules it parses, analyzes and lints, and of a semantic or fatal error
 
 **Next**
 
-- [ ] Print SANY's parse messages and warnings exactly
+- [ ] SANY's warnings, every semantic error of a spec rather than the first, and SANY's own words for a syntax error
 - [ ] TLC's fingerprint stack trace, for an error in a value TLC evaluates lazily
 - [ ] Cut per-call evaluation overhead; about ten large models (VR_*, S2C, MoveRange) are still around 2× slower than TLC
 - [ ] Bring the 15 models that time out at 60 s on one worker under the limit

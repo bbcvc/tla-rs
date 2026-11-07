@@ -7,6 +7,7 @@ use std::sync::Arc;
 
 use tla_tools_ast::{Module, Name, Op, OpDecl, Span, Symbol, Unit};
 
+use crate::ErrorKind;
 use crate::expr::{FrameScope, apply, builtin_of};
 use crate::ir::{
     Builtin, ConstId, Declaration, Def, DefBody, DefId, Expr, ExprKind, Local, ModuleId,
@@ -208,26 +209,20 @@ impl Resolver<'_> {
             None => match stdlib::standard_module(name.symbol.as_str()) {
                 Some(source) => (source.to_owned(), true),
                 None => {
-                    return Err(self.error(
-                        from,
-                        name.span,
-                        format!("Cannot find source file for module {}.", name.symbol),
-                    ));
+                    let message = format!("Cannot find source file for module {}.", name.symbol);
+                    let error = self.error(from, name.span, message);
+                    return Err(ResolveError { kind: ErrorKind::Fatal, ..error });
                 }
             },
         };
         let source: Arc<str> = source.into();
-        let modules = tla_tools_parser::parse_modules(&source).map_err(|error| ResolveError {
-            message: error.message,
-            module: name.symbol,
-            span: error.span,
-            line: error.line,
-            column: error.column,
-        })?;
+        let modules = tla_tools_parser::parse_modules(&source)
+            .map_err(|error| ResolveError::syntax(name.symbol, error))?;
         if modules[0].name.symbol != name.symbol {
             let message =
                 format!("File for module {} holds module {}.", name.symbol, modules[0].name.symbol);
-            return Err(self.error(from, name.span, message));
+            let error = self.error(from, name.span, message);
+            return Err(ResolveError { kind: ErrorKind::Fatal, ..error });
         }
         Ok(self.add_file(modules, source, is_standard))
     }
@@ -514,7 +509,8 @@ impl Resolver<'_> {
                 elab.add(definition.name, entry, source)?;
             }
             Unit::Function(definition) => {
-                let def = self.claim_def(elab, definition.name, Vec::new(), true)?;
+                let extent = crate::expr::function_extent(definition);
+                let def = self.claim_def(elab, definition.name, extent, Vec::new(), true)?;
                 let entry =
                     self.operator_entry(elab.module, definition.name, 0, def, definition.is_local);
                 elab.add(definition.name, entry, source)?;
