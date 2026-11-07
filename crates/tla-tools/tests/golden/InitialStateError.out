@@ -1,0 +1,15 @@
+exit 75
+Starting... (DATE)
+Computing initial states...
+Error: TLC expected a boolean value, but did not find one. line 6, col 8 to line 6, col 36 of module InitialStateError
+While working on the initial state:
+x = 1
+
+Error: The error occurred when TLC was evaluating the nested
+expressions at the following positions:
+0. Line 4, column 9 to line 4, column 20 in InitialStateError
+
+
+2 states generated, 2 distinct states found, 2 states left on queue.
+The depth of the complete state graph search is 1.
+Finished in TIME at (DATE)

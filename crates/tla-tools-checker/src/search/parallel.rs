@@ -385,6 +385,7 @@ fn success(
         counts: Counts { generated, distinct, queue: 0, depth },
         out_degrees,
         failure: None,
+        failure_out_degrees: None,
     }
 }
 
@@ -397,6 +398,7 @@ fn fail(message: String) -> tla_tools_eval::EvalError {
         column: 0,
         incomplete: None,
         call_stack: Vec::new(),
+        is_standard: false,
     }
 }
 

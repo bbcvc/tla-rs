@@ -54,6 +54,9 @@ pub struct EvalError {
     /// CallStackTool records them. Only an evaluation under [`Runtime::record_call_stack`]
     /// records them.
     pub call_stack: Vec<CallSite>,
+    /// Whether an operator of a standard module raised the error, which TLC reports without
+    /// the initial state it was working on.
+    pub is_standard: bool,
 }
 
 /// An expression on the call stack of an error: where it is written.
@@ -91,6 +94,7 @@ impl EvalError {
             column,
             incomplete: None,
             call_stack: Vec::new(),
+            is_standard: false,
         }
     }
 }

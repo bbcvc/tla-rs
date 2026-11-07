@@ -34,7 +34,10 @@ trait At<T> {
 
 impl<T> At<T> for tla_tools_value::Result<T> {
     fn at(self, evaluator: &Evaluator, env: &Env<'_>, expr: &Expr) -> Result<T> {
-        self.map_err(|error| evaluator.error(env, expr, error.0))
+        self.map_err(|error| {
+            let is_standard = crate::stdlib::is_module_failure(&error.0);
+            EvalError { is_standard, ..evaluator.error(env, expr, error.0) }
+        })
     }
 }
 
@@ -531,9 +534,13 @@ impl Evaluator {
     ) -> Result<Value> {
         let is_taken = match self.eval(action, env)? {
             Value::Bool(value) => value,
-            value => {
-                let message = format!("Expected an action to be a boolean but found {value}");
-                return Err(self.error(env, action, message));
+            _ => {
+                let form = if is_box { "[A]_e" } else { "<<A>>_e" };
+                let message = format!(
+                    "Attempted to evaluate an expression of form {form}, but A was not a boolean.\n{}",
+                    self.range(env, expr)
+                );
+                return Err(self.error(env, expr, message));
             }
         };
         if is_taken == is_box {

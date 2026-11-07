@@ -72,8 +72,13 @@ pub struct Failure {
     /// What the spec printed as TLC computed them again to find where the error occurred.
     pub printed: Vec<String>,
     /// TLC's description of each expression being evaluated, outermost first, as in
-    /// `Line 3, column 9 to line 3, column 20 in M`.
-    pub call_stack: Vec<String>,
+    /// `Line 3, column 9 to line 3, column 20 in M`, or `None` if the error didn't occur again.
+    pub call_stack: Option<Vec<String>>,
+    /// Whether an operator of a standard module raised the error that occurred again.
+    pub is_standard: bool,
+    /// The initial state a check failed to evaluate on, which TLC prints with the error: its
+    /// variables in TLC's order.
+    pub initial_state: Option<Vec<(String, Value)>>,
 }
 
 /// TLC's buckets of the outdegree.

@@ -11,7 +11,7 @@
 use std::collections::HashMap;
 
 use tla_tools_parser::ModelConfig;
-use tla_tools_resolve::{Builtin, DefBody, DefId, Expr, ExprKind, Level, RootName, Scope, Spec};
+use tla_tools_resolve::{DefBody, DefId, Expr, ExprKind, Level, RootName, Scope, Spec};
 use tla_tools_value::Symbol;
 
 use crate::Error;
@@ -224,7 +224,8 @@ impl Planner<'_> {
                 continue;
             }
             let def = self.operator(kind, name)?;
-            if self.def_level(def) == Level::Constant {
+            // TLC doesn't compute a definition that is a literal when it starts.
+            if self.def_level(def) == Level::Constant && !is_literal(self.spec, def) {
                 let usage = Usage::Predicate { kind, name: name.to_string() };
                 self.plan.constants.push(Constant { def, usage });
             }
@@ -391,20 +392,9 @@ impl Planner<'_> {
                 }
                 let expr = &part.expr;
                 if let Some(operand) = always(expr) {
-                    if let ExprKind::BoxAction { action, sub } = &operand.kind {
-                        // `[A]_v` holds of a step when `A` does or `v` doesn't change.
-                        let unchanged = Expr::new(
-                            ExprKind::Builtin {
-                                op: Builtin::Unchanged,
-                                args: vec![(**sub).clone()],
-                            },
-                            sub.span,
-                        );
-                        let step = Expr::new(
-                            ExprKind::Or(vec![(**action).clone(), unchanged]),
-                            operand.span,
-                        );
-                        let def = self.part_def(&part, &step);
+                    // `[A]_v` holds of a step when `A` does or `v` doesn't change.
+                    if let ExprKind::BoxAction { .. } = &operand.kind {
+                        let def = self.part_def(&part, operand);
                         self.plan.action_properties.push(Check { name: part.name, def });
                         continue;
                     }
@@ -454,15 +444,19 @@ impl Planner<'_> {
     }
 
     fn constant_operator(&mut self, kind: &'static str, name: Symbol, def: DefId) {
-        let is_literal = matches!(
-            &self.spec.def(def).body,
-            DefBody::Expr(Expr { kind: ExprKind::Int(_) | ExprKind::Str(_), .. })
-        );
-        if self.def_level(def) == Level::Constant && !is_literal {
+        if self.def_level(def) == Level::Constant && !is_literal(self.spec, def) {
             let usage = Usage::Operator { kind, name: name.to_string() };
             self.plan.constants.push(Constant { def, usage });
         }
     }
+}
+
+/// Whether the body of `def` is a number or a string, which TLC doesn't compute when it starts.
+fn is_literal(spec: &Spec, def: DefId) -> bool {
+    matches!(
+        &spec.def(def).body,
+        DefBody::Expr(Expr { kind: ExprKind::Int(_) | ExprKind::Str(_), .. })
+    )
 }
 
 #[cfg(test)]

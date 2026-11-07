@@ -174,10 +174,17 @@ pub fn print_outcome(printer: &mut Printer, outcome: &Outcome, liveness: &mut Li
     match outcome.status {
         Status::Error | Status::Unsupported => {
             let message = without_location(outcome.message.as_deref().unwrap_or_default());
-            let text = match outcome.status {
+            let mut text = match outcome.status {
                 Status::Unsupported => format!("tla-rs does not support this model yet: {message}"),
                 _ => message.to_owned(),
             };
+            // TLC prints the initial state a check failed on with the error.
+            let initial =
+                report.failure.as_ref().and_then(|failure| failure.initial_state.as_ref());
+            if let Some(state) = initial {
+                text =
+                    format!("{text}\nWhile working on the initial state:\n{}", format_state(state));
+            }
             printer.print(Level::Error, &text);
             if let Some(trace) = &report.trace {
                 print_trace(printer, trace, BEHAVIOR);
@@ -185,7 +192,9 @@ pub fn print_outcome(printer: &mut Printer, outcome: &Outcome, liveness: &mut Li
             }
             if let Some(failure) = &report.failure {
                 print_lines(printer, &failure.printed);
-                printer.print(Level::Error, &nested_expressions(&failure.call_stack));
+                if let Some(call_stack) = &failure.call_stack {
+                    printer.print(Level::Error, &nested_expressions(call_stack));
+                }
             }
             if report.counts.is_none() {
                 return;

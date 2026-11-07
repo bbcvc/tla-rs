@@ -1,0 +1,29 @@
+exit 255
+Starting... (DATE)
+Computing initial states...
+Finished computing initial states: 1 distinct state generated at DATE.
+Error: Evaluating action property Step failed.
+The second argument of \div is 0.
+Error: The behavior up to this point is:
+State 1: <Initial predicate>
+x = 0
+
+State 2: <Next line 5, col 9 to line 5, col 27 of module ActionPropertyError>
+x = 1
+
+State 3: <Next line 5, col 9 to line 5, col 27 of module ActionPropertyError>
+x = 2
+
+State 4: <Next line 5, col 9 to line 5, col 27 of module ActionPropertyError>
+x = 3
+
+Error: The error occurred when TLC was evaluating the nested
+expressions at the following positions:
+0. Line 7, column 11 to line 7, column 34 in ActionPropertyError
+1. Line 7, column 12 to line 7, column 31 in ActionPropertyError
+2. Line 7, column 12 to line 7, column 26 in ActionPropertyError
+
+
+4 states generated, 4 distinct states found, 0 states left on queue.
+The depth of the complete state graph search is 4.
+Finished in TIME at (DATE)

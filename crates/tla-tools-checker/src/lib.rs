@@ -385,12 +385,17 @@ fn report(evaluator: &Evaluator, tlc_order: &[usize], searched: &search::Search)
     Report {
         trace,
         counts: Some(searched.counts),
-        out_degrees: is_complete.then(|| searched.out_degrees.clone()),
+        out_degrees: match is_complete {
+            true => Some(searched.out_degrees.clone()),
+            false => searched.failure_out_degrees.clone(),
+        },
         assumption: None,
         temporal_properties: searched.violated.clone(),
         failure: searched.failure.as_ref().map(|failure| report::Failure {
             printed: failure.printed.clone(),
-            call_stack: call_stack(spec, &failure.call_stack),
+            call_stack: failure.call_stack.as_ref().map(|sites| call_stack(spec, sites)),
+            is_standard: failure.is_standard,
+            initial_state: failure.initial_state.as_ref().map(variables),
         }),
     }
 }

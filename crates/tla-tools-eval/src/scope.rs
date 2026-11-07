@@ -120,6 +120,7 @@ impl Evaluator {
             column: 0,
             incomplete: None,
             call_stack: Vec::new(),
+            is_standard: false,
         }
     }
 

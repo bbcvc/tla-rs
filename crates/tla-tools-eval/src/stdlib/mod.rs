@@ -33,17 +33,36 @@ impl From<Error> for Failure {
 impl Failure {
     pub(crate) fn into_error(self) -> Error {
         match self {
-            Self::Module(error) | Self::Eval(error) => error,
+            Self::Module(error) => noted(error),
+            Self::Eval(error) => error,
         }
     }
 
     /// The error TLC reports when this fails inside the Java method `signature`.
     fn in_java(self, signature: &str) -> Error {
         match self {
-            Self::Module(error) => error,
+            Self::Module(error) => noted(error),
             Self::Eval(error) => java_error(signature, &error.0),
         }
     }
+}
+
+thread_local! {
+    /// The message of the last [`Failure::Module`] of the thread, which a native's error
+    /// keeps as it turns into an [`EvalError`](crate::EvalError) and back.
+    static MODULE_FAILURE: std::cell::RefCell<String> = const { std::cell::RefCell::new(String::new()) };
+}
+
+/// Notes the error of a [`Failure::Module`].
+fn noted(error: Error) -> Error {
+    MODULE_FAILURE.with(|failure| failure.borrow_mut().clone_from(&error.0));
+    error
+}
+
+/// Whether `message` is that of a failure of a standard module's Java code, which TLC reports
+/// otherwise than one of its own evaluation.
+pub(crate) fn is_module_failure(message: &str) -> bool {
+    !message.is_empty() && MODULE_FAILURE.with(|failure| *failure.borrow() == message)
 }
 
 /// What a native computes: a value, or a [`Failure`].

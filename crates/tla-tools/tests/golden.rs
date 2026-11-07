@@ -114,4 +114,7 @@ golden! {
     call_stack_of_an_error_in_the_initial_predicate: "InitCallStack",
     semantic_error: "SemanticError",
     missing_module: "MissingModule",
+    invariant_that_fails_to_evaluate: "InvariantError",
+    initial_state_a_check_fails_on: "InitialStateError",
+    action_property_that_fails_to_evaluate: "ActionPropertyError",
 }

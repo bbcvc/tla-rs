@@ -7,6 +7,7 @@ pub const ASSUMPTION_VIOLATION: i32 = 10;
 pub const DEADLOCK: i32 = 11;
 pub const SAFETY_VIOLATION: i32 = 12;
 pub const LIVENESS_VIOLATION: i32 = 13;
+pub const ASSERT_VIOLATION: i32 = 14;
 pub const SPEC_EVALUATION_FAILURE: i32 = 75;
 pub const SAFETY_EVALUATION_FAILURE: i32 = 76;
 pub const SPEC_PARSE_ERROR: i32 = 150;
@@ -32,10 +33,33 @@ pub fn for_outcome(outcome: &Outcome) -> i32 {
         Status::InvariantViolation | Status::PropertyViolation => SAFETY_VIOLATION,
         Status::LivenessViolation => LIVENESS_VIOLATION,
         Status::Unsupported => ERROR,
-        // TLC exits with its general error status when computing a successor fails.
+        // TLC exits with its own status when an invariant fails to evaluate on a successor.
+        Status::Error if is_invariant_failure(outcome) => SAFETY_EVALUATION_FAILURE,
+        Status::Error if let Some(code) = for_replayed_error(outcome) => code,
+        // TLC exits with its general error status when anything else about a successor fails.
         Status::Error if outcome.report.trace.is_some() => ERROR,
         Status::Error => for_error(outcome.message.as_deref().unwrap_or_default()),
     }
+}
+
+/// TLC's exit status when the error occurs again as it computes the initial states, or the
+/// successors of a state, with its call stack: the failure of a standard module's Java code
+/// exits with its own status after the initial states, which is TLC's general error status but
+/// for `Assert`, and anything else as a failure to evaluate the spec.
+fn for_replayed_error(outcome: &Outcome) -> Option<i32> {
+    let failure = outcome.report.failure.as_ref()?;
+    failure.call_stack.as_ref()?;
+    if !failure.is_standard || outcome.report.trace.is_none() {
+        return Some(SPEC_EVALUATION_FAILURE);
+    }
+    let message = outcome.message.as_deref().unwrap_or_default();
+    let is_assert = message.starts_with("The first argument of Assert evaluated to FALSE");
+    Some(if is_assert { ASSERT_VIOLATION } else { ERROR })
+}
+
+fn is_invariant_failure(outcome: &Outcome) -> bool {
+    let message = outcome.message.as_deref().unwrap_or_default();
+    message.starts_with("Evaluating invariant ") && outcome.report.trace.is_some()
 }
 
 /// TLC's exit status for an error before the search expands a state: one in the

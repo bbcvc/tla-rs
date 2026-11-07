@@ -20,7 +20,7 @@ use std::sync::{Arc, Mutex};
 
 use tla_tools_eval::{CallSite, EvalError, Evaluator, Result, State, Statistics};
 use tla_tools_resolve::DefId;
-use tla_tools_value::{Symbol, Value};
+use tla_tools_value::Symbol;
 
 use crate::fingerprint::Fingerprinter;
 use crate::liveness::checker::{Checker, LiveSuccessor};
@@ -112,6 +112,8 @@ pub struct Search {
     pub out_degrees: Vec<u64>,
     /// Where an error computing the initial states or the successors of a state occurred.
     pub failure: Option<Failure>,
+    /// The outdegrees TLC prints after a check failed to evaluate on a successor, if it does.
+    pub failure_out_degrees: Option<Vec<u64>>,
 }
 
 /// Where an error computing the initial states or the successors of a state occurred, which
@@ -120,8 +122,33 @@ pub struct Search {
 pub struct Failure {
     /// What the spec printed as TLC computed them again.
     pub printed: Vec<String>,
-    /// The expressions being evaluated when the error occurred, outermost first.
-    pub call_stack: Vec<CallSite>,
+    /// The expressions being evaluated when the error occurred again, outermost first, or
+    /// `None` if it didn't occur again.
+    pub call_stack: Option<Vec<CallSite>>,
+    /// Whether an operator of a standard module raised the error that occurred again, which
+    /// decides TLC's exit status.
+    pub is_standard: bool,
+    /// The initial state a check failed to evaluate on, which TLC prints with the error unless
+    /// an operator of a standard module raised it.
+    pub initial_state: Option<State>,
+}
+
+/// A check that failed to evaluate on a state the search found, which TLC reports otherwise
+/// than an error computing the states.
+struct CheckFailure {
+    kind: CheckKind,
+    /// The state checked: an initial state, or the successor of a step.
+    state: State,
+    is_standard: bool,
+}
+
+#[derive(Clone, Debug)]
+enum CheckKind {
+    Invariant(String),
+    ActionProperty(String),
+    /// A constraint, an action constraint, a `_POSSIBLE` predicate, or a property TLC checks on
+    /// the initial states.
+    Other,
 }
 
 /// What `TLCGet("level")` reads: the state the model checker expands, with its index, and the
@@ -189,6 +216,17 @@ struct Explorer<'a, S: Successors + ?Sized> {
     new_successors: u64,
     out_degrees: Vec<u64>,
     failure: Option<Failure>,
+    /// The check that last failed to evaluate.
+    check_failure: RefCell<Option<CheckFailure>>,
+    /// Whether the initial state being checked is one TLC has queued already, which it counts
+    /// as left on the queue when a check of it fails to evaluate.
+    is_initial_queued: bool,
+    /// Whether the search ended as a check failed to evaluate on a successor, after which TLC
+    /// doesn't compute the behavior again once it has printed it.
+    is_failed_check: bool,
+    failure_out_degrees: Option<Vec<u64>>,
+    /// Whether the successor being checked is new, which TLC counts before it checks it.
+    is_successor_new: bool,
 }
 
 /// What a visit to a state found.
@@ -252,6 +290,11 @@ pub fn search<S: Successors + ?Sized>(
         new_successors: 0,
         out_degrees: vec![0; OUT_DEGREE_BUCKETS],
         failure: None,
+        check_failure: RefCell::new(None),
+        is_initial_queued: false,
+        is_failed_check: false,
+        failure_out_degrees: None,
+        is_successor_new: false,
     };
     let (ending, trail) = explorer.run();
     // The states stored on the way to the violation, the last of them the one it was found from.
@@ -285,7 +328,10 @@ pub fn search<S: Successors + ?Sized>(
     let runtime = explorer.evaluator.runtime();
     let trace = runtime.capture(|| trail.map(|trail| explorer.behavior(trail))).0;
     let trace = trace.unwrap_or_default();
-    let steps = explorer.steps(&trace, shape);
+    let mut steps = explorer.steps(&trace, shape);
+    if explorer.is_failed_check {
+        steps.printed_last.clear();
+    }
     let violated = match (&ending, &explorer.liveness) {
         (Ending::LivenessViolation | Ending::TemporalViolation, Some(liveness)) => {
             let cycle_start = loop_start.unwrap_or(trace.len().saturating_sub(1));
@@ -307,6 +353,7 @@ pub fn search<S: Successors + ?Sized>(
         counts: explorer.counts(),
         out_degrees: explorer.out_degrees,
         failure: explorer.failure,
+        failure_out_degrees: explorer.failure_out_degrees,
     }
 }
 
@@ -329,8 +376,14 @@ impl<S: Successors + ?Sized> Explorer<'_, S> {
         });
         self.cursor.lock().unwrap().candidate = None;
         if let Err(error) = result {
-            if !has_failed_check {
-                self.failure = Some(self.find_failure(None));
+            match self.check_failure.take() {
+                Some(failure) => {
+                    let mut replayed = self.find_failure(None, None);
+                    replayed.initial_state = (!failure.is_standard).then_some(failure.state);
+                    self.failure = Some(replayed);
+                }
+                None if !has_failed_check => self.failure = Some(self.find_failure(None, None)),
+                None => {}
             }
             return (Ending::Error(error.to_string()), None);
         }
@@ -380,8 +433,38 @@ impl<S: Successors + ?Sized> Explorer<'_, S> {
                     }
                 }
             });
-            if result.is_err() && !has_failed_check {
-                self.failure = Some(self.find_failure(Some((&state, depth, index))));
+            let check_failure = self.check_failure.take();
+            if result.is_err() && (check_failure.is_some() || !has_failed_check) {
+                // TLC adds a successor to its states before it checks its invariants and the
+                // action properties.
+                let unstored = check_failure
+                    .as_ref()
+                    .filter(|failure| !matches!(failure.kind, CheckKind::Other))
+                    .map(|failure| &failure.state);
+                self.failure = Some(self.find_failure(Some((&state, depth, index)), unstored));
+            }
+            // TLC reports a check that fails to evaluate on a successor with the behavior to the
+            // successor, and names an invariant or an action property.
+            if let (Err(error), Some(failure)) = (&result, check_failure) {
+                let message = match &failure.kind {
+                    CheckKind::Invariant(name) => {
+                        format!("Evaluating invariant {name} failed.\n{error}")
+                    }
+                    CheckKind::ActionProperty(name) => {
+                        format!("Evaluating action property {name} failed.\n{error}")
+                    }
+                    CheckKind::Other => error.to_string(),
+                };
+                self.is_failed_check = true;
+                // When the error doesn't occur again, TLC prints the outdegrees, counting the
+                // state it was expanding.
+                if self.failure.as_ref().is_some_and(|failure| failure.call_stack.is_none()) {
+                    let mut degrees = self.out_degrees.clone();
+                    let new = self.new_successors + u64::from(self.is_successor_new);
+                    degrees[(new as usize).min(OUT_DEGREE_BUCKETS - 1)] += 1;
+                    self.failure_out_degrees = Some(degrees);
+                }
+                return (Ending::Error(message), Some(Trail::at(Some(index), Some(failure.state))));
             }
             self.evaluator.runtime().set_expanding(None);
             {
@@ -428,19 +511,40 @@ impl<S: Successors + ?Sized> Explorer<'_, S> {
     /// Where computing the initial states, or the successors of `expanding` at its depth and
     /// index in the store, fails: TLC computes them again, recording the expressions it evaluates, and prints where
     /// the error occurred.
-    fn find_failure(&self, expanding: Option<(&State, u32, usize)>) -> Failure {
+    ///
+    /// `unstored` is a successor TLC had added to its states before a check failed on it.
+    fn find_failure(
+        &self,
+        expanding: Option<(&State, u32, usize)>,
+        unstored: Option<&State>,
+    ) -> Failure {
         let runtime = self.evaluator.runtime();
         let compute = || match expanding {
-            None => self.successors.init_states(&self.plan.init, &mut |_| Ok(true)),
+            None => self
+                .successors
+                .init_states(&self.plan.init, &mut |state| self.check_replayed_initial(&state)),
             Some((state, depth, index)) => {
                 let Some(next) = self.plan.next else { return Ok(()) };
                 self.cursor.lock().unwrap().expanding = Some((state.clone(), depth as i32, index));
                 runtime.set_expanding(Some(state.clone()));
                 // TLC computes the successors of each action it splits the relation into.
+                let mut seen = std::collections::HashSet::new();
+                seen.extend(unstored.and_then(|unstored| self.fingerprint(unstored).ok()));
+                // TLC checks the successors of an action once it has computed them all.
                 let result = self.evaluator.next_actions(next).and_then(|actions| {
-                    actions.iter().try_for_each(|action| {
-                        self.evaluator.action_states(action, state, &mut |_| Ok(true))
-                    })
+                    for action in actions.iter() {
+                        let mut successors = Vec::new();
+                        self.evaluator.action_states(action, state, &mut |successor| {
+                            successors.push(successor);
+                            Ok(true)
+                        })?;
+                        for successor in &successors {
+                            if !self.check_replayed_successor(state, successor, &mut seen)? {
+                                return Ok(());
+                            }
+                        }
+                    }
+                    Ok(())
                 });
                 runtime.set_expanding(None);
                 self.cursor.lock().unwrap().expanding = None;
@@ -448,9 +552,45 @@ impl<S: Successors + ?Sized> Explorer<'_, S> {
             }
         };
         let (result, printed) = runtime.capture(|| runtime.record_call_stack(compute));
-        let mut call_stack = result.err().map(|error| error.call_stack).unwrap_or_default();
-        call_stack.reverse();
-        Failure { printed, call_stack }
+        self.check_failure.take();
+        let is_standard = result.as_ref().is_err_and(|error| error.is_standard);
+        let call_stack = result.err().map(|error| error.call_stack.into_iter().rev().collect());
+        Failure { printed, call_stack, is_standard, initial_state: None }
+    }
+
+    /// TLC's checks of an initial state it finds again with its CallStackTool: the constraints,
+    /// the invariants, and the properties of the initial states. It stops at a violation.
+    fn check_replayed_initial(&self, state: &State) -> Result<bool> {
+        self.all_hold(&self.plan.constraints, state, None)?;
+        let other = |_: &str| CheckKind::Other;
+        if self.first_failing(&self.plan.invariants, state, None, other)?.is_some() {
+            return Ok(false);
+        }
+        Ok(self.first_failing(&self.plan.initial_predicates, state, None, other)?.is_none())
+    }
+
+    /// TLC's checks of a successor of `state` it finds again with its CallStackTool: the
+    /// constraints, then the invariants of a successor it has seen neither in the search nor
+    /// again, and the action properties. It stops at a violation.
+    fn check_replayed_successor(
+        &self,
+        state: &State,
+        successor: &State,
+        seen: &mut std::collections::HashSet<u128>,
+    ) -> Result<bool> {
+        let other = |_: &str| CheckKind::Other;
+        let is_in_model = self.all_hold(&self.plan.constraints, successor, None)?
+            && self.all_hold(&self.plan.action_constraints, state, Some(successor))?;
+        let is_unseen = !is_in_model || {
+            let fingerprint = self.fingerprint(successor)?;
+            !self.is_found(fingerprint) && seen.insert(fingerprint)
+        };
+        if is_unseen && self.first_failing(&self.plan.invariants, successor, None, other)?.is_some()
+        {
+            return Ok(false);
+        }
+        let properties = &self.plan.action_properties;
+        Ok(self.first_failing(properties, state, Some(successor), other)?.is_none())
     }
 
     /// The behavior that ends in `trail`, rebuilt as TLC rebuilds it: from the initial states,
@@ -538,7 +678,7 @@ impl<S: Successors + ?Sized> Explorer<'_, S> {
         Counts {
             generated: count(statistics.generated),
             distinct: count(statistics.distinct),
-            queue: self.queue.len() as u64,
+            queue: self.queue.len() as u64 + u64::from(self.is_initial_queued),
             depth,
         }
     }
@@ -570,25 +710,37 @@ impl<S: Successors + ?Sized> Explorer<'_, S> {
             Some(next) => self.evaluator.eval_action(check.def, state, next)?,
             None => self.evaluator.eval_def(check.def, Some(state))?,
         };
-        value.as_bool().ok_or_else(|| self.not_boolean(check, &value))
+        value.as_bool().ok_or_else(|| self.not_boolean(check))
     }
 
-    fn not_boolean(&self, check: &Check, value: &Value) -> EvalError {
+    /// TLC's error for a check whose value isn't a boolean, which describes the body of its
+    /// definition: by its range, or as written for a numeral.
+    fn not_boolean(&self, check: &Check) -> EvalError {
         let spec = self.evaluator.spec();
         let def = spec.def(check.def);
         let module = &spec.modules[def.module.index()];
         let (line, column) = def.span.line_column(&module.source);
+        let body = match &def.body {
+            tla_tools_resolve::DefBody::Expr(body) => body.span,
+            tla_tools_resolve::DefBody::Function { body, .. } => body.span,
+        };
+        let text = &module.source[body.start as usize..body.end as usize];
+        let end = body.start as usize + text.trim_end().len();
+        let body = tla_tools_ast::Span::new(body.start as usize, end);
+        let is_numeral = !text.is_empty() && text.trim().chars().all(|char| char.is_ascii_digit());
+        let node = match is_numeral {
+            true => text.trim().to_owned(),
+            false => crate::plan::describe_range(spec, def.module, body),
+        };
         EvalError {
-            message: format!(
-                "TLC expected a boolean value, but did not find one. {} is {value}",
-                check.name
-            ),
+            message: format!("TLC expected a boolean value, but did not find one. {node}"),
             module: module.name,
             span: def.span,
             line,
             column,
             incomplete: None,
             call_stack: Vec::new(),
+            is_standard: false,
         }
     }
 
@@ -601,18 +753,33 @@ impl<S: Successors + ?Sized> Explorer<'_, S> {
         Ok(true)
     }
 
+    /// The first of `checks` that fails in `state`, followed by `next` for an action. A check
+    /// that fails to evaluate is noted as of `kind`, on `next` if there is one.
     fn first_failing<'c>(
         &self,
         checks: &'c [Check],
         state: &State,
         next: Option<&State>,
+        kind: impl Fn(&str) -> CheckKind,
     ) -> Result<Option<&'c Check>> {
         for check in checks {
-            if !self.holds(check, state, next)? {
-                return Ok(Some(check));
+            match self.holds(check, state, next) {
+                Ok(true) => {}
+                Ok(false) => return Ok(Some(check)),
+                Err(error) => {
+                    return Err(self.failed(kind(&check.name), next.unwrap_or(state), error));
+                }
             }
         }
         Ok(None)
+    }
+
+    /// Notes that a check of `kind` failed to evaluate on `state`.
+    fn failed(&self, kind: CheckKind, state: &State, error: EvalError) -> EvalError {
+        let is_standard = error.is_standard;
+        *self.check_failure.borrow_mut() =
+            Some(CheckFailure { kind, state: state.clone(), is_standard });
+        error
     }
 
     /// Counts the `_POSSIBLE` predicates that `state`, or the step to `next`, witnesses, in the
@@ -636,6 +803,7 @@ impl<S: Successors + ?Sized> Explorer<'_, S> {
             column: 0,
             incomplete: None,
             call_stack: Vec::new(),
+            is_standard: false,
         })
     }
 
@@ -657,9 +825,10 @@ impl<S: Successors + ?Sized> Explorer<'_, S> {
         self.update_statistics(None);
         self.cursor.lock().unwrap().candidate = Some((state.clone(), 1));
         let fingerprint = self.fingerprint(&state)?;
-        let is_in_model = self.all_hold(&self.plan.constraints, &state, None)?;
+        let failed = |error| self.failed(CheckKind::Other, &state, error);
+        let is_in_model = self.all_hold(&self.plan.constraints, &state, None).map_err(failed)?;
         if is_in_model {
-            self.track_possible(&self.plan.possible, &state, None)?;
+            self.track_possible(&self.plan.possible, &state, None).map_err(failed)?;
         }
         if is_in_model && self.is_found(fingerprint) {
             return Ok(Visit::Continue);
@@ -668,15 +837,19 @@ impl<S: Successors + ?Sized> Explorer<'_, S> {
             self.update_statistics(Some(1));
             self.add_live_initial_state(&state)?;
         }
+        self.is_initial_queued = is_in_model;
         let trail = |state: &State| Trail::at(None, Some(state.clone()));
-        if let Some(check) = self.first_failing(&self.plan.invariants, &state, None)? {
+        let other = |_: &str| CheckKind::Other;
+        if let Some(check) = self.first_failing(&self.plan.invariants, &state, None, other)? {
             let ending = Ending::InvariantViolation(check.name.clone());
             return Ok(Visit::Stop(ending, trail(&state)));
         }
-        if let Some(check) = self.first_failing(&self.plan.initial_predicates, &state, None)? {
+        let predicates = &self.plan.initial_predicates;
+        if let Some(check) = self.first_failing(predicates, &state, None, other)? {
             let ending = Ending::PropertyViolation(check.name.clone());
             return Ok(Visit::Stop(ending, trail(&state)));
         }
+        self.is_initial_queued = false;
         if is_in_model {
             self.store(fingerprint, state, None, 1);
         }
@@ -697,14 +870,19 @@ impl<S: Successors + ?Sized> Explorer<'_, S> {
         let fingerprint = self.fingerprint(&successor)?;
         let found = self.store.lock().unwrap().find(fingerprint);
         let is_found = found.is_some();
-        let is_state_in_model = self.all_hold(&self.plan.constraints, &successor, None)?;
+        let failed = |error| self.failed(CheckKind::Other, &successor, error);
+        let is_state_in_model =
+            self.all_hold(&self.plan.constraints, &successor, None).map_err(failed)?;
         if is_state_in_model {
-            self.track_possible(&self.plan.possible, &successor, None)?;
+            self.track_possible(&self.plan.possible, &successor, None).map_err(failed)?;
         }
         let is_in_model = is_state_in_model
-            && self.all_hold(&self.plan.action_constraints, state, Some(&successor))?;
+            && self
+                .all_hold(&self.plan.action_constraints, state, Some(&successor))
+                .map_err(failed)?;
         if is_in_model {
-            self.track_possible(&self.plan.action_possible, state, Some(&successor))?;
+            let possible = &self.plan.action_possible;
+            self.track_possible(possible, state, Some(&successor)).map_err(failed)?;
         }
         let is_new = is_in_model && !is_found;
         if self.liveness.is_some() && is_in_model {
@@ -715,15 +893,20 @@ impl<S: Successors + ?Sized> Explorer<'_, S> {
         if is_new {
             self.update_statistics(Some(depth + 1));
         }
+        self.is_successor_new = is_new;
         let trace = || Trail::at(Some(parent), Some(successor.clone()));
         // TLC checks the invariants of a state it hasn't stored, one the constraints exclude
         // included.
+        let invariant = |name: &str| CheckKind::Invariant(name.to_owned());
         if !(is_in_model && is_found)
-            && let Some(check) = self.first_failing(&self.plan.invariants, &successor, None)?
+            && let Some(check) =
+                self.first_failing(&self.plan.invariants, &successor, None, invariant)?
         {
             return Ok(Visit::Stop(Ending::InvariantViolation(check.name.clone()), trace()));
         }
-        let property = self.first_failing(&self.plan.action_properties, state, Some(&successor))?;
+        let property = |name: &str| CheckKind::ActionProperty(name.to_owned());
+        let properties = &self.plan.action_properties;
+        let property = self.first_failing(properties, state, Some(&successor), property)?;
         if let Some(check) = property {
             return Ok(Visit::Stop(Ending::PropertyViolation(check.name.clone()), trace()));
         }
