@@ -1,0 +1,37 @@
+exit 13
+Starting... (DATE)
+Implied-temporal checking--satisfiability problem has 1 branches.
+Computing initial states...
+Finished computing initial states: 1 distinct state generated at DATE.
+Progress(4) at DATE: 5 states generated, 4 distinct states found, 0 states left on queue.
+Checking temporal properties for the complete state space with 4 total distinct states at (DATE)
+Error: Temporal property Prop was violated.
+
+Error: The following behavior constitutes a counter-example:
+
+State 1: <Initial predicate>
+/\ now = 0
+/\ next = 1
+/\ level = 1
+
+State 2: <Next line 5, col 9 to line 5, col 39 of module AliasLasso>
+/\ now = 1
+/\ next = 2
+/\ level = 2
+
+State 3: <Next line 5, col 9 to line 5, col 39 of module AliasLasso>
+/\ now = 2
+/\ next = 3
+/\ level = 3
+
+State 4: <Next line 5, col 9 to line 5, col 39 of module AliasLasso>
+/\ now = 3
+/\ next = 1
+/\ level = 4
+
+Back to state 2: <Next line 5, col 9 to line 5, col 39 of module AliasLasso>
+
+Finished checking temporal properties in TIME at DATE
+5 states generated, 4 distinct states found, 0 states left on queue.
+The depth of the complete state graph search is 4.
+Finished in TIME at (DATE)

@@ -46,21 +46,15 @@ fn temporal_headline(names: &[String]) -> String {
     }
 }
 
-/// Prints the behavior, with what the spec printed as TLC computed its states again: those it
-/// computes before it prints the heading, then each other one right before its state.
+/// Prints the behavior, with what the spec printed as TLC computed its states again and
+/// evaluated their alias: before the heading, before each state, and after the behavior.
 fn print_trace(printer: &mut Printer, trace: &Trace, heading: &str) {
-    let steps = &trace.steps;
-    let before = trace.printed_before.min(steps.len());
-    for step in &steps[..before] {
-        print_lines(printer, &step.printed);
-    }
-    if !steps.is_empty() {
+    print_lines(printer, &trace.printed_before);
+    if !trace.steps.is_empty() {
         printer.print(Level::Error, heading);
     }
-    for (index, step) in steps.iter().enumerate() {
-        if index >= before {
-            print_lines(printer, &step.printed);
-        }
+    for (index, step) in trace.steps.iter().enumerate() {
+        print_lines(printer, &step.printed);
         let action = match (&step.action, index) {
             (Some(action), _) => action.as_str(),
             (None, 0) => "Initial predicate",
@@ -115,6 +109,7 @@ fn print_violation(printer: &mut Printer, outcome: &Outcome) -> bool {
         Status::LivenessViolation => format!("Action property {name} is violated."),
         _ => outcome.message.clone().unwrap_or_default(),
     };
+    print_lines(printer, &trace.printed_first);
     if is_initial {
         let state = format_state(&trace.steps[0].variables);
         printer.print(Level::Error, &format!("{headline}\n{state}"));
@@ -135,6 +130,7 @@ fn print_violation(printer: &mut Printer, outcome: &Outcome) -> bool {
             println!("Back to state {}{}", start + 1, action.unwrap_or_default());
         }
     }
+    print_lines(printer, &trace.printed_last);
     true
 }
 
@@ -170,6 +166,7 @@ pub fn print_outcome(printer: &mut Printer, outcome: &Outcome, liveness: &mut Li
             printer.print(Level::Error, &text);
             if let Some(trace) = &report.trace {
                 print_trace(printer, trace, BEHAVIOR);
+                print_lines(printer, &trace.printed_last);
             }
             if report.counts.is_none() {
                 return;

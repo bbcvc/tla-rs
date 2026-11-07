@@ -11,13 +11,15 @@ pub struct Step {
     /// Where TLC says the action that leads to the state is, as in
     /// `Next line 4, col 7 to line 4, col 12 of module M`, or `None` for an initial state.
     pub action: Option<String>,
-    /// The variables and their values, in TLC's order of the variables.
+    /// The variables and their values, in TLC's order of the variables, or the fields of the
+    /// `ALIAS` TLC prints instead.
     pub variables: Vec<(String, Value)>,
-    /// What the spec printed with `Print` and `PrintT` as TLC computed the state again.
+    /// What the spec printed with `Print` and `PrintT` that TLC prints right before the state.
     pub printed: Vec<String>,
 }
 
-/// The behavior that leads to a violation.
+/// The behavior that leads to a violation, with what the spec printed with `Print` and
+/// `PrintT` as TLC computed its states again and evaluated the alias, where TLC prints it.
 #[derive(Clone, Debug, Default)]
 pub struct Trace {
     pub steps: Vec<Step>,
@@ -26,12 +28,14 @@ pub struct Trace {
     pub loop_start: Option<usize>,
     /// The action of the step from the last state back to the one at `loop_start`.
     pub loop_action: Option<String>,
-    /// What the spec printed as TLC computed the step back to the one at `loop_start` again.
+    /// What TLC prints before the violation.
+    pub printed_first: Vec<String>,
+    /// What TLC prints before the behavior's heading.
+    pub printed_before: Vec<String>,
+    /// What TLC prints before the step back to the one at `loop_start`.
     pub loop_printed: Vec<String>,
-    /// How many steps TLC computes again before it prints the behavior's heading, which prints
-    /// what the spec printed computing them before the heading. TLC prints what the spec
-    /// printed computing each other step right before the step.
-    pub printed_before: usize,
+    /// What TLC prints after the behavior.
+    pub printed_last: Vec<String>,
 }
 
 /// An assumption that doesn't hold.

@@ -351,26 +351,35 @@ pub fn check<S: Successors + Sync>(
 /// What TLC prints about the search beyond its verdict.
 fn report(evaluator: &Evaluator, tlc_order: &[usize], searched: &search::Search) -> Report {
     let spec = evaluator.spec();
-    let steps = searched
-        .trace
-        .iter()
-        .zip(&searched.steps.actions)
-        .zip(&searched.steps.printed)
-        .map(|((state, action), printed)| report::Step {
-            action: action.clone(),
-            variables: tlc_order
-                .iter()
-                .map(|&index| (spec.variables[index].name.to_string(), state[index].clone()))
-                .collect(),
-            printed: printed.clone(),
-        })
-        .collect();
+    let steps = &searched.steps;
+    let variables = |state: &tla_tools_eval::State| {
+        tlc_order
+            .iter()
+            .map(|&index| (spec.variables[index].name.to_string(), state[index].clone()))
+            .collect()
+    };
     let trace = (!searched.trace.is_empty()).then(|| report::Trace {
-        steps,
+        steps: searched
+            .trace
+            .iter()
+            .enumerate()
+            .map(|(index, state)| report::Step {
+                action: steps.actions.get(index).cloned().flatten(),
+                variables: steps
+                    .shown
+                    .get(index)
+                    .cloned()
+                    .flatten()
+                    .unwrap_or_else(|| variables(state)),
+                printed: steps.printed.get(index).cloned().unwrap_or_default(),
+            })
+            .collect(),
         loop_start: searched.loop_start,
-        loop_action: searched.steps.loop_action.clone(),
-        loop_printed: searched.steps.loop_printed.clone(),
-        printed_before: searched.printed_before,
+        loop_action: steps.loop_action.clone(),
+        printed_first: steps.printed_first.clone(),
+        printed_before: steps.printed_before.clone(),
+        loop_printed: steps.loop_printed.clone(),
+        printed_last: steps.printed_last.clone(),
     });
     let is_complete = searched.ending == Ending::Success;
     Report {

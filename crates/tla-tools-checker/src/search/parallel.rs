@@ -378,7 +378,6 @@ fn success(
         trace: Vec::new(),
         steps: Default::default(),
         loop_start: None,
-        printed_before: 0,
         violated: Vec::new(),
         generated,
         distinct,

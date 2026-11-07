@@ -1,0 +1,58 @@
+exit 12
+Starting... (DATE)
+Computing initial states...
+"init"
+Finished computing initial states: 1 distinct state generated at DATE.
+<<"next", 0>>
+<<"next", 1>>
+<<"next", 2>>
+Error: Invariant Inv is violated.
+"init"
+<<"next", 0>>
+Error: The behavior up to this point is:
+<<"alias", 0>>
+State 1: <Initial predicate>
+/\ count = 0
+/\ label = "a"
+/\ next = 1
+/\ level = 1
+/\ printed = TRUE
+/\ ratio = 5
+
+<<"alias", 1>>
+State 2: <Next line 5, col 9 to line 5, col 53 of module Alias>
+/\ count = 1
+/\ label = "a"
+/\ next = 2
+/\ level = 2
+/\ printed = TRUE
+/\ ratio = 10
+
+<<"next", 1>>
+<<"alias", 2>>
+State 3: <Next line 5, col 9 to line 5, col 53 of module Alias>
+/\ x = 2
+/\ y = "a"
+/\ _ALIASEvalError = "The second argument of \\div is 0."
+
+<<"next", 2>>
+<<"alias", 3>>
+State 4: <Next line 5, col 9 to line 5, col 53 of module Alias>
+/\ count = 3
+/\ label = "a"
+/\ next = 3
+/\ level = 4
+/\ printed = TRUE
+/\ ratio = -10
+
+"init"
+<<"next", 0>>
+<<"next", 1>>
+<<"next", 2>>
+<<"alias", 0>>
+<<"alias", 1>>
+<<"alias", 2>>
+<<"alias", 3>>
+4 states generated, 4 distinct states found, 0 states left on queue.
+The depth of the complete state graph search is 4.
+Finished in TIME at (DATE)

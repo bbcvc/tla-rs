@@ -11,6 +11,7 @@ pub mod parallel;
 mod store;
 mod trace;
 
+use trace::Shape;
 pub use trace::Steps;
 
 use std::cell::RefCell;
@@ -95,14 +96,11 @@ pub struct Search {
     pub trace_length: usize,
     /// That behavior, rebuilt from the initial states, as far as it could be.
     pub trace: Vec<State>,
-    /// The action of each step of the trace and of the step back for a lasso, and what the spec
-    /// printed as TLC computed them again.
+    /// What TLC prints for the states of the trace: the action of each step, the variables or
+    /// the alias of each state, and what the spec prints meanwhile.
     pub steps: Steps,
     /// For a lasso, the index of the state the trace loops back to.
     pub loop_start: Option<usize>,
-    /// How many states of the trace TLC computes again before it prints the behavior, which
-    /// puts what the spec prints computing them before the behavior's heading.
-    pub printed_before: usize,
     /// The names of the temporal properties a liveness counterexample violates.
     pub violated: Vec<String>,
     pub generated: u64,
@@ -257,25 +255,23 @@ pub fn search<S: Successors + ?Sized>(
         }
         None => 0,
     };
-    // TLC's `printTrace` computes again the stored states before the last one, and then prints
-    // the behavior, computing the last stored state and the violating successor again as it
-    // prints them. It computes the initial state only when another stored state follows it.
-    // It computes a liveness counterexample again as it prints it.
-    let (computes_initial, printed_before) = match &trail {
-        Some(Trail::Search { .. }) => (stored >= 2, stored.saturating_sub(1)),
-        _ => (true, 0),
-    };
     let loop_start = match &trail {
         Some(Trail::Live { states, cycle_start }) => {
             Some(*cycle_start).filter(|start| *start < states.len())
         }
         _ => None,
     };
+    let shape = match &trail {
+        Some(Trail::Live { .. }) => Shape::Live { loop_start },
+        Some(Trail::Search { last, .. }) if stored == 0 && last.is_some() => Shape::Initial,
+        Some(Trail::Search { last, .. }) => Shape::Safety { stored, has_last: last.is_some() },
+        None => Shape::Safety { stored, has_last: false },
+    };
     // What the spec prints finding the behavior again isn't what TLC prints.
     let runtime = explorer.evaluator.runtime();
     let trace = runtime.capture(|| trail.map(|trail| explorer.behavior(trail))).0;
     let trace = trace.unwrap_or_default();
-    let steps = explorer.steps(&trace, loop_start, computes_initial);
+    let steps = explorer.steps(&trace, shape);
     let violated = match (&ending, &explorer.liveness) {
         (Ending::LivenessViolation | Ending::TemporalViolation, Some(liveness)) => {
             let cycle_start = loop_start.unwrap_or(trace.len().saturating_sub(1));
@@ -290,7 +286,6 @@ pub fn search<S: Successors + ?Sized>(
         trace,
         steps,
         loop_start,
-        printed_before,
         violated,
         generated: explorer.generated,
         distinct,

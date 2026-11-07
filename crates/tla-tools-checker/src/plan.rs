@@ -56,6 +56,9 @@ pub struct Plan {
     pub action_constraints: Vec<Check>,
     /// The `VIEW`, whose value tells states apart instead of their variables.
     pub view: Option<DefId>,
+    /// The `ALIAS`, whose record TLC prints for each state of a behavior instead of its
+    /// variables, or why TLC can't evaluate it, which it prints with the variables.
+    pub alias: Option<Result<DefId, String>>,
     /// The `_POSSIBLE` state predicates, each of which some state of the model must satisfy.
     pub possible: Vec<Check>,
     /// The `_POSSIBLE` actions, each of which some step of the model must satisfy.
@@ -153,6 +156,10 @@ pub fn plan(
     planner.possible(&config.possible)?;
     if let Some(view) = config.view {
         planner.plan.view = Some(planner.operator("view function", view)?);
+    }
+    // TLC looks the alias up only to print a state, and prints why it can't with the state.
+    if let Some(alias) = config.alias {
+        planner.plan.alias = Some(planner.operator("alias", alias).map_err(|error| error.message));
     }
     planner.postconditions(&config.postconditions);
     // TLC builds the liveness checker, which translates the temporal formulas, only when

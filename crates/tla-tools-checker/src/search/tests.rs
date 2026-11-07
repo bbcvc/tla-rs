@@ -137,3 +137,32 @@ fn xs(behavior: &[State]) -> Vec<i32> {
         })
         .collect()
 }
+
+#[test]
+fn prints_the_alias_of_each_state_as_tlc_does() {
+    let shown = |body: &str, config: &str| {
+        let body = format!("{SPEC}\nInv == x < 2\n{body}");
+        let config = format!("INIT Init\nNEXT Next\nINVARIANT Inv\n{config}");
+        let outcome = run(&body, &config, System { init: vec![0], next: counter });
+        let trace = outcome.report.trace.expect("a behavior to the violation");
+        let text = |step: &crate::report::Step| {
+            let fields = step.variables.iter().map(|(name, value)| format!("{name}={value}"));
+            fields.collect::<Vec<_>>().join(" ")
+        };
+        trace.steps.iter().map(text).collect::<Vec<_>>()
+    };
+    // The fields in the order the alias writes them, with the next state, the last state's
+    // being itself, and the state's place in the behavior.
+    let alias = "Alias == [now |-> x, next |-> x', level |-> TLCGet(\"level\")]";
+    assert_eq!(
+        shown(alias, "ALIAS Alias"),
+        ["now=0 next=1 level=1", "now=1 next=2 level=2", "now=2 next=2 level=3"]
+    );
+    // A value that isn't a record leaves the variables.
+    assert_eq!(shown("Alias == x + 10", "ALIAS Alias"), ["x=0", "x=1", "x=2"]);
+    // An alias TLC can't evaluate adds the error to the variables.
+    let error = "x=0 _ALIASEvalError=\"The alias Missing specified in the configuration file\\nis not defined in the specification.\"";
+    assert_eq!(shown("", "ALIAS Missing")[0], error);
+    let error = "x=1 _ALIASEvalError=\"The second argument of \\\\div is 0.\"";
+    assert_eq!(shown("Alias == [r |-> 1 \\div (1 - x)]", "ALIAS Alias")[1], error);
+}

@@ -39,9 +39,10 @@ tla-rs prints what TLC prints: the startup banner, the files it parses, `Computi
 states...`, the progress of a long search every minute, and at the end the verdict, the
 behavior that leads to a violation (`State 1: <Initial predicate>`, `State 2: <Next line ...>`,
 with `/\ var = value` in TLC's order of the variables and `Back to state N` or `Stuttering` for
-a liveness counterexample), and the counts of the search. What a spec prints with `Print` or
-`PrintT` appears where TLC prints it, including the lines it prints as TLC computes the states
-of a counterexample again.
+a liveness counterexample), and the counts of the search. With an `ALIAS`, each state of the
+behavior shows the fields of the alias's record instead of the variables, as TLC does. What a
+spec prints with `Print` or `PrintT` appears where TLC prints it, including the lines it
+prints as TLC computes the states of a counterexample again and evaluates their alias.
 
 | Exit status | Meaning |
 | ---: | --- |
@@ -81,7 +82,8 @@ crates/tla-tools/scripts/smoke.py $C --per-status 8 --tla-ts ../tla-ts/packages/
 - With temporal properties to check, a spec's `Print` and `PrintT` may print more or fewer
   times while the search runs than in TLC, which evaluates the actions again for the liveness
   checker. Without them, and in a counterexample, they print as in TLC.
-- An evaluation error is printed without TLC's stack of nested expressions.
+- An evaluation error is printed without TLC's stack of nested expressions, and without what
+  `Print` and `PrintT` print as TLC evaluates the failing step again to find it.
 - The collision estimate from the actual fingerprints, which TLC adds for large state spaces,
   isn't printed.
 - `-lncheck`, `-dump`, `-tool`, and `-continue` aren't implemented.
