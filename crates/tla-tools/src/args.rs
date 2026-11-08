@@ -29,6 +29,9 @@ pub struct Args {
     /// Don't print warnings.
     #[arg(long)]
     pub nowarning: bool,
+    /// Frame each message with TLC's code and level, for a program that reads the output.
+    #[arg(long)]
+    pub tool: bool,
     /// When to check the temporal properties. tla-rs checks them once the search is done, as
     /// TLC does with `final`.
     #[arg(long, value_name = "final|default|seqfinal|off")]
@@ -83,6 +86,7 @@ const LONG_OPTIONS: &[&str] = &[
     "seed",
     "fp",
     "nowarning",
+    "tool",
     "lncheck",
     "metadir",
     "noGenerateSpecTE",

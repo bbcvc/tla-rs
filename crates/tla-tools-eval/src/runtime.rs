@@ -35,6 +35,8 @@ pub struct Runtime {
     allows_exec: AtomicBool,
     /// Whether TLC reports warnings, which its `-nowarning` turns off.
     warnings: AtomicBool,
+    /// Whether TLC runs with `-tool`, which frames each message it builds with its code.
+    tool: AtomicBool,
     /// The environment variables IOUtils' `IOEnv` reports, as a record.
     environment: OnceLock<Value>,
     checker: RwLock<Checker>,
@@ -163,6 +165,7 @@ impl Default for Runtime {
             records_call_stack: AtomicBool::new(false),
             allows_exec: AtomicBool::new(false),
             warnings: AtomicBool::new(true),
+            tool: AtomicBool::new(false),
             environment: OnceLock::new(),
             checker: RwLock::default(),
             random: Mutex::new(Randomness {
@@ -280,6 +283,16 @@ impl Runtime {
 
     pub fn warnings(&self) -> bool {
         self.warnings.load(Ordering::Relaxed)
+    }
+
+    /// Turns on TLC's `-tool` mode, in which TLC frames each message it builds with its code,
+    /// also one that ends up in the value of a state.
+    pub fn set_tool(&self, tool: bool) {
+        self.tool.store(tool, Ordering::SeqCst);
+    }
+
+    pub fn is_tool(&self) -> bool {
+        self.tool.load(Ordering::Relaxed)
     }
 
     /// Sets the environment variables `IOEnv` reports in place of the process's. It has no

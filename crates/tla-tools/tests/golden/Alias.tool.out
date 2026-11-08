@@ -1,0 +1,95 @@
+exit 12
+@!@!@STARTMSG 2262:0 @!@!@
+@!@!@ENDMSG 2262 @!@!@
+@!@!@STARTMSG 2187:0 @!@!@
+@!@!@ENDMSG 2187 @!@!@
+@!@!@STARTMSG 2220:0 @!@!@
+Starting SANY...
+@!@!@ENDMSG 2220 @!@!@
+@!@!@STARTMSG 2219:0 @!@!@
+SANY finished.
+@!@!@ENDMSG 2219 @!@!@
+@!@!@STARTMSG 2185:0 @!@!@
+Starting... (DATE)
+@!@!@ENDMSG 2185 @!@!@
+@!@!@STARTMSG 2189:0 @!@!@
+Computing initial states...
+@!@!@ENDMSG 2189 @!@!@
+"init"
+@!@!@STARTMSG 2190:0 @!@!@
+Finished computing initial states: 1 distinct state generated at DATE.
+@!@!@ENDMSG 2190 @!@!@
+<<"next", 0>>
+<<"next", 1>>
+<<"next", 2>>
+@!@!@STARTMSG 2110:1 @!@!@
+Invariant Inv is violated.
+@!@!@ENDMSG 2110 @!@!@
+"init"
+<<"next", 0>>
+@!@!@STARTMSG 2121:1 @!@!@
+The behavior up to this point is:
+@!@!@ENDMSG 2121 @!@!@
+<<"alias", 0>>
+@!@!@STARTMSG 2217:4 @!@!@
+1: <Initial predicate>
+/\ count = 0
+/\ label = "a"
+/\ next = 1
+/\ level = 1
+/\ printed = TRUE
+/\ ratio = 5
+
+@!@!@ENDMSG 2217 @!@!@
+<<"alias", 1>>
+@!@!@STARTMSG 2217:4 @!@!@
+2: <Next line 5, col 9 to line 5, col 53 of module Alias>
+/\ count = 1
+/\ label = "a"
+/\ next = 2
+/\ level = 2
+/\ printed = TRUE
+/\ ratio = 10
+
+@!@!@ENDMSG 2217 @!@!@
+<<"next", 1>>
+<<"alias", 2>>
+@!@!@STARTMSG 2217:4 @!@!@
+3: <Next line 5, col 9 to line 5, col 53 of module Alias>
+/\ x = 2
+/\ y = "a"
+/\ _ALIASEvalError = "@!@!@STARTMSG 2179:0 @!@!@\nThe second argument of \\div is 0.\n@!@!@ENDMSG 2179 @!@!@"
+
+@!@!@ENDMSG 2217 @!@!@
+<<"next", 2>>
+<<"alias", 3>>
+@!@!@STARTMSG 2217:4 @!@!@
+4: <Next line 5, col 9 to line 5, col 53 of module Alias>
+/\ count = 3
+/\ label = "a"
+/\ next = 3
+/\ level = 4
+/\ printed = TRUE
+/\ ratio = -10
+
+@!@!@ENDMSG 2217 @!@!@
+"init"
+<<"next", 0>>
+<<"next", 1>>
+<<"next", 2>>
+<<"alias", 0>>
+<<"alias", 1>>
+<<"alias", 2>>
+<<"alias", 3>>
+@!@!@STARTMSG 2200:0 @!@!@
+Progress(4) at DATE: 4 states generated (RATE s/min), 4 distinct states found (RATE ds/min), 0 states left on queue.
+@!@!@ENDMSG 2200 @!@!@
+@!@!@STARTMSG 2199:0 @!@!@
+4 states generated, 4 distinct states found, 0 states left on queue.
+@!@!@ENDMSG 2199 @!@!@
+@!@!@STARTMSG 2194:0 @!@!@
+The depth of the complete state graph search is 4.
+@!@!@ENDMSG 2194 @!@!@
+@!@!@STARTMSG 2186:0 @!@!@
+Finished in TIME at (DATE)
+@!@!@ENDMSG 2186 @!@!@

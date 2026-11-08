@@ -24,6 +24,7 @@ module's operators is loaded as TLC loads it.
 | `-deadlock` | Don't check for deadlock. |
 | `-seed N` | The seed of TLC's random choices (default 0). |
 | `-nowarning` | Don't print warnings. |
+| `-tool` | Frame each message with TLC's code and level, for a program that reads the output. |
 | `-workers N\|auto` | Workers of the breadth-first search (`auto`: one per core). The counts are those of one worker. |
 | `-fp N` | Only `0` is accepted: tla-rs fingerprints states as TLC does with `-fp 0`. |
 | `-lncheck final\|default\|...` | Accepted. tla-rs checks temporal properties once the search is done, as `final` does. |
@@ -44,6 +45,24 @@ behavior shows the fields of the alias's record instead of the variables, as TLC
 spec prints with `Print` or `PrintT` appears where TLC prints it, including the lines it
 prints as TLC computes the states of a counterexample again and evaluates their alias.
 
+With `-tool`, each message is framed as TLC frames it for the Toolbox and other programs that
+read its output, with its code from TLC's `EC` and its level (0 none, 1 error, 3 warning, 4
+state):
+
+```text
+@!@!@STARTMSG 2110:1 @!@!@
+Invariant Inv is violated.
+@!@!@ENDMSG 2110 @!@!@
+```
+
+Under `-tool`, tla-rs also prints what TLC adds there: `Starting SANY...` and `SANY finished.`
+around SANY's report, the counts of the search again as progress with the states per minute,
+`N: Back to state: <Action>` as a state, and the time it ran in milliseconds. An error TLC
+raises with a code is framed with that code also where it is nested in another message, such
+as the cause of `Evaluating invariant Inv failed.` or the `_ALIASEvalError` of a state. What
+the spec prints with `Print` and `PrintT`, and SANY's report, are printed without a frame, as
+TLC prints them.
+
 | Exit status | Meaning |
 | ---: | --- |
 | 0 | No error found. |
@@ -63,7 +82,9 @@ prints as TLC computes the states of a counterexample again and evaluates their 
 `cargo test -p tla-tools` runs the golden tests: each spec in `tests/golden` is checked, and its
 output and exit status are compared with tla-ts's TLC command line, once times, dates, the
 banner, and SANY's file lines are normalized. `tests/golden/regenerate.sh` records them again
-from tla-ts.
+from tla-ts. Each spec is also checked under `-tool` against `Name.tool.out`, which TLC 1.8.0
+recorded itself, since tla-ts has no `-tool`; the rates TLC prints there are normalized too.
+`TLA2TOOLS=path/to/tla2tools.jar tests/golden/regenerate-tool.sh` records them again.
 
 `scripts/smoke.py` runs a sample of the conformance corpus for each status and checks the exit
 status against TLC's recorded verdict, and with `--tla-ts` against tla-ts's own exit status:
@@ -92,4 +113,8 @@ crates/tla-tools/scripts/smoke.py $C --per-status 8 --tla-ts ../tla-ts/packages/
   unexpected exception.
 - The collision estimate from the actual fingerprints, which TLC adds for large state spaces,
   isn't printed.
-- `-lncheck`, `-dump`, `-tool`, and `-continue` aren't implemented.
+- Under `-tool`, tla-rs finds the code of an error by the wording of TLC's template for it
+  (`tla_tools_checker::message`). An error whose wording matches none of the templates there
+  is printed as an error TLC raises without a code: with code 1000 at the top, and without a
+  frame where it is nested.
+- `-lncheck`, `-dump`, and `-continue` aren't implemented.

@@ -1,11 +1,13 @@
-//! TLC's messages as it prints them without `-tool`: a prefix for the level of each, its dates
-//! and durations, and its estimate of a fingerprint collision.
+//! TLC's messages as it prints them: with a prefix for the level of each, or under `-tool`
+//! framed with its code and level, and its dates, durations, numbers, and estimate of a
+//! fingerprint collision.
 
 use std::time::Duration;
 
 use chrono::{DateTime, Local};
+use tla_tools_checker::message;
 
-/// The level of a message, which TLC prints as a prefix.
+/// The level of a message, which TLC prints as a prefix, or under `-tool` as its class.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Level {
     None,
@@ -14,26 +16,92 @@ pub enum Level {
     State,
 }
 
+impl Level {
+    fn class(self) -> u8 {
+        match self {
+            Level::None => message::NONE,
+            Level::Error => message::ERROR,
+            Level::Warning => message::WARNING,
+            Level::State => message::STATE,
+        }
+    }
+}
+
+/// TLC's codes of the messages tla-rs prints, from `EC`.
+pub mod ec {
+    pub const GENERAL: u16 = 1000;
+    pub const TLC_INITIAL_STATE: u16 = 2102;
+    pub const TLC_NESTED_EXPRESSION: u16 = 2103;
+    pub const TLC_ASSUMPTION_FALSE: u16 = 2104;
+    pub const TLC_ASSUMPTION_EVALUATION_ERROR: u16 = 2105;
+    pub const TLC_INVARIANT_VIOLATED_INITIAL: u16 = 2107;
+    pub const TLC_PROPERTY_VIOLATED_INITIAL: u16 = 2108;
+    pub const TLC_INVARIANT_VIOLATED_BEHAVIOR: u16 = 2110;
+    pub const TLC_INVARIANT_EVALUATION_FAILED: u16 = 2111;
+    pub const TLC_ACTION_PROPERTY_VIOLATED_BEHAVIOR: u16 = 2112;
+    pub const TLC_ACTION_PROPERTY_EVALUATION_FAILED: u16 = 2113;
+    pub const TLC_DEADLOCK_REACHED: u16 = 2114;
+    pub const TLC_TEMPORAL_PROPERTY_VIOLATED: u16 = 2116;
+    pub const TLC_BEHAVIOR_UP_TO_THIS_POINT: u16 = 2121;
+    pub const TLC_BACK_TO_STATE: u16 = 2122;
+    pub const TLC_STARTING: u16 = 2185;
+    pub const TLC_FINISHED: u16 = 2186;
+    pub const TLC_MODE_MC: u16 = 2187;
+    pub const TLC_COMPUTING_INIT: u16 = 2189;
+    pub const TLC_INIT_GENERATED1: u16 = 2190;
+    pub const TLC_INIT_GENERATED2: u16 = 2191;
+    pub const TLC_CHECKING_TEMPORAL_PROPS: u16 = 2192;
+    pub const TLC_SUCCESS: u16 = 2193;
+    pub const TLC_SEARCH_DEPTH: u16 = 2194;
+    pub const TLC_STATS: u16 = 2199;
+    pub const TLC_PROGRESS_STATS: u16 = 2200;
+    pub const TLC_LIVE_IMPLIED: u16 = 2212;
+    pub const TLC_STATE_PRINT2: u16 = 2217;
+    pub const TLC_STATE_PRINT3: u16 = 2218;
+    pub const TLC_SANY_END: u16 = 2219;
+    pub const TLC_SANY_START: u16 = 2220;
+    pub const TLC_VERSION: u16 = 2262;
+    pub const TLC_COUNTER_EXAMPLE: u16 = 2264;
+    pub const TLC_CHECKING_TEMPORAL_PROPS_END: u16 = 2267;
+    pub const TLC_STATE_GRAPH_OUTDEGREE: u16 = 2268;
+    pub const TLC_POSTCONDITION_EVALUATION_ERROR: u16 = 2405;
+    pub const TLC_PARSING_FAILED: u16 = 3002;
+    pub const CFG_ERROR_READING_FILE: u16 = 5001;
+}
+
 /// Prints TLC's messages to standard output.
 pub struct Printer {
     warnings: bool,
+    /// Whether TLC runs with `-tool`, which frames each message with its code and level.
+    tool: bool,
     /// Whether a warning was printed, after the first of which TLC stops adding the hint.
     has_warned: bool,
 }
 
 impl Printer {
-    pub fn new(warnings: bool) -> Self {
-        Self { warnings, has_warned: false }
+    pub fn new(warnings: bool, tool: bool) -> Self {
+        Self { warnings, tool, has_warned: false }
     }
 
-    pub fn print(&mut self, level: Level, text: &str) {
-        if let Some(message) = self.format(level, text) {
+    pub fn is_tool(&self) -> bool {
+        self.tool
+    }
+
+    /// Prints the message with TLC's `code` for it.
+    pub fn print(&mut self, code: u16, level: Level, text: &str) {
+        if let Some(message) = self.format(code, level, text) {
             println!("{message}");
         }
     }
 
     /// The message TLC prints, or `None` for a warning `-nowarning` turns off.
-    fn format(&mut self, level: Level, text: &str) -> Option<String> {
+    fn format(&mut self, code: u16, level: Level, text: &str) -> Option<String> {
+        if level == Level::Warning && !self.warnings {
+            return None;
+        }
+        if self.tool {
+            return Some(message::framed(code, level.class(), text));
+        }
         let prefix = match level {
             Level::None => "",
             Level::Error => "Error: ",
@@ -42,15 +110,21 @@ impl Printer {
         };
         let mut hint = "";
         if level == Level::Warning {
-            if !self.warnings {
-                return None;
-            }
             if !self.has_warned {
                 hint = "\n(Use the -nowarning option to disable this warning.)";
             }
             self.has_warned = true;
         }
         Some(format!("{prefix}{text}{hint}"))
+    }
+
+    /// An error TLC raised with a code, as TLC words it when it builds it: framed with its
+    /// code under `-tool`, since TLC frames it then, also inside another message.
+    pub fn nested(&self, text: &str) -> String {
+        match self.tool {
+            true => message::nested(text),
+            false => text.to_owned(),
+        }
     }
 }
 
@@ -78,6 +152,19 @@ pub fn duration(duration: Duration) -> String {
     } else {
         format!("{seconds:02}s")
     }
+}
+
+/// A count as TLC's `MP.format` prints it, with a comma between groups of three digits.
+pub fn grouped(count: u64) -> String {
+    let digits = count.to_string();
+    let mut text = String::new();
+    for (index, digit) in digits.chars().enumerate() {
+        if index > 0 && (digits.len() - index) % 3 == 0 {
+            text.push(',');
+        }
+        text.push(digit);
+    }
+    text
 }
 
 /// TLC's optimistic estimate of the probability of a fingerprint collision.
@@ -225,10 +312,31 @@ mod tests {
 
     #[test]
     fn adds_the_hint_to_the_first_warning_only() {
-        let mut printer = Printer::new(true);
-        let first = printer.format(Level::Warning, "a").unwrap();
+        let mut printer = Printer::new(true, false);
+        let first = printer.format(0, Level::Warning, "a").unwrap();
         assert!(first.ends_with("(Use the -nowarning option to disable this warning.)"));
-        assert_eq!(printer.format(Level::Warning, "b").unwrap(), "Warning: b");
-        assert_eq!(Printer::new(false).format(Level::Warning, "a"), None);
+        assert_eq!(printer.format(0, Level::Warning, "b").unwrap(), "Warning: b");
+        assert_eq!(Printer::new(false, false).format(0, Level::Warning, "a"), None);
+    }
+
+    #[test]
+    fn frames_a_message_with_its_code_and_level_under_tool() {
+        let mut printer = Printer::new(true, true);
+        assert_eq!(
+            printer.format(2110, Level::Error, "Invariant Inv is violated.").unwrap(),
+            "@!@!@STARTMSG 2110:1 @!@!@\nInvariant Inv is violated.\n@!@!@ENDMSG 2110 @!@!@"
+        );
+        assert_eq!(
+            printer.format(2000, Level::Warning, "w").unwrap(),
+            "@!@!@STARTMSG 2000:3 @!@!@\nw\n@!@!@ENDMSG 2000 @!@!@"
+        );
+    }
+
+    #[test]
+    fn groups_digits_as_tlc_does() {
+        assert_eq!(grouped(0), "0");
+        assert_eq!(grouped(999), "999");
+        assert_eq!(grouped(3011), "3,011");
+        assert_eq!(grouped(1234567), "1,234,567");
     }
 }

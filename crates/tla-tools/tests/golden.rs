@@ -1,6 +1,7 @@
 //! Runs tla-rs on each spec in `tests/golden` and compares its output and exit status with what
-//! tla-ts's TLC command line printed (`tests/golden/regenerate.sh`), once the lines that name
-//! the program, the machine, or SANY's files are left out and times and dates are replaced.
+//! tla-ts's TLC command line printed (`tests/golden/regenerate.sh`), and under `-tool` with what
+//! TLC itself printed (`tests/golden/regenerate-tool.sh`), once the lines that name the program,
+//! the machine, or SANY's files are left out and times, dates, and rates are replaced.
 
 use std::path::Path;
 use std::process::Command;
@@ -50,28 +51,51 @@ fn replace_duration(line: &str) -> String {
     format!("{} in TIME{}", &line[..start], &rest[end..])
 }
 
+/// Replaces each rate in `(3,011 s/min)` or `(2,316 ds/min)`, which TLC prints under `-tool`,
+/// with `RATE`.
+fn replace_rates(line: &str) -> String {
+    let mut result = String::new();
+    let mut rest = line;
+    while let Some(start) = rest.find('(') {
+        result.push_str(&rest[..=start]);
+        rest = &rest[start + 1..];
+        let digits = rest.find(|char: char| !char.is_ascii_digit() && char != ',').unwrap_or(0);
+        let unit =
+            [" s/min)", " ds/min)"].into_iter().find(|unit| rest[digits..].starts_with(unit));
+        if digits > 0 && unit.is_some() {
+            result.push_str("RATE");
+            rest = &rest[digits..];
+        }
+    }
+    result.push_str(rest);
+    result
+}
+
 fn normalize(output: &str) -> String {
     output
         .lines()
         .filter(|line| !LEFT_OUT.iter().any(|start| line.starts_with(start)))
-        .map(|line| replace_duration(&replace_dates(line)))
+        .map(|line| replace_rates(&replace_duration(&replace_dates(line))))
         .collect::<Vec<_>>()
         .join("\n")
 }
 
-fn check(name: &str) {
+/// Checks the spec `name` with the options `options`, against the expected output in the file
+/// `name` with `extension`.
+fn check(name: &str, extension: &str, options: &[&str]) {
     let directory = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/golden");
-    let expected = std::fs::read_to_string(directory.join(format!("{name}.out"))).unwrap();
+    let expected = std::fs::read_to_string(directory.join(format!("{name}{extension}"))).unwrap();
     let (status, expected) = expected.split_once('\n').unwrap();
     let output = Command::new(env!("CARGO_BIN_EXE_tla-rs"))
         .args([&format!("{name}.tla"), "-seed", "4"])
+        .args(options)
         .current_dir(&directory)
         .output()
         .unwrap();
     let actual = normalize(&String::from_utf8_lossy(&output.stdout));
-    assert_eq!(actual, expected.trim_end_matches('\n'), "the output of {name}");
+    assert_eq!(actual, expected.trim_end_matches('\n'), "the output of {name} {options:?}");
     let code = output.status.code().unwrap();
-    assert_eq!(format!("exit {code}"), status, "the exit status of {name}");
+    assert_eq!(format!("exit {code}"), status, "the exit status of {name} {options:?}");
 }
 
 #[test]
@@ -85,12 +109,30 @@ fn normalizes_times_and_dates() {
     );
 }
 
+#[test]
+fn normalizes_rates() {
+    let line = "Progress(5) at DATE: 13 states generated (3,011 s/min), 10 distinct states found \
+                (2,316 ds/min), 2 states left on queue.";
+    let normalized = "Progress(5) at DATE: 13 states generated (RATE s/min), 10 distinct states \
+                      found (RATE ds/min), 2 states left on queue.";
+    assert_eq!(replace_rates(line), normalized);
+    assert_eq!(replace_rates("(a) (12)"), "(a) (12)");
+}
+
+/// For each spec, a test of its output as TLC prints it and one under `-tool`.
 macro_rules! golden {
     ($($test:ident: $name:literal,)*) => {
         $(
-            #[test]
-            fn $test() {
-                check($name);
+            mod $test {
+                #[test]
+                fn plain() {
+                    super::check($name, ".out", &[]);
+                }
+
+                #[test]
+                fn tool() {
+                    super::check($name, ".tool.out", &["-tool"]);
+                }
             }
         )*
     };

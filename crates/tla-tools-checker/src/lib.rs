@@ -11,6 +11,7 @@ mod fingerprint;
 mod level;
 mod liveness;
 pub mod load;
+pub mod message;
 pub mod plan;
 mod postcondition;
 pub mod progress;
@@ -163,6 +164,9 @@ pub struct Options {
     /// TLC's `-nowarning`, which also changes how many states a disjunction in an action
     /// generates once every variable has a value. TLC records its expected results with it.
     pub nowarning: bool,
+    /// TLC's `-tool`, which frames each message with its code, also an error that ends up in
+    /// the value of a state.
+    pub tool: bool,
     /// TLC's `-workers`: how many threads expand states. With more than one, the search
     /// expands each level of the state graph in parallel where the order can't show (see
     /// [`search::parallel`]); with one, or where it can, it runs as TLC's `-workers 1` does.
@@ -226,6 +230,7 @@ pub fn check<S: Successors + Sync>(
     options.progress.report_printed(runtime);
     runtime.allow_exec(options.allow_exec);
     runtime.set_warnings(!options.nowarning);
+    runtime.set_tool(options.tool);
     runtime.set_seed(options.seed);
     runtime.set_variable_order(tlc_order.clone());
     // TLC creates its model checker, whose options TLCGet("config") reads, and computes the

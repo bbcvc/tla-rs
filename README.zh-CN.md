@@ -178,6 +178,7 @@ cargo run --release -p tla-tools-checker --example conformance -- $C/.corpora \
 - [x] 反例轨迹支持 `ALIAS`
 - [x] 计算初始状态或后继状态出错时，输出 TLC 那样的嵌套表达式调用栈
 - [x] 与 SANY 一致地报告解析、分析、lint 的模块，以及语义错误和致命错误
+- [x] `-tool`：按 TLC 的消息码和级别包装每条消息，并与 TLC 1.8.0 自己的输出逐条对比
 
 **待办**
 
@@ -189,7 +190,6 @@ cargo run --release -p tla-tools-checker --example conformance -- $C/.corpora \
 - [ ] 并行查找反例（目前发现违反后会退回单线程，以给出 TLC 的最短反例）
 - [ ] 常驻工作线程与无锁指纹表
 - [ ] 支持磁盘存储状态队列和指纹表，以检查超出内存的状态空间
-- [ ] `-tool`：按 TLC 的消息码和级别输出（`@!@!@STARTMSG code:level @!@!@`），供读取 TLC 输出的工具使用
 - [ ] `-dump dot,actionlabels`：与 TLC 相同的 DOT 格式状态图
 - [ ] SANY 的 XML 导出（`tla2sany.xml.XMLExporter -o`），至少包含工具会读取的模块、变量、定义和级别
 - [ ] 模拟模式（`-simulate`）、搜索过程中的活性检查（`-lncheck`）、`-continue`

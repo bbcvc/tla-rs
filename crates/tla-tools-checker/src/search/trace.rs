@@ -114,7 +114,10 @@ impl<S: Successors + ?Sized> Explorer<'_, S> {
             self.cursor.lock().unwrap().candidate = Some((state.clone(), index as i32 + 1));
             let value = self.evaluator.eval_action(def, state, next);
             self.cursor.lock().unwrap().candidate = None;
-            value.map_err(|error| error.message)
+            value.map_err(|error| match self.evaluator.runtime().is_tool() {
+                true => crate::message::nested(&error.message),
+                false => error.message,
+            })
         });
         match value {
             // A record has fields, each named by a string.
