@@ -182,7 +182,10 @@ The conformance runner checks each model in its own process and compares the res
 - [ ] Parallel search for counterexamples (today a violation falls back to one worker for TLC's shortest trace)
 - [ ] Persistent worker threads and a lock-free fingerprint set
 - [ ] Disk-backed state queue and fingerprint set for state spaces larger than memory
-- [ ] Simulation mode (`-simulate`), `-lncheck` during the search, `-dump`, `-continue`
+- [ ] `-tool`: TLC's messages with their codes and levels (`@!@!@STARTMSG code:level @!@!@`), for tools that read TLC's output
+- [ ] `-dump dot,actionlabels`: the state graph in TLC's DOT format
+- [ ] SANY's XML export (`tla2sany.xml.XMLExporter -o`), at least the modules, variables, definitions and levels that tools read
+- [ ] Simulation mode (`-simulate`), `-lncheck` during the search, `-continue`
 
 ## Documents
 

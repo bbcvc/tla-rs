@@ -66,6 +66,16 @@ Three more things decide the states generated. `x' \in S` takes the elements of 
 
 **R9. WebAssembly needs a C sysroot.** tree-sitter is written in C. A spike building `tla-tools-parser` for `wasm32-unknown-unknown` fails in the grammar's build script: `src/tree_sitter/parser.h` includes `<stdlib.h>`, which the system clang has no headers for when it targets WebAssembly. The WebAssembly build needs wasi-sdk (or another sysroot) in CI, or a `wasm32-wasip1` target. Decide before the CLI work in step 6.
 
+**R10. Matching TLC has three layers.** The conformance runner compares results only, so options that change how TLC reports a run and not what it finds were never measured, and they stayed out of the plan. "The same as TLC" means three layers, each checked against recorded TLC output:
+
+| Layer | What matches TLC | Checked by |
+| --- | --- | --- |
+| Semantics | Verdict, violation name, states generated, distinct states, depth, trace length | The conformance runner over `expected.json` |
+| Interface | Every option of `tlc2.TLC` and what it prints or writes: `-tool`'s messages with their codes and levels, `-dump`'s state graph, `-continue`, `-simulate`, `-lncheck` | Byte-for-byte comparison with output TLC records for the same run |
+| Tool chain | The other tools in `tla2tools.jar`, such as SANY's XML export (`tla2sany.xml.XMLExporter`) | The same, for each tool taken in |
+
+The semantic layer is done. The interface layer is in scope and its gaps are on the to-do list. The tool chain is in scope only where a tool built on TLC needs it: the statechart skill of `cursor/plugins` runs SANY's XML export, `tlc2.TLC -tool`, and `-dump dot,actionlabels`, so the XML export is taken in to the extent that the skill reads it. Its `test/corpus` records TLC's output for each of these and is a ready source of expected files.
+
 ## Revised order of work
 
 1. **Frontend**: workspace, interner, AST, tree-sitter lowering, `.cfg` parser, and a parse smoke test over real specs.
