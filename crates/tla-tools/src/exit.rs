@@ -33,9 +33,11 @@ pub fn for_outcome(outcome: &Outcome) -> i32 {
         Status::InvariantViolation | Status::PropertyViolation => SAFETY_VIOLATION,
         Status::LivenessViolation => LIVENESS_VIOLATION,
         Status::Unsupported => ERROR,
+        // An error that occurs again as TLC computes the states again decides its status, also
+        // for an invariant, as one on a successor the constraints exclude does.
+        Status::Error if let Some(code) = for_replayed_error(outcome) => code,
         // TLC exits with its own status when an invariant fails to evaluate on a successor.
         Status::Error if is_invariant_failure(outcome) => SAFETY_EVALUATION_FAILURE,
-        Status::Error if let Some(code) = for_replayed_error(outcome) => code,
         // TLC exits with its general error status when anything else about a successor fails.
         Status::Error if outcome.report.trace.is_some() => ERROR,
         Status::Error => for_error(outcome.message.as_deref().unwrap_or_default()),
