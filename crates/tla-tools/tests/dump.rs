@@ -2,7 +2,7 @@
 //! same run, recorded with `-fp 0` so that the fingerprints that name the states match.
 //!
 //! `tests/dump/graph` holds tla-ts's recordings (`tests/fixtures/state-graph`). Each folder of
-//! `tests/dump/statechart` is a run of the statechart skill of cursor/plugins, as tla-ts
+//! `tests/statechart` is a run of the statechart skill of cursor/plugins, as tla-ts
 //! recorded it (`tests/fixtures/statechart`): the spec, the `ChartRun` module and configuration
 //! the skill wrote for it, the graph TLC dumped, and TLC's exit status.
 
@@ -114,7 +114,7 @@ fn keeps_the_extension_the_file_has() {
 /// Runs the statechart skill's `-dump` of each recorded spec as the skill runs TLC.
 #[test]
 fn dumps_the_graphs_the_statechart_skill_reads() {
-    let root = fixtures().join("statechart");
+    let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/statechart");
     let mut names: Vec<_> = std::fs::read_dir(&root)
         .unwrap()
         .map(|entry| entry.unwrap().path())
