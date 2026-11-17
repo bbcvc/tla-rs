@@ -1,0 +1,10 @@
+root SpacedNames
+variables s t
+OpDeclNode s level=1 arity=0 kind=3
+OpDeclNode t level=1 arity=0 kind=3
+UserDefinedOpKind Go level=2 arity=0
+UserDefinedOpKind Going level=1 arity=0
+UserDefinedOpKind Init level=1 arity=0
+UserDefinedOpKind Next level=2 arity=0
+UserDefinedOpKind Spec level=3 arity=0
+UserDefinedOpKind Stop level=2 arity=0

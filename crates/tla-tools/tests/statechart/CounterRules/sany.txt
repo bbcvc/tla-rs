@@ -1,0 +1,24 @@
+root CounterRules
+variables x
+OpDeclNode x level=1 arity=0 kind=3
+UserDefinedOpKind % level=0 arity=2
+UserDefinedOpKind * level=0 arity=2
+UserDefinedOpKind + level=0 arity=2
+UserDefinedOpKind - level=0 arity=2
+UserDefinedOpKind .. level=0 arity=2
+UserDefinedOpKind < level=0 arity=2
+UserDefinedOpKind > level=0 arity=2
+UserDefinedOpKind AtMostTwo level=1 arity=0
+UserDefinedOpKind Init level=1 arity=0
+UserDefinedOpKind Jump level=2 arity=0
+UserDefinedOpKind Nat level=0 arity=0
+UserDefinedOpKind Next level=2 arity=0
+UserDefinedOpKind NotThree level=1 arity=0
+UserDefinedOpKind NotTwo level=1 arity=0
+UserDefinedOpKind Small level=1 arity=0
+UserDefinedOpKind Spec level=3 arity=0
+UserDefinedOpKind Step level=2 arity=0
+UserDefinedOpKind \div level=0 arity=2
+UserDefinedOpKind \geq level=0 arity=2
+UserDefinedOpKind \leq level=0 arity=2
+UserDefinedOpKind ^ level=0 arity=2

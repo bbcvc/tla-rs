@@ -173,18 +173,19 @@ The conformance runner checks each model in its own process and compares the res
 - [x] SANY's report of the modules it parses, analyzes and lints, and of a semantic or fatal error
 - [x] `-tool`: TLC's messages framed with their codes and levels, checked against TLC 1.8.0's own output
 - [x] `-dump`: the states found, or the state graph in TLC's DOT format with `dot,colorize,actionlabels,snapshot`, checked against the graphs TLC 1.8.0 writes
+- [x] SANY's XML export (`tla-rs tla2sany.xml.XMLExporter`), with the modules, declarations, definitions and levels that tools read, the same as SANY's export on 768 of the 769 specs of the conformance corpus both read
 
 **Next**
 
 - [ ] SANY's warnings, every semantic error of a spec rather than the first, and SANY's own words for a syntax error
 - [ ] TLC's fingerprint stack trace, for an error in a value TLC evaluates lazily
+- [ ] The rest of SANY's XML export: the bodies of definitions, the built-in operators, the definitions of instances (`I!Op`), theorems and assumptions
 - [ ] Cut per-call evaluation overhead; about ten large models (VR_*, S2C, MoveRange) are still around 2× slower than TLC
 - [ ] Bring the 15 models that time out at 60 s on one worker under the limit
 - [ ] Parallel liveness checking (temporal properties run on one worker today)
 - [ ] Parallel search for counterexamples (today a violation falls back to one worker for TLC's shortest trace)
 - [ ] Persistent worker threads and a lock-free fingerprint set
 - [ ] Disk-backed state queue and fingerprint set for state spaces larger than memory
-- [ ] SANY's XML export (`tla2sany.xml.XMLExporter -o`), at least the modules, variables, definitions and levels that tools read
 - [ ] Simulation mode (`-simulate`), `-lncheck` during the search, `-continue`
 
 ## Documents

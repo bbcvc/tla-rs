@@ -615,8 +615,10 @@ version = "0.2.0"
 dependencies = [
  "chrono",
  "clap",
+ "tla-tools-ast",
  "tla-tools-checker",
  "tla-tools-eval",
+ "tla-tools-resolve",
 ]
 
 [[package]]

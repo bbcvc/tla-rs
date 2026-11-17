@@ -65,6 +65,9 @@ pub struct Spec {
     /// under is: the instancing module and the span of `INSTANCE ...` or `I == INSTANCE ...`.
     /// TLC places an action it keeps whole there.
     pub instance_spans: HashMap<DefId, (ModuleId, Span)>,
+    /// The definitions resolution made of the statements of `ASSUME`s and theorems, which SANY
+    /// doesn't count among the operator definitions.
+    pub statements: std::collections::HashSet<DefId>,
 }
 
 impl Spec {

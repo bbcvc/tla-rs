@@ -180,18 +180,19 @@ cargo run --release -p tla-tools-checker --example conformance -- $C/.corpora \
 - [x] 与 SANY 一致地报告解析、分析、lint 的模块，以及语义错误和致命错误
 - [x] `-tool`：按 TLC 的消息码和级别包装每条消息，并与 TLC 1.8.0 自己的输出逐条对比
 - [x] `-dump`：输出找到的状态，或用 `dot,colorize,actionlabels,snapshot` 输出 TLC 格式的 DOT 状态图，并与 TLC 1.8.0 写出的状态图逐字节对比
+- [x] SANY 的 XML 导出（`tla-rs tla2sany.xml.XMLExporter`）：包含工具会读取的模块、声明、定义和级别，在 conformance 语料中双方都能读取的 769 个 spec 上，有 768 个与 SANY 的导出一致
 
 **待办**
 
 - [ ] SANY 的警告；一次报告 spec 的全部语义错误，而不只是第一个；语法错误使用 SANY 自己的措辞
 - [ ] 对 TLC 惰性求值的值出错时，输出 TLC 的 fingerprint 调用栈
+- [ ] SANY XML 导出的其余部分：定义体、内置算子、实例定义（`I!Op`）、定理和假设
 - [ ] 降低每次调用的求值开销：约有十个大模型（VR_*、S2C、MoveRange 等）仍比 TLC 慢 2 倍左右
 - [ ] 让单线程下超过 60 秒的 15 个模型进入时限
 - [ ] 并行活性检查（目前带时序属性的模型只用单线程）
 - [ ] 并行查找反例（目前发现违反后会退回单线程，以给出 TLC 的最短反例）
 - [ ] 常驻工作线程与无锁指纹表
 - [ ] 支持磁盘存储状态队列和指纹表，以检查超出内存的状态空间
-- [ ] SANY 的 XML 导出（`tla2sany.xml.XMLExporter -o`），至少包含工具会读取的模块、变量、定义和级别
 - [ ] 模拟模式（`-simulate`）、搜索过程中的活性检查（`-lncheck`）、`-continue`
 
 ## 文档

@@ -1,0 +1,24 @@
+root MediaPlayer
+variables playback volume
+OpDeclNode playback level=1 arity=0 kind=3
+OpDeclNode volume level=1 arity=0 kind=3
+UserDefinedOpKind ACallComesIn level=2 arity=0
+UserDefinedOpKind EnoughDataArrives level=2 arity=0
+UserDefinedOpKind EventuallyStops level=3 arity=0
+UserDefinedOpKind Init level=1 arity=0
+UserDefinedOpKind LoudWhenStopped level=1 arity=0
+UserDefinedOpKind Next level=2 arity=0
+UserDefinedOpKind Spec level=3 arity=0
+UserDefinedOpKind TheCallEnds level=2 arity=0
+UserDefinedOpKind TheNetworkSlows level=2 arity=0
+UserDefinedOpKind TheTrackEnds level=2 arity=0
+UserDefinedOpKind TypeOK level=1 arity=0
+UserDefinedOpKind YouPressMute level=2 arity=0
+UserDefinedOpKind YouPressPause level=2 arity=0
+UserDefinedOpKind YouPressPlay level=2 arity=0
+UserDefinedOpKind YouPressStop level=2 arity=0
+UserDefinedOpKind YouTurnItDown level=2 arity=0
+UserDefinedOpKind YouTurnItUp level=2 arity=0
+UserDefinedOpKind playbackStates level=0 arity=0
+UserDefinedOpKind vars level=1 arity=0
+UserDefinedOpKind volumeStates level=0 arity=0

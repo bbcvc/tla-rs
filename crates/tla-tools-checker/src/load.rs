@@ -114,9 +114,45 @@ pub fn load(spec_path: &Path, config_path: &Path, library: &Library) -> Result<L
     // TLC reads the configuration first, which orders its strings and model values.
     let config = tla_tools_parser::parse_config(&config)
         .map_err(|error| LoadError::Config(error.message))?;
+    let read = read(spec_path, library, Some(&config)).map_err(LoadError::Parse)?;
+    // TLC loads a class named after each module from beside the spec.
+    let directory = spec_path.parent().map_or_else(PathBuf::new, Path::to_path_buf);
+    let classes = read
+        .spec
+        .modules
+        .iter()
+        .filter_map(|module| {
+            let class = std::fs::read(directory.join(format!("{}.class", module.name))).ok()?;
+            Some((module.name.as_str().to_owned(), class))
+        })
+        .collect();
+    let Read { spec, modules, variable_order } = read;
+    Ok(Loaded { spec, config, classes, variable_order, modules })
+}
+
+/// A spec read without a configuration, as SANY reads it.
+pub struct Read {
+    pub spec: Spec,
+    pub modules: Modules,
+    /// TLC's order of the variables.
+    pub variable_order: Option<Vec<String>>,
+}
+
+/// Reads the spec at `spec_path` without a configuration, as SANY does, finding the modules it
+/// uses beside it or in `library`.
+pub fn load_spec(spec_path: &Path, library: &Library) -> Result<Read, ParseFailure> {
+    read(spec_path, library, None)
+}
+
+/// Reads the spec at `spec_path`, with TLC's order of the strings of the spec and `config`.
+fn read(
+    spec_path: &Path,
+    library: &Library,
+    config: Option<&ModelConfig>,
+) -> Result<Read, ParseFailure> {
     let source = std::fs::read_to_string(spec_path).map_err(|error| {
         let message = format!("{}: {error}", spec_path.display());
-        LoadError::Parse(ParseFailure { message, error: None, modules: Modules::default() })
+        ParseFailure { message, error: None, modules: Modules::default() }
     })?;
     let directory = spec_path.parent().map_or_else(PathBuf::new, Path::to_path_buf);
     let mut files: Vec<(String, PathBuf)> = vec![(stem(spec_path), spec_path.to_path_buf())];
@@ -134,7 +170,9 @@ pub fn load(spec_path: &Path, config_path: &Path, library: &Library) -> Result<L
         }
         Some(text)
     };
-    if let Ok(order) = tla_tools_resolve::tlc_string_order(&source, &config, &mut loader) {
+    if let Some(config) = config
+        && let Ok(order) = tla_tools_resolve::tlc_string_order(&source, config, &mut loader)
+    {
         tla_tools_eval::value::set_order(order.iter().map(String::as_str));
     }
     let variable_order = tla_tools_resolve::tlc_variable_order(&source, &mut loader).ok();
@@ -145,7 +183,7 @@ pub fn load(spec_path: &Path, config_path: &Path, library: &Library) -> Result<L
         Ok(spec) => spec,
         Err(error) => {
             let message = error.to_string();
-            return Err(LoadError::Parse(ParseFailure { message, error: Some(error), modules }));
+            return Err(ParseFailure { message, error: Some(error), modules });
         }
     };
     // TLC requires the root module to be named after its file.
@@ -155,18 +193,9 @@ pub fn load(spec_path: &Path, config_path: &Path, library: &Library) -> Result<L
             "File name '{stem}' does not match the name '{}' of the top level module it contains.",
             spec.modules[0].name
         );
-        return Err(LoadError::Parse(ParseFailure { message, error: None, modules }));
+        return Err(ParseFailure { message, error: None, modules });
     }
-    // TLC loads a class named after each module from beside the spec.
-    let classes = spec
-        .modules
-        .iter()
-        .filter_map(|module| {
-            let class = std::fs::read(directory.join(format!("{}.class", module.name))).ok()?;
-            Some((module.name.as_str().to_owned(), class))
-        })
-        .collect();
-    Ok(Loaded { spec, config, classes, variable_order, modules })
+    Ok(Read { spec, modules, variable_order })
 }
 
 fn stem(path: &Path) -> String {

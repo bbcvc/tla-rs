@@ -17,5 +17,7 @@ path = "src/main.rs"
 [dependencies]
 chrono.workspace = true
 clap.workspace = true
+tla-tools-ast.workspace = true
 tla-tools-checker.workspace = true
 tla-tools-eval.workspace = true
+tla-tools-resolve.workspace = true

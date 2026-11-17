@@ -88,6 +88,31 @@ runs on one worker, as TLC's does, and writes the same graph as TLC 1.8.0 does.
 | 255 | Another error, or a model tla-rs doesn't support yet. |
 | 1 | The command line can't be read. |
 
+## SANY's XML export
+
+`tla-rs tla2sany.xml.XMLExporter [-I DIR]... [-o] [-t] [-r] FILE` prints SANY's semantic tree
+of the spec as XML on stdout, as `java tla2sany.xml.XMLExporter` does, and SANY's report on
+stderr. A spec SANY rejects exits with 2 after `ERROR: Failed to parse module.`, and an
+argument it can't read with 1. A Java main class as the first argument picks the tool, so
+`tla-rs tlc2.TLC Spec.tla` is `tla-rs Spec.tla`.
+
+The export follows SANY's schema as far as tools built on TLC read it. `context` has an entry
+for each module, each `CONSTANT` and `VARIABLE` (`OpDeclNode`, with its `kind`: 2 for a
+constant, 3 for a variable), and each definition at the top level of a module
+(`UserDefinedOpKind`), with its location, SANY's level, its name and its arity. Each module
+refers to what it holds, and the root module to everything it can name. The nodes are numbered
+in the order SANY creates them, not with SANY's numbers, so the variables come out in SANY's
+order when they are sorted by number, as the statechart skill of cursor/plugins sorts them. Of
+the 769 specs of the conformance corpus that both SANY and tla-rs read, what the skill reads
+is the same as in SANY's export on 768. What the export leaves out:
+
+- the bodies and parameters of definitions, the built-in operators, and `LET` definitions;
+- the definitions SANY adds for an instance, `I!Op`, and the nodes of theorems and assumptions;
+- SANY's exit with 7 for a character XML can't represent, which tla-rs never exports;
+- a standard module that an `-I` directory replaces: tla-rs always uses its own;
+- the level SANY gives a definition of an instance that substitutes a constant expression for a
+  variable, which stays the level the variable gives (`ClientCentricTests`).
+
 ## Tests
 
 `cargo test -p tla-tools` runs the golden tests: each spec in `tests/golden` is checked, and its
@@ -96,6 +121,10 @@ banner, and SANY's file lines are normalized. `tests/golden/regenerate.sh` recor
 from tla-ts. Each spec is also checked under `-tool` against `Name.tool.out`, which TLC 1.8.0
 recorded itself, since tla-ts has no `-tool`; the rates TLC prints there are normalized too.
 `TLA2TOOLS=path/to/tla2tools.jar tests/golden/regenerate-tool.sh` records them again.
+
+`tests/dump.rs` compares `-dump` with TLC's graphs, and `tests/xml.rs` compares what the
+statechart skill reads of the XML export with what it reads of SANY's, both on the runs of the
+skill in `tests/statechart`.
 
 `scripts/smoke.py` runs a sample of the conformance corpus for each status and checks the exit
 status against TLC's recorded verdict, and with `--tla-ts` against tla-ts's own exit status:

@@ -1,0 +1,21 @@
+root TwoPhase
+variables rmState tmState tmPrepared msgs
+OpDeclNode RM level=0 arity=0 kind=2
+OpDeclNode msgs level=1 arity=0 kind=3
+OpDeclNode rmState level=1 arity=0 kind=3
+OpDeclNode tmPrepared level=1 arity=0 kind=3
+OpDeclNode tmState level=1 arity=0 kind=3
+UserDefinedOpKind Messages level=0 arity=0
+UserDefinedOpKind RMChooseToAbort level=2 arity=1
+UserDefinedOpKind RMPrepare level=2 arity=1
+UserDefinedOpKind RMRcvAbortMsg level=2 arity=1
+UserDefinedOpKind RMRcvCommitMsg level=2 arity=1
+UserDefinedOpKind TCConsistent level=1 arity=0
+UserDefinedOpKind TMAbort level=2 arity=0
+UserDefinedOpKind TMCommit level=2 arity=0
+UserDefinedOpKind TMRcvPrepared level=2 arity=1
+UserDefinedOpKind TPInit level=1 arity=0
+UserDefinedOpKind TPNext level=2 arity=0
+UserDefinedOpKind TPSpec level=3 arity=0
+UserDefinedOpKind TPTypeOK level=1 arity=0
+UserDefinedOpKind vars level=1 arity=0

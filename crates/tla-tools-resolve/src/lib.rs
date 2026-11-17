@@ -118,6 +118,7 @@ pub fn resolve(source: &str, loader: &mut dyn ModuleLoader) -> Result<Spec> {
             param_names: HashMap::new(),
             qualified_names: HashMap::new(),
             instance_spans: HashMap::new(),
+            statements: HashSet::new(),
         },
         parsed: HashMap::new(),
         parameters: HashMap::new(),
@@ -169,6 +170,7 @@ pub fn resolve(source: &str, loader: &mut dyn ModuleLoader) -> Result<Spec> {
         })
         .collect();
     resolver.check_levels()?;
+    resolver.spec.statements = std::mem::take(&mut resolver.statements);
     Ok(resolver.spec)
 }
 
@@ -239,7 +241,7 @@ pub(crate) struct Resolver<'l> {
     /// Whether a subexpression reference is resolving part of a definition again, whose names
     /// may hide later ones without conflict.
     replaying: usize,
-    /// The definitions of named theorems and assumptions, which a `HIDE` may cite.
+    /// The definitions of theorems and assumptions, named or not. A `HIDE` may cite a named one.
     statements: HashSet<DefId>,
 }
 

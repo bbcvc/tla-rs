@@ -7,6 +7,7 @@ mod printer;
 mod result;
 mod run;
 mod sany;
+mod xml;
 
 use std::io::Write;
 
@@ -15,8 +16,23 @@ use args::Args;
 /// The stack of the thread that checks the spec, which evaluates deeply nested expressions.
 const STACK_SIZE: usize = 1 << 30;
 
+/// The Java main classes of `tla2tools.jar` tla-rs takes as its first argument, as in
+/// `tla-rs tla2sany.xml.XMLExporter -o Spec.tla`. Without one, it runs TLC.
+const TLC: &str = "tlc2.TLC";
+const XML_EXPORTER: &str = "tla2sany.xml.XMLExporter";
+
 fn main() {
-    let args = match Args::parse_tlc(std::env::args()) {
+    let mut args: Vec<String> = std::env::args().collect();
+    match args.get(1).map(String::as_str) {
+        Some(XML_EXPORTER) => {
+            let code = xml::main(&args[2..]);
+            let _ = std::io::stdout().flush();
+            std::process::exit(code);
+        }
+        Some(TLC) => drop(args.remove(1)),
+        _ => {}
+    }
+    let args = match Args::parse_tlc(args) {
         Ok(args) => args,
         Err(error) => {
             let code = match error.use_stderr() {

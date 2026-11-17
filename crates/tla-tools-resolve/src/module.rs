@@ -545,13 +545,13 @@ impl Resolver<'_> {
             Unit::Assume(assume) => {
                 let def = self.statement(elab, assume.name, &assume.expr)?;
                 self.origins.insert(def, origin);
+                self.statements.insert(def);
                 // TLC checks the assumptions of the root module and the modules it extends, as
                 // the plain elaboration of each, which `resolve` narrows to those modules.
                 if !assume.is_axiom && elab.substitution.is_none() && elab.depth == 0 {
                     self.spec.assumptions.push(def);
                 }
                 if let Some(name) = assume.name {
-                    self.statements.insert(def);
                     elab.add(name, self.operator_entry(elab.module, name, 0, def, false), source)?;
                 }
             }

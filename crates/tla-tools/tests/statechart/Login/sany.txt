@@ -1,0 +1,16 @@
+root Login
+variables main
+OpDeclNode main level=1 arity=0 kind=3
+UserDefinedOpKind Init level=1 arity=0
+UserDefinedOpKind Next level=2 arity=0
+UserDefinedOpKind S15MinutesPass level=2 arity=0
+UserDefinedOpKind Spec level=3 arity=0
+UserDefinedOpKind ThePasswordIsRight level=2 arity=0
+UserDefinedOpKind ThePasswordIsWrong level=2 arity=0
+UserDefinedOpKind TypeOK level=1 arity=0
+UserDefinedOpKind YouSetANewPassword level=2 arity=0
+UserDefinedOpKind YouSignOut level=2 arity=0
+UserDefinedOpKind YouSubmitAPassword level=2 arity=0
+UserDefinedOpKind YouTapForgotPassword level=2 arity=0
+UserDefinedOpKind mainStates level=0 arity=0
+UserDefinedOpKind vars level=1 arity=0
