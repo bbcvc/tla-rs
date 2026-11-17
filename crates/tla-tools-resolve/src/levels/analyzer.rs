@@ -92,6 +92,9 @@ pub(crate) struct Analyzer<'a> {
     /// A definition as an operator of the parameters of the given number of instances around it
     /// and its own.
     instance_views: HashMap<(DefId, usize), Rc<Operator>>,
+    /// The definition of its module each definition elaborated under the substitutions of an
+    /// `INSTANCE` copies.
+    originals: HashMap<DefId, DefId>,
     pub errors: Vec<Found>,
 }
 
@@ -103,6 +106,7 @@ impl<'a> Analyzer<'a> {
             states: vec![State::Unvisited; spec.defs.len()],
             builtins: HashMap::new(),
             instance_views: HashMap::new(),
+            originals: originals(spec, layout),
             errors: Vec::new(),
         }
     }
@@ -265,6 +269,12 @@ impl<'a> Analyzer<'a> {
             let child = self.info(child);
             raw.add_constraints(&child.own.data, |_| true);
         }
+        // SANY's level of `I!Op` is the level of `Op`'s body in its own module, raised by what the
+        // instance substitutes for the constants and variables it depends on
+        // (`SubstInNode.levelCheck`): substituting a constant for a variable doesn't lower it.
+        if let Some(&original) = self.originals.get(&def) {
+            raw.level = raw.level.max(self.info(original).raw.level);
+        }
         self.def_info(def, raw, non_leibniz)
     }
 
@@ -381,4 +391,22 @@ impl<'a> Analyzer<'a> {
             leibniz: (0..own.arity).map(|index| !own.non_leibniz.contains(&index)).collect(),
         }
     }
+}
+
+/// For each definition elaborated under the substitutions of an `INSTANCE`, the definition its
+/// module elaborated by itself has at the same place.
+fn originals(spec: &Spec, layout: &Layout) -> HashMap<DefId, DefId> {
+    let key = |def: DefId| {
+        let definition = spec.def(def);
+        (definition.module, definition.span, definition.name)
+    };
+    let defs = (0..spec.defs.len()).map(|index| DefId(index as u32));
+    let plain: HashMap<_, DefId> = defs
+        .clone()
+        .filter(|def| !layout.defs[def.index()].is_instantiated)
+        .map(|def| (key(def), def))
+        .collect();
+    defs.filter(|def| layout.defs[def.index()].is_instantiated)
+        .filter_map(|def| Some((def, *plain.get(&key(def))?)))
+        .collect()
 }
