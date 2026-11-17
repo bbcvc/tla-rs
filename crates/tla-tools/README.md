@@ -31,6 +31,7 @@ module's operators is loaded as TLC loads it.
 | `-metadir DIR` | Ignored: tla-rs keeps its states in memory. |
 | `-noGenerateSpecTE` | Accepted. tla-rs generates no trace exploration spec. |
 | `-library DIR` | A directory of modules, searched recursively. Repeatable. `-DTLA-Library=a:b` works too. |
+| `-dump [dot[,colorize][,actionlabels][,snapshot]] FILE` | Write each distinct state to `FILE.dump`, or the state graph to `FILE.dot`, as TLC does. |
 
 The options also take two dashes (`--config`). `tla-rs --help` lists them.
 
@@ -62,6 +63,16 @@ raises with a code is framed with that code also where it is nested in another m
 as the cause of `Evaluating invariant Inv failed.` or the `_ALIASEvalError` of a state. What
 the spec prints with `Print` and `PrintT`, and SANY's report, are printed without a frame, as
 TLC prints them.
+
+With `-dump FILE`, tla-rs lists each distinct state it finds in `FILE.dump` (`State 1:` and
+the state), as TLC does. With `-dump dot FILE`, it writes the state graph to `FILE.dot` in
+TLC's DOT format instead: a node for each state, named by TLC's 64-bit fingerprint of it and
+labeled with the state, or its `ALIAS`; an edge for each step the search takes; and the
+states of each level of the search on one rank. `actionlabels` labels each edge with its action
+and the values of the action's parameters, as `Request(0)`; `colorize` colors the edges by
+action and adds a legend; `snapshot` also keeps the graph so far in `FILE_snapshot.dot`. The
+file has TLC's extension added unless it already ends with it. A search that dumps its states
+runs on one worker, as TLC's does, and writes the same graph as TLC 1.8.0 does.
 
 | Exit status | Meaning |
 | ---: | --- |

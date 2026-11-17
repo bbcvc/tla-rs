@@ -8,6 +8,7 @@
 //! done.
 
 mod fingerprint;
+pub mod graph;
 mod level;
 mod liveness;
 pub mod load;
@@ -25,7 +26,7 @@ mod tests;
 
 use std::collections::HashMap;
 use std::fmt;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 
 use tla_tools_eval::{CheckerOptions, ConstBinding, Evaluator, JavaOverrideError, bind_model};
 use tla_tools_parser::ModelConfig;
@@ -173,6 +174,9 @@ pub struct Options {
     pub workers: usize,
     /// Where the checker reports what it does as it runs.
     pub progress: Progress,
+    /// Where the states found and the steps between them go, for TLC's `-dump`. The search
+    /// writes them with one worker, as TLC does.
+    pub graph: Option<Arc<Mutex<graph::Writer>>>,
 }
 
 /// Checks `spec` under `config`, with `successors` computing the states of the evaluator it is
@@ -281,6 +285,7 @@ pub fn check<S: Successors + Sync>(
     // liveness, postconditions, or effects; and only one worker reports a violation as TLC's
     // first one, so they leave that to it.
     let is_parallel = options.workers > 1
+        && options.graph.is_none()
         && liveness.is_none()
         && plan.postconditions.is_empty()
         && plan.possible.is_empty()
@@ -316,6 +321,7 @@ pub fn check<S: Successors + Sync>(
                 &tlc_order,
                 liveness,
                 &progress,
+                options.graph.as_deref(),
             )
         }
     };

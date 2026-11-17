@@ -18,11 +18,12 @@ use std::cell::RefCell;
 use std::collections::VecDeque;
 use std::sync::{Arc, Mutex};
 
-use tla_tools_eval::{CallSite, EvalError, Evaluator, Result, State, Statistics};
+use tla_tools_eval::{CallSite, EvalError, Evaluator, NextAction, Result, State, Statistics};
 use tla_tools_resolve::DefId;
 use tla_tools_value::Symbol;
 
 use crate::fingerprint::Fingerprinter;
+use crate::graph::{Edge, Node, Writer};
 use crate::liveness::checker::{Checker, LiveSuccessor};
 use crate::plan::{Check, Plan};
 use crate::progress::{Counts, Event, Progress, Ticker};
@@ -47,6 +48,18 @@ pub trait Successors {
         state: &State,
         found: &mut dyn FnMut(State) -> Result<bool>,
     ) -> Result<()>;
+
+    /// Each successor of `state` under `next` with the action of the split of `next` that
+    /// gives it, generated action by action as TLC does to name the edges of its state graph.
+    /// Without the split, each successor comes with no action.
+    fn next_states_by_action(
+        &self,
+        next: DefId,
+        state: &State,
+        found: &mut dyn FnMut(State, Option<&NextAction>) -> Result<bool>,
+    ) -> Result<()> {
+        self.next_states(next, state, &mut |successor| found(successor, None))
+    }
 }
 
 impl Successors for Evaluator {
@@ -65,6 +78,25 @@ impl Successors for Evaluator {
         found: &mut dyn FnMut(State) -> Result<bool>,
     ) -> Result<()> {
         Evaluator::next_states(self, next, state, found)
+    }
+
+    fn next_states_by_action(
+        &self,
+        next: DefId,
+        state: &State,
+        found: &mut dyn FnMut(State, Option<&NextAction>) -> Result<bool>,
+    ) -> Result<()> {
+        for action in self.next_actions(next)?.iter() {
+            let mut is_stopped = false;
+            self.action_states(action, state, &mut |successor| {
+                is_stopped = !found(successor, Some(action))?;
+                Ok(!is_stopped)
+            })?;
+            if is_stopped {
+                break;
+            }
+        }
+        Ok(())
     }
 }
 
@@ -227,6 +259,10 @@ struct Explorer<'a, S: Successors + ?Sized> {
     failure_out_degrees: Option<Vec<u64>>,
     /// Whether the successor being checked is new, which TLC counts before it checks it.
     is_successor_new: bool,
+    /// Where the states found and the steps between them go, for TLC's `-dump`.
+    graph: Option<&'a Mutex<Writer>>,
+    /// TLC's fingerprint of the state being expanded, and its level, for the graph.
+    graph_source: Option<(i64, u32)>,
 }
 
 /// What a visit to a state found.
@@ -246,6 +282,7 @@ pub fn search<S: Successors + ?Sized>(
     tlc_order: &[usize],
     liveness: Option<Checker<'_>>,
     progress: &Progress,
+    graph: Option<&Mutex<Writer>>,
 ) -> Search {
     // Only `TLCExt!Trace` reads the behavior to a state while the search runs.
     let reads_behaviors =
@@ -295,6 +332,8 @@ pub fn search<S: Successors + ?Sized>(
         is_failed_check: false,
         failure_out_degrees: None,
         is_successor_new: false,
+        graph,
+        graph_source: None,
     };
     let (ending, trail) = explorer.run();
     // The states stored on the way to the violation, the last of them the one it was found from.
@@ -411,6 +450,10 @@ impl<S: Successors + ?Sized> Explorer<'_, S> {
             self.update_statistics(None);
             if self.progress.is_reported() && self.ticker.is_due() {
                 self.progress.report(Event::Progress(self.counts()));
+                // A snapshot of the graph that fails to be written is left as it was.
+                if let Some(graph) = self.graph {
+                    let _ = graph.lock().unwrap().snapshot();
+                }
             }
             self.new_successors = 0;
             // TLC seeds a worker's random choices with the fingerprint of the state it expands.
@@ -418,10 +461,23 @@ impl<S: Successors + ?Sized> Explorer<'_, S> {
             let mut count = 0u64;
             let mut stopped = None;
             let mut has_failed_check = false;
+            if self.graph.is_some() {
+                match self.tlc_fingerprint(&state) {
+                    Ok(fingerprint) => self.graph_source = Some((fingerprint, depth)),
+                    Err(error) => {
+                        return (
+                            Ending::Error(error.to_string()),
+                            Some(Trail::at(Some(index), None)),
+                        );
+                    }
+                }
+            }
+            let names_edges =
+                self.graph.is_some_and(|graph| graph.lock().unwrap().dump().names_edges());
             let successors = self.successors;
-            let result = successors.next_states(next, &state, &mut |successor| {
+            let mut visit = |successor: State, action: Option<&NextAction>| {
                 count += 1;
-                match self.visit_successor(index, &state, depth, successor) {
+                match self.visit_successor(index, &state, depth, successor, action) {
                     Ok(Visit::Continue) => Ok(true),
                     Ok(Visit::Stop(ending, trail)) => {
                         stopped = Some((ending, Some(trail)));
@@ -432,7 +488,13 @@ impl<S: Successors + ?Sized> Explorer<'_, S> {
                         Err(error)
                     }
                 }
-            });
+            };
+            let result = match names_edges {
+                true => successors.next_states_by_action(next, &state, &mut visit),
+                false => {
+                    successors.next_states(next, &state, &mut |successor| visit(successor, None))
+                }
+            };
             let check_failure = self.check_failure.take();
             if result.is_err() && (check_failure.is_some() || !has_failed_check) {
                 // TLC adds a successor to its states before it checks its invariants and the
@@ -539,7 +601,10 @@ impl<S: Successors + ?Sized> Explorer<'_, S> {
                             Ok(true)
                         })?;
                         for successor in &successors {
-                            if !self.check_replayed_successor(state, successor, &mut seen)? {
+                            let action = Some(action);
+                            if !self
+                                .check_replayed_successor(state, successor, action, &mut seen)?
+                            {
                                 return Ok(());
                             }
                         }
@@ -576,6 +641,7 @@ impl<S: Successors + ?Sized> Explorer<'_, S> {
         &self,
         state: &State,
         successor: &State,
+        action: Option<&NextAction>,
         seen: &mut std::collections::HashSet<u128>,
     ) -> Result<bool> {
         let other = |_: &str| CheckKind::Other;
@@ -585,6 +651,10 @@ impl<S: Successors + ?Sized> Explorer<'_, S> {
             let fingerprint = self.fingerprint(successor)?;
             !self.is_found(fingerprint) && seen.insert(fingerprint)
         };
+        // TLC writes each step it takes again to its state graph.
+        if is_in_model {
+            self.write_successor(successor, !is_unseen, action)?;
+        }
         if is_unseen && self.first_failing(&self.plan.invariants, successor, None, other)?.is_some()
         {
             return Ok(false);
@@ -795,15 +865,58 @@ impl<S: Successors + ?Sized> Explorer<'_, S> {
     }
 
     fn fingerprint(&self, state: &State) -> Result<u128> {
-        self.fingerprinter.fingerprint(self.evaluator, state).map_err(|message| EvalError {
-            message,
-            module: Symbol::intern(""),
-            span: Default::default(),
-            line: 0,
-            column: 0,
-            incomplete: None,
-            call_stack: Vec::new(),
-            is_standard: false,
+        self.fingerprinter.fingerprint(self.evaluator, state).map_err(fingerprint_error)
+    }
+
+    fn tlc_fingerprint(&self, state: &State) -> Result<i64> {
+        self.fingerprinter.tlc_fingerprint(self.evaluator, state).map_err(fingerprint_error)
+    }
+
+    /// `state` as TLC's state graph shows it: by TLC's fingerprint, labeled with its alias in
+    /// a graph, and listed with its variables.
+    fn write_node<R>(
+        &self,
+        graph: &Mutex<Writer>,
+        state: &State,
+        is_seen: bool,
+        write: impl FnOnce(&mut Writer, &Node<'_>) -> R,
+    ) -> Result<R> {
+        let fingerprint = self.tlc_fingerprint(state)?;
+        let mut graph = graph.lock().unwrap();
+        let (mut text, mut label) = (String::new(), None);
+        if !is_seen {
+            text = crate::report::format_state(&self.variables(state));
+            if graph.dump().dot {
+                label = self.state_alias(state).map(|fields| crate::report::format_state(&fields));
+            }
+        }
+        let label = label.as_deref().unwrap_or(&text);
+        Ok(write(&mut graph, &Node { fingerprint, label, text: &text }))
+    }
+
+    /// Writes a new initial state to the state graph.
+    fn write_initial(&self, state: &State) -> Result<()> {
+        let Some(graph) = self.graph else { return Ok(()) };
+        self.write_node(graph, state, false, |graph, node| graph.initial_state(node))
+    }
+
+    /// Writes the step from the state being expanded to `successor`, by `action`, to the state
+    /// graph, and the successor unless `is_seen`.
+    fn write_successor(
+        &self,
+        successor: &State,
+        is_seen: bool,
+        action: Option<&NextAction>,
+    ) -> Result<()> {
+        let (Some(graph), Some((source, level))) = (self.graph, self.graph_source) else {
+            return Ok(());
+        };
+        let name = action.map(|action| action.name.to_string());
+        let signature = action.map(NextAction::signature);
+        let edge = name.as_deref().zip(signature.as_deref());
+        let edge = edge.map(|(name, signature)| Edge { name, signature });
+        self.write_node(graph, successor, is_seen, |graph, node| {
+            graph.successor(source, level, node, is_seen, edge.as_ref())
         })
     }
 
@@ -836,6 +949,7 @@ impl<S: Successors + ?Sized> Explorer<'_, S> {
         if is_in_model {
             self.update_statistics(Some(1));
             self.add_live_initial_state(&state)?;
+            self.write_initial(&state)?;
         }
         self.is_initial_queued = is_in_model;
         let trail = |state: &State| Trail::at(None, Some(state.clone()));
@@ -863,6 +977,7 @@ impl<S: Successors + ?Sized> Explorer<'_, S> {
         state: &State,
         depth: u32,
         successor: State,
+        action: Option<&NextAction>,
     ) -> Result<Visit> {
         self.generated += 1;
         self.update_statistics(None);
@@ -885,6 +1000,9 @@ impl<S: Successors + ?Sized> Explorer<'_, S> {
             self.track_possible(possible, state, Some(&successor)).map_err(failed)?;
         }
         let is_new = is_in_model && !is_found;
+        if is_in_model {
+            self.write_successor(&successor, is_found, action)?;
+        }
         if self.liveness.is_some() && is_in_model {
             let index = found.unwrap_or_else(|| self.store.lock().unwrap().len()) as u32;
             self.live_successors
@@ -914,6 +1032,20 @@ impl<S: Successors + ?Sized> Explorer<'_, S> {
             self.store(fingerprint, successor, Some(parent), depth + 1);
         }
         Ok(Visit::Continue)
+    }
+}
+
+/// An error fingerprinting a state, which has no place in the spec.
+fn fingerprint_error(message: String) -> EvalError {
+    EvalError {
+        message,
+        module: Symbol::intern(""),
+        span: Default::default(),
+        line: 0,
+        column: 0,
+        incomplete: None,
+        call_stack: Vec::new(),
+        is_standard: false,
     }
 }
 

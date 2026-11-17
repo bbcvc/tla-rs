@@ -176,6 +176,23 @@ impl Fingerprinter {
         }
     }
 
+    /// TLC's own 64-bit fingerprint of `state`, which names it in TLC's state graph: of the
+    /// value of the view or of the variables in TLC's order, in the state that stands for its
+    /// permutations (tla-ts `getTlcStateFingerprint`).
+    pub fn tlc_fingerprint(&self, evaluator: &Evaluator, state: &State) -> Result<i64, String> {
+        let representative = self.representative(evaluator, state)?;
+        let fingerprint = match self.view {
+            Some(def) => {
+                let view = evaluator
+                    .eval_def(def, Some(&representative))
+                    .map_err(|error| error.to_string())?;
+                tlc_fingerprint(std::slice::from_ref(&view))
+            }
+            None => tlc_fingerprint(&self.in_tlc_order(&representative)),
+        };
+        fingerprint.map(|fingerprint| fingerprint as i64).map_err(|error| error.to_string())
+    }
+
     /// The smallest of the permutations of `values`, compared value by value, if smaller than
     /// `values`. Comparing a permutation with the smallest so far builds only what the comparison
     /// needs, of either.

@@ -5,6 +5,7 @@ use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 use std::time::Instant;
 
+use tla_tools_checker::graph::Writer;
 use tla_tools_checker::load::{self, Library, LoadError};
 use tla_tools_checker::{Event, Options, Progress};
 
@@ -122,6 +123,16 @@ pub fn run(args: &Args) -> i32 {
     }
     let started = Instant::now();
     print_banner(&mut printer.lock().unwrap(), args.seed, args.workers.count());
+    // TLC creates the file of `-dump` before it parses the spec.
+    let graph = match args.dump().map(|dump| (dump.path.clone(), Writer::create(dump))) {
+        None => None,
+        Some((_, Ok(writer))) => Some(Arc::new(Mutex::new(writer))),
+        Some((path, Err(error))) => {
+            let text = format!("Cannot write the states to {}: {error}", path.display());
+            printer.lock().unwrap().print(ec::GENERAL, Level::Error, &text);
+            return exit::ERROR;
+        }
+    };
     let spec_path = find_spec(&args.spec_path(), &args.library);
     let config_path = args.config_path();
     if !config_path.is_file() {
@@ -185,13 +196,24 @@ pub fn run(args: &Args) -> i32 {
         tool: args.tool,
         progress,
         workers: args.workers.count(),
+        graph: graph.clone(),
         ..Options::default()
     };
     let has_variables = !loaded.spec.variables.is_empty();
     let outcome = tla_tools_checker::check(loaded.spec, &loaded.config, &options, |evaluator| {
         evaluator.clone()
     });
+    // TLC closes the file of `-dump` once the search is done.
+    drop(options);
     let mut printer = printer.lock().unwrap();
+    if let Some(graph) = graph.and_then(Arc::into_inner) {
+        let writer = graph.into_inner().unwrap();
+        let path = writer.dump().path.clone();
+        if let Err(error) = writer.close() {
+            let text = format!("Cannot write the states to {}: {error}", path.display());
+            printer.print(ec::GENERAL, Level::Error, &text);
+        }
+    }
     // TLC computes the initial states of a spec without variables, of which there are none.
     if !has_variables && outcome.status == tla_tools_checker::Status::Success {
         let mut liveness = Liveness::default();

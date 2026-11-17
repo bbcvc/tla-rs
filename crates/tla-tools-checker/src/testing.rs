@@ -83,6 +83,7 @@ pub fn explore(mut spec: Spec, config: &str, system: System) -> crate::search::S
         &order,
         None,
         &Default::default(),
+        None,
     )
 }
 

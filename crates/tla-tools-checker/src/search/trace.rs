@@ -119,6 +119,30 @@ impl<S: Successors + ?Sized> Explorer<'_, S> {
                 false => error.message,
             })
         });
+        self.alias_fields(value, state)
+    }
+
+    /// The fields of the alias of `state`, evaluated as a state predicate, which labels the
+    /// state in TLC's state graph.
+    pub(super) fn state_alias(&self, state: &State) -> Option<Vec<(String, Value)>> {
+        let alias = self.plan.alias.as_ref()?;
+        let value = alias.as_ref().map_err(Clone::clone).and_then(|&def| {
+            let value = self.evaluator.eval_def(def, Some(state));
+            value.map_err(|error| match self.evaluator.runtime().is_tool() {
+                true => crate::message::nested(&error.message),
+                false => error.message,
+            })
+        });
+        self.alias_fields(value, state)
+    }
+
+    /// The fields of the alias `value` of `state`: `None` for one that isn't a record, and the
+    /// variables with the error for one TLC can't evaluate.
+    fn alias_fields(
+        &self,
+        value: Result<Value, String>,
+        state: &State,
+    ) -> Option<Vec<(String, Value)>> {
         match value {
             // A record has fields, each named by a string.
             Ok(Value::Func(record)) => record
@@ -139,7 +163,7 @@ impl<S: Successors + ?Sized> Explorer<'_, S> {
     }
 
     /// The variables of `state` and their values, in TLC's order of the variables.
-    fn variables(&self, state: &State) -> Vec<(String, Value)> {
+    pub(super) fn variables(&self, state: &State) -> Vec<(String, Value)> {
         let spec = self.evaluator.spec();
         self.tlc_order
             .iter()

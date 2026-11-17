@@ -10,16 +10,7 @@ use tla_tools_checker::message;
 
 use crate::printer::{self, Level, Printer, ec};
 
-/// TLC's printed form of a state: `/\ x = 1` for each variable, or `x = 1` for the only one.
-pub fn format_state(variables: &[(String, tla_tools_eval::Value)]) -> String {
-    let conjunct = if variables.len() == 1 { "" } else { "/\\ " };
-    variables
-        .iter()
-        .map(|(name, value)| {
-            format!("{conjunct}{name} = {}\n", tla_tools_eval::pretty_print(&value.to_string()))
-        })
-        .collect()
-}
+pub use tla_tools_checker::report::format_state;
 
 /// An evaluation error without the line tla-tools-eval adds to say where it happened, which TLC
 /// reports in its stack of nested expressions instead.

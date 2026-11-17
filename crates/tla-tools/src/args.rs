@@ -4,6 +4,7 @@
 use std::path::PathBuf;
 
 use clap::Parser;
+use tla_tools_checker::graph::Dump;
 
 /// Checks a TLA+ spec as TLC does: `java tlc2.TLC Spec.tla`.
 #[derive(Debug, Parser)]
@@ -45,6 +46,13 @@ pub struct Args {
     /// A directory of modules the spec uses, as TLC's `-DTLA-Library`. May be repeated.
     #[arg(long, value_name = "DIR")]
     pub library: Vec<PathBuf>,
+    /// TLC's `-dump [dot[,colorize][,actionlabels][,snapshot]] FILE`: write each state found
+    /// to `FILE.dump`, or the state graph to `FILE.dot`.
+    #[arg(long, value_name = "FILE")]
+    pub dump: Option<PathBuf>,
+    /// The format `-dump` names before its file, such as `dot,actionlabels`.
+    #[arg(long, hide = true)]
+    pub dump_format: Option<String>,
 }
 
 /// How many workers `-workers` asks for.
@@ -97,11 +105,32 @@ const LONG_OPTIONS: &[&str] = &[
 
 const LIBRARY_PROPERTY: &str = "-DTLA-Library=";
 
+/// TLC's `-dump`, whose file may follow a format starting with `dot`.
+const DUMP: &str = "-dump";
+
 /// The arguments with TLC's `-option` spelled `--option`, and Java's `-DTLA-Library=a:b` as
 /// `--library` options.
 pub fn normalize(args: impl IntoIterator<Item = String>) -> Vec<String> {
     let mut normalized = Vec::new();
-    for arg in args {
+    let mut args = args.into_iter().peekable();
+    while let Some(arg) = args.next() {
+        // TLC reads a format before the file when the argument after `-dump` starts with `dot`
+        // and another follows it.
+        if arg == DUMP {
+            let format = args.next_if(|format| format.starts_with("dot"));
+            match (format, args.peek()) {
+                (Some(format), Some(_)) => {
+                    normalized.extend(["--dump-format".to_owned(), format]);
+                    normalized.push("--dump".into());
+                }
+                (Some(file), None) => normalized.extend(["--dump".to_owned(), file]),
+                (None, _) => normalized.push("--dump".into()),
+            }
+            if let Some(file) = args.next() {
+                normalized.push(file);
+            }
+            continue;
+        }
         if let Some(directories) = arg.strip_prefix(LIBRARY_PROPERTY) {
             for directory in std::env::split_paths(directories) {
                 normalized.push("--library".into());
@@ -136,6 +165,27 @@ impl Args {
                 PathBuf::from(path)
             }
         }
+    }
+
+    /// What `-dump` asks for: the file, with TLC's extension added unless it has it, and the
+    /// format, whose parts TLC looks for anywhere in it.
+    pub fn dump(&self) -> Option<Dump> {
+        let path = self.dump.as_ref()?;
+        let format = self.dump_format.as_deref().map(str::to_lowercase);
+        let dot = format.is_some();
+        let has = |part: &str| format.as_deref().is_some_and(|format| format.contains(part));
+        let extension = if dot { ".dot" } else { ".dump" };
+        let mut file = path.clone().into_os_string();
+        if !file.to_string_lossy().ends_with(extension) {
+            file.push(extension);
+        }
+        Some(Dump {
+            path: PathBuf::from(file),
+            dot,
+            colorize: has("colorize"),
+            action_labels: has("actionlabels"),
+            snapshot: has("snapshot"),
+        })
     }
 
     /// The configuration: the one `-config` names, or the spec's with `.cfg` for `.tla`.
@@ -197,6 +247,23 @@ mod tests {
         let args = parse(&["-DTLA-Library=a:b", "--library", "c", "-library", "d", "Spec.tla"]);
         let expected: Vec<PathBuf> = ["a", "b", "c", "d"].iter().map(PathBuf::from).collect();
         assert_eq!(args.library, expected);
+    }
+
+    #[test]
+    fn reads_tlc_s_dump() {
+        let args = parse(&["-dump", "dot,actionlabels,colorize", "out/graph", "Spec"]);
+        let dump = args.dump().unwrap();
+        assert_eq!(dump.path, PathBuf::from("out/graph.dot"));
+        assert!(dump.dot && dump.action_labels && dump.colorize && !dump.snapshot);
+        assert_eq!(args.spec_path(), PathBuf::from("Spec.tla"));
+        let args = parse(&["-dump", "states.dump", "Spec"]);
+        let dump = args.dump().unwrap();
+        assert_eq!(dump.path, PathBuf::from("states.dump"));
+        assert!(!dump.dot);
+        // A format with nothing after it is the file.
+        let args = parse(&["Spec", "-dump", "dotty"]);
+        assert_eq!(args.dump().unwrap().path, PathBuf::from("dotty.dump"));
+        assert_eq!(parse(&["Spec.tla"]).dump(), None);
     }
 
     #[test]

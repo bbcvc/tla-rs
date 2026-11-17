@@ -5,6 +5,17 @@ use tla_tools_eval::Value;
 
 use crate::progress::Counts;
 
+/// TLC's printed form of a state: `/\ x = 1` for each variable, or `x = 1` for the only one.
+pub fn format_state(variables: &[(String, Value)]) -> String {
+    let conjunct = if variables.len() == 1 { "" } else { "/\\ " };
+    variables
+        .iter()
+        .map(|(name, value)| {
+            format!("{conjunct}{name} = {}\n", tla_tools_eval::pretty_print(&value.to_string()))
+        })
+        .collect()
+}
+
 /// One state of a behavior, with the action that leads to it.
 #[derive(Clone, Debug)]
 pub struct Step {

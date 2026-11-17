@@ -172,6 +172,7 @@ The conformance runner checks each model in its own process and compares the res
 - [x] TLC's stack of nested expressions for an error computing the initial states or the successors of a state
 - [x] SANY's report of the modules it parses, analyzes and lints, and of a semantic or fatal error
 - [x] `-tool`: TLC's messages framed with their codes and levels, checked against TLC 1.8.0's own output
+- [x] `-dump`: the states found, or the state graph in TLC's DOT format with `dot,colorize,actionlabels,snapshot`, checked against the graphs TLC 1.8.0 writes
 
 **Next**
 
@@ -183,7 +184,6 @@ The conformance runner checks each model in its own process and compares the res
 - [ ] Parallel search for counterexamples (today a violation falls back to one worker for TLC's shortest trace)
 - [ ] Persistent worker threads and a lock-free fingerprint set
 - [ ] Disk-backed state queue and fingerprint set for state spaces larger than memory
-- [ ] `-dump dot,actionlabels`: the state graph in TLC's DOT format
 - [ ] SANY's XML export (`tla2sany.xml.XMLExporter -o`), at least the modules, variables, definitions and levels that tools read
 - [ ] Simulation mode (`-simulate`), `-lncheck` during the search, `-continue`
 
