@@ -176,3 +176,25 @@ fn leaves_out_theorems_and_assumptions() {
         "root Statements\nvariables y x\nOpDeclNode N level=0 arity=0 kind=2\nOpDeclNode x level=1 arity=0 kind=3\nOpDeclNode y level=1 arity=0 kind=3\nUserDefinedOpKind Op level=1 arity=0\n"
     );
 }
+
+#[test]
+fn refuses_a_string_xml_can_t_hold_as_sany_does() {
+    let directory = std::env::temp_dir().join(format!("tla-rs-xml-esc-{}", std::process::id()));
+    std::fs::create_dir_all(&directory).unwrap();
+    let colors = "---- MODULE Colors ----\n(* \u{1b} in a comment is not exported. *)\nRed == \"\u{1b}[31m\"\n====\n";
+    std::fs::write(directory.join("Colors.tla"), colors).unwrap();
+    std::fs::write(directory.join("Root.tla"), "---- MODULE Root ----\nEXTENDS Colors\n====\n")
+        .unwrap();
+    let output = Command::new(env!("CARGO_BIN_EXE_tla-rs"))
+        .args(["tla2sany.xml.XMLExporter", "-o", "Root.tla"])
+        .current_dir(&directory)
+        .output()
+        .unwrap();
+    assert_eq!(output.status.code(), Some(7));
+    assert!(output.stdout.is_empty());
+    let errors = String::from_utf8(output.stderr).unwrap();
+    assert!(
+        errors.ends_with("ERROR: The spec contains the character U+001B in the StringValue element. XML 1.0 cannot represent that character in character data, not even as a numeric character reference, so the spec cannot be exported until the character is removed from it.\n"),
+        "{errors}"
+    );
+}

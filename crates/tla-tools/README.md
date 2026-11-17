@@ -104,14 +104,14 @@ refers to what it holds, and the root module to everything it can name. The node
 in the order SANY creates them, not with SANY's numbers, so the variables come out in SANY's
 order when they are sorted by number, as the statechart skill of cursor/plugins sorts them. Of
 the 769 specs of the conformance corpus that both SANY and tla-rs read, what the skill reads
-is the same as in SANY's export on 768. What the export leaves out:
+is the same as in SANY's export on all of them. What the export leaves out:
 
 - the bodies and parameters of definitions, the built-in operators, and `LET` definitions;
 - the definitions SANY adds for an instance, `I!Op`, and the nodes of theorems and assumptions;
-- SANY's exit with 7 for a character XML can't represent, which tla-rs never exports;
-- a standard module that an `-I` directory replaces: tla-rs always uses its own;
-- the level SANY gives a definition of an instance that substitutes a constant expression for a
-  variable, which stays the level the variable gives (`ClientCentricTests`).
+- a standard module that an `-I` directory replaces: tla-rs always uses its own.
+
+As SANY does, the export refuses a spec with a string holding a character XML 1.0 can't
+represent, and exits with 7.
 
 ## Tests
 

@@ -180,7 +180,7 @@ cargo run --release -p tla-tools-checker --example conformance -- $C/.corpora \
 - [x] 与 SANY 一致地报告解析、分析、lint 的模块，以及语义错误和致命错误
 - [x] `-tool`：按 TLC 的消息码和级别包装每条消息，并与 TLC 1.8.0 自己的输出逐条对比
 - [x] `-dump`：输出找到的状态，或用 `dot,colorize,actionlabels,snapshot` 输出 TLC 格式的 DOT 状态图，并与 TLC 1.8.0 写出的状态图逐字节对比
-- [x] SANY 的 XML 导出（`tla-rs tla2sany.xml.XMLExporter`）：包含工具会读取的模块、声明、定义和级别，在 conformance 语料中双方都能读取的 769 个 spec 上，有 768 个与 SANY 的导出一致
+- [x] SANY 的 XML 导出（`tla-rs tla2sany.xml.XMLExporter`）：包含工具会读取的模块、声明、定义和级别，在 conformance 语料中双方都能读取的 769 个 spec 上，全部与 SANY 的导出一致
 
 **待办**
 

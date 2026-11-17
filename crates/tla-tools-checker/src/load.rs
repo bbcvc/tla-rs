@@ -140,11 +140,13 @@ pub struct Read {
 
 /// Reads the spec at `spec_path` without a configuration, as SANY does, finding the modules it
 /// uses beside it or in `library`.
+#[allow(clippy::result_large_err, reason = "read once per run")]
 pub fn load_spec(spec_path: &Path, library: &Library) -> Result<Read, ParseFailure> {
     read(spec_path, library, None)
 }
 
 /// Reads the spec at `spec_path`, with TLC's order of the strings of the spec and `config`.
+#[allow(clippy::result_large_err, reason = "read once per run")]
 fn read(
     spec_path: &Path,
     library: &Library,

@@ -173,7 +173,7 @@ The conformance runner checks each model in its own process and compares the res
 - [x] SANY's report of the modules it parses, analyzes and lints, and of a semantic or fatal error
 - [x] `-tool`: TLC's messages framed with their codes and levels, checked against TLC 1.8.0's own output
 - [x] `-dump`: the states found, or the state graph in TLC's DOT format with `dot,colorize,actionlabels,snapshot`, checked against the graphs TLC 1.8.0 writes
-- [x] SANY's XML export (`tla-rs tla2sany.xml.XMLExporter`), with the modules, declarations, definitions and levels that tools read, the same as SANY's export on 768 of the 769 specs of the conformance corpus both read
+- [x] SANY's XML export (`tla-rs tla2sany.xml.XMLExporter`), with the modules, declarations, definitions and levels that tools read, the same as SANY's export on the 769 specs of the conformance corpus both read
 
 **Next**
 

@@ -24,6 +24,7 @@ use crate::sany;
 const SUCCESS: i32 = 0;
 const ARGS_PARSING_FAILURE: i32 = 1;
 const SPEC_PARSING_FAILURE: i32 = 2;
+const UNREPRESENTABLE_CHARACTER: i32 = 7;
 
 /// SANY's kinds of declarations.
 const CONSTANT_KIND: u8 = 2;
@@ -110,6 +111,16 @@ pub fn main(args: &[String]) -> i32 {
         }
     };
     eprint!("{}", sany::accepted(&read.modules, &path));
+    // SANY exports every string of every module, and refuses one with a character XML can't
+    // hold.
+    let modules = read.spec.modules.iter().map(|module| &*module.source);
+    if let Some(char) = modules.filter_map(unrepresentable_in_strings).next() {
+        eprintln!(
+            "ERROR: The spec contains the character U+{:04X} in the StringValue element. XML 1.0 cannot represent that character in character data, not even as a numeric character reference, so the spec cannot be exported until the character is removed from it.",
+            u32::from(char)
+        );
+        return UNREPRESENTABLE_CHARACTER;
+    }
     let tree = export(&read.spec, &read.modules.order.analyzed, options.is_restricted);
     print!("{}", tree.print(options.is_terse));
     SUCCESS
@@ -177,6 +188,50 @@ fn escape(text: &str) -> String {
         }
     }
     escaped
+}
+
+/// Whether XML 1.0 can hold `char` in character data, as its `Char` production says.
+fn is_representable(char: char) -> bool {
+    matches!(u32::from(char), 0x9 | 0xA | 0xD | 0x20..=0xD7FF | 0xE000..=0xFFFD | 0x10000..)
+}
+
+/// The first character in a string of the module `source` that XML 1.0 can't hold, outside the
+/// comments.
+fn unrepresentable_in_strings(source: &str) -> Option<char> {
+    let mut chars = source.chars().peekable();
+    let mut depth = 0usize;
+    while let Some(char) = chars.next() {
+        match char {
+            '(' if chars.peek() == Some(&'*') => {
+                chars.next();
+                depth += 1;
+            }
+            '*' if depth > 0 && chars.peek() == Some(&')') => {
+                chars.next();
+                depth -= 1;
+            }
+            _ if depth > 0 => {}
+            '\\' if chars.peek() == Some(&'*') => {
+                for char in chars.by_ref() {
+                    if char == '\n' {
+                        break;
+                    }
+                }
+            }
+            '"' => {
+                while let Some(char) = chars.next() {
+                    match char {
+                        '"' => break,
+                        '\\' => drop(chars.next()),
+                        char if !is_representable(char) => return Some(char),
+                        _ => {}
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+    None
 }
 
 /// A node of SANY's semantic tree that the export numbers.
@@ -418,6 +473,14 @@ mod tests {
         assert!(parse_args(&args(&["-I", "Spec.tla"])).is_err());
         assert!(parse_args(&args(&["A.tla", "B.tla"])).is_err());
         assert!(parse_args(&[]).is_err());
+    }
+
+    #[test]
+    fn finds_a_character_xml_can_t_hold_in_a_string() {
+        assert_eq!(unrepresentable_in_strings("S == \"red \u{1b}[31m\""), Some('\u{1b}'));
+        assert_eq!(unrepresentable_in_strings("S == \"\\\" \u{1}\""), Some('\u{1}'));
+        assert_eq!(unrepresentable_in_strings("(* \"\u{1b}\" *) \\* \"\u{1b}\"\nS == \"a\""), None);
+        assert_eq!(unrepresentable_in_strings("S == \"tab\there\""), None);
     }
 
     #[test]
