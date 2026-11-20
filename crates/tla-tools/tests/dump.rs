@@ -8,14 +8,19 @@
 
 use std::path::{Path, PathBuf};
 use std::process::Command;
+use std::sync::atomic::{AtomicUsize, Ordering};
 
 fn fixtures() -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/dump")
 }
 
-/// A new, empty directory for what a test writes.
+/// A new, empty directory for what a test writes. Tests run in parallel and several dump one
+/// spec, so each call gets a directory of its own.
 fn output(name: &str) -> PathBuf {
-    let directory = std::env::temp_dir().join(format!("tla-rs-dump-{}-{name}", std::process::id()));
+    static CALLS: AtomicUsize = AtomicUsize::new(0);
+    let call = CALLS.fetch_add(1, Ordering::Relaxed);
+    let directory =
+        std::env::temp_dir().join(format!("tla-rs-dump-{}-{call}-{name}", std::process::id()));
     let _ = std::fs::remove_dir_all(&directory);
     std::fs::create_dir_all(&directory).unwrap();
     directory
