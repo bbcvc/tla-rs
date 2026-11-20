@@ -16,7 +16,7 @@ TLC stopped with exit 76 before it checked these rules:
 Error: Evaluating invariant NeedsTypeOK failed.
 Attempted to apply tuple
 <<"zero", "one">>
-to integer 3 which is out of domain.
+to argument 3, which is out of bounds.
 Error: The behavior up to this point is:
 State 1: <Initial predicate>
 x = 0

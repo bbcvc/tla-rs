@@ -200,6 +200,7 @@ cargo run --release -p tla-tools-checker --example conformance -- $C/.corpora \
 - [DESIGN.md](DESIGN.md)：最初的设计
 - [EVALUATION.md](EVALUATION.md)：为了与 TLC 一致所做的设计修订，以及各阶段的结果
 - [crates/tla-tools/README.md](crates/tla-tools/README.md)：命令行选项、输出格式，以及目前与 TLC 的差异
+- [playground/README.md](playground/README.md)：基于 TLC 的工具（如 cursor/plugins 的 statechart skill）改用 tla-rs 运行
 
 ## 致谢
 

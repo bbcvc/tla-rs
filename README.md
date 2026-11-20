@@ -193,6 +193,7 @@ The conformance runner checks each model in its own process and compares the res
 - [DESIGN.md](DESIGN.md): the original design
 - [EVALUATION.md](EVALUATION.md): the revisions needed to match TLC, and results for each phase
 - [crates/tla-tools/README.md](crates/tla-tools/README.md): command-line options, output, and remaining differences from TLC
+- [playground/README.md](playground/README.md): tools built on TLC, such as the statechart skill of cursor/plugins, run on tla-rs instead
 
 ## Acknowledgements
 

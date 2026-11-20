@@ -48,12 +48,15 @@ export function parseDot(input: Lines): Graph {
     return copy;
   };
   for (const line of linesOf(input)) {
-    const edge = /^(-?\d+) -> (-?\d+) \[label="([^"]*)"/.exec(line);
+    const edge = /^(-?\d+) -> (-?\d+) \[label="((?:[^"\\]|\\.)*)"/.exec(line);
     if (edge) {
-      steps.set(edge.slice(1).join(" "), {
+      // TLC 1.8.0 labels a step with its action's arguments, as RMPrepare(r1). The chart
+      // groups steps by action, as TLC 1.7.4 labels them, so one step per action is kept.
+      const action = edge[3].replace(/\(.*$/s, "");
+      steps.set(`${edge[1]} ${edge[2]} ${action}`, {
         from: own(edge[1]),
         to: own(edge[2]),
-        action: own(edge[3]),
+        action: own(action),
       });
       continue;
     }

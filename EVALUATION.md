@@ -74,7 +74,7 @@ Three more things decide the states generated. `x' \in S` takes the elements of 
 | Interface | Every option of `tlc2.TLC` and what it prints or writes: `-tool`'s messages with their codes and levels, `-dump`'s state graph, `-continue`, `-simulate`, `-lncheck` | Byte-for-byte comparison with output TLC records for the same run |
 | Tool chain | The other tools in `tla2tools.jar`, such as SANY's XML export (`tla2sany.xml.XMLExporter`) | The same, for each tool taken in |
 
-The semantic layer is done. The interface layer is in scope and its gaps are on the to-do list. The tool chain is in scope only where a tool built on TLC needs it: the statechart skill of `cursor/plugins` runs SANY's XML export, `tlc2.TLC -tool`, and `-dump dot,actionlabels`, so the XML export is taken in to the extent that the skill reads it. Its `test/corpus` records TLC's output for each of these and is a ready source of expected files.
+The semantic layer is done. The interface layer is in scope and its gaps are on the to-do list. The tool chain is in scope only where a tool built on TLC needs it: the statechart skill of `cursor/plugins` runs SANY's XML export, `tlc2.TLC -tool`, and `-dump dot,actionlabels`, so the XML export is taken in to the extent that the skill reads it. Its `test/corpus` records TLC's output for each of these and is a ready source of expected files. `playground/statechart` is a copy of the skill that runs tla-rs in place of `java -cp tla2tools.jar`, and its own tests are the end-to-end check.
 
 ## Revised order of work
 
