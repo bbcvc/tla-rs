@@ -20,7 +20,7 @@ if (log && config) fs.appendFileSync(log, `## ${name}\n${fs.readFileSync(config,
 const TAG = /"chart-[0-9a-f]{32}"/g;
 
 const java = (folder: string, args: string[]) => {
-  const r = spawnSync(process.env.STATECHART_JAVA ?? "java", args, {
+  const r = spawnSync(process.env.STATECHART_TLA_RS ?? "tla-rs", args, {
     encoding: "utf8",
     maxBuffer: 1 << 30,
   });

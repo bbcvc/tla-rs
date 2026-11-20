@@ -1,5 +1,5 @@
 import { Buffer } from "node:buffer";
-import { type ChildProcess, execFile, type ExecFileException, spawn } from "node:child_process";
+import { type ChildProcess, spawn } from "node:child_process";
 import { randomBytes } from "node:crypto";
 import fs from "node:fs";
 import os from "node:os";
@@ -64,34 +64,8 @@ export function* fileLines(file: string) {
   }
 }
 
-const TLC_TOOL =
-  "http:tla2tools[url=https://github.com/tlaplus/tlaplus/releases/download/v1.7.4/tla2tools.jar,checksum=sha256:936a262061c914694dfd669a543be24573c45d5aa0ff20a8b96b23d01e050e88]@1.7.4";
-const JAVA_TOOL = "java@temurin-25";
 export const PINNED_FLAGS = ["-workers", "1", "-fp", "0", "-lncheck", "final"];
 const SANY_ERRORS = /^\*\*\* ?(?:Errors|Abort messages|Parse Error)/m;
-
-type ChildResult = {
-  status: number | null;
-  stdout: string;
-  stderr: string;
-  error: ExecFileException | undefined;
-};
-
-const runChild = (file: string, args: string[], options: { cwd: string; env: NodeJS.ProcessEnv }) =>
-  new Promise<ChildResult>((resolve) => {
-    execFile(
-      file,
-      args,
-      { encoding: "utf8", maxBuffer: 1 << 30, ...options },
-      (error, stdout, stderr) =>
-        resolve({
-          status: error ? (typeof error.code === "number" ? error.code : null) : 0,
-          stdout,
-          stderr,
-          error: typeof error?.code === "string" ? error : undefined,
-        }),
-    );
-  });
 
 export const killGroup = (pid: number) =>
   new Promise((resolve) =>
@@ -191,27 +165,9 @@ const runToFiles = (
     });
   });
 
-async function findTlc(cwd: string) {
-  const { TLA2TOOLS, JAVA } = process.env;
-  if (TLA2TOOLS) return { jar: TLA2TOOLS, java: JAVA || "java" };
-  const mise = (...args: string[]) =>
-    runChild("mise", args, { cwd, env: { ...process.env, MISE_CEILING_PATHS: cwd } });
-  const where = () =>
-    Promise.all([mise("where", TLC_TOOL), mise("which", "java", "--tool", JAVA_TOOL)]);
-  let found = await where();
-  if (found.some((r) => r.status !== 0)) {
-    const r = await mise("install", JAVA_TOOL, TLC_TOOL);
-    if (r.status !== 0)
-      throw new Error(
-        `Cannot find TLC: mise install failed: ${r.error?.message ?? r.stderr.trim()}\nOr set TLA2TOOLS to the path of tla2tools.jar, and JAVA to a java binary (Java 11 or later).`,
-      );
-    found = await where();
-  }
-  return {
-    jar: path.join(found[0].stdout.trim(), "tla2tools.jar"),
-    java: JAVA || found[1].stdout.trim(),
-  };
-}
+// tla-rs takes TLC's and SANY's main classes as its first argument, so it stands in for
+// `java -cp tla2tools.jar`. TLA_RS names the binary; without it, tla-rs is looked up on PATH.
+const findTlc = () => ({ tlaRs: process.env.TLA_RS || "tla-rs" });
 
 const exitClass = (status: number | null) =>
   status === 0 ? 0 : status === 11 || status === 12 || status === 13 ? 1 : 2;
@@ -285,49 +241,29 @@ export async function check(specFile: string, configFile: string): Promise<Check
   const folder = path.dirname(path.resolve(specFile));
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), "statechart-"));
   try {
-    const tlc = await findTlc(dir);
+    const tlc = findTlc();
     const config = (name: string, sections: ConfigSection[], extra: string[]) => {
       fs.writeFileSync(path.join(dir, `${name}.cfg`), configText(sections, extra));
       return [`-metadir`, path.join(dir, `meta-${name}`), "-config", path.join(dir, `${name}.cfg`)];
     };
-    const runJava = (name: string, main: string, args: string[], jvm: string[] = []) => {
-      const tmp = path.join(dir, `tmp-${name}`);
-      fs.mkdirSync(tmp);
-      return runToFiles(
-        tlc.java,
-        [
-          `-Djava.io.tmpdir=${tmp}`,
-          `-DTLA-Library=${folder}`,
-          ...jvm,
-          "-cp",
-          tlc.jar,
-          main,
-          ...args,
-        ],
+    const runTool = (name: string, main: string, args: string[]) =>
+      runToFiles(
+        tlc.tlaRs,
+        [main, ...(main === "tlc2.TLC" ? [`-DTLA-Library=${folder}`] : []), ...args],
         {
           cwd: dir,
           out: path.join(dir, name),
           env: process.platform === "darwin" ? process.env : { ...process.env, LC_ALL: "C.UTF-8" },
         },
       );
-    };
-    const xml = await runJava(
-      "sany",
-      "tla2sany.xml.XMLExporter",
-      ["-o", "-I", folder, path.resolve(specFile)],
-      ["-XX:TieredStopAtLevel=1"],
-    );
+    const xml = await runTool("sany", "tla2sany.xml.XMLExporter", [
+      "-o",
+      "-I",
+      folder,
+      path.resolve(specFile),
+    ]);
     if (xml.status !== 0) {
-      const errors = xml.error
-        ? undefined
-        : sanyErrors(
-            await runJava(
-              "sany-errors",
-              "tla2sany.SANY",
-              [path.resolve(specFile)],
-              ["-XX:TieredStopAtLevel=1"],
-            ),
-          );
+      const errors = sanyErrors(xml);
       throw new Error(
         `SANY could not read ${specFile} (exit ${xml.status}):\n${errors ?? tail(xml)}`,
       );
@@ -361,7 +297,7 @@ export async function check(specFile: string, configFile: string): Promise<Check
         if (properties.length) extra.push(`PROPERTY ${properties.join(" ")}`);
         const bounded = first !== undefined && !states.complete;
         if (bounded) extra.push("CONSTRAINT ChartBound");
-        const r = await runJava(name, "tlc2.TLC", [
+        const r = await runTool(name, "tlc2.TLC", [
           "-tool",
           ...PINNED_FLAGS,
           ...(names(group, "deadlock").length ? [] : ["-deadlock"]),
@@ -437,7 +373,7 @@ export async function check(specFile: string, configFile: string): Promise<Check
     if (judged.states.distinct <= CHART_STATES) {
       const tag = `chart-${randomBytes(16).toString("hex")}`;
       fs.writeFileSync(path.join(dir, "ChartRun.tla"), chartRun(spec, tag));
-      const drawn = await runJava("ChartRun", "tlc2.TLC", [
+      const drawn = await runTool("ChartRun", "tlc2.TLC", [
         "-tool",
         ...PINNED_FLAGS,
         "-deadlock",

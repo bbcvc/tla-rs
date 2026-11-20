@@ -10,7 +10,8 @@ import { readConfig } from "../frontends/config.ts";
 import { type Checks, readChecks } from "../frontends/spec.ts";
 
 const here = path.dirname(fileURLToPath(import.meta.url));
-const skip = !process.env.TLA2TOOLS && "set TLA2TOOLS to the path of tla2tools.jar to run TLC";
+// The oracle reads the config with TLC's own Java classes, which tla-rs has no counterpart for.
+const skip = "reads the config with TLC's Java classes";
 const SEED = 1;
 const CONFIGS = 4000;
 const KEYWORDS =

@@ -7,8 +7,7 @@ import { fileURLToPath } from "node:url";
 import { PINNED_FLAGS } from "../run.ts";
 
 const here = path.dirname(fileURLToPath(import.meta.url));
-const jar = process.env.TLA2TOOLS;
-export const skip = !jar && "set TLA2TOOLS to the path of tla2tools.jar to run TLC";
+export const skip = !process.env.TLA_RS && "set TLA_RS to the path of tla-rs to run it";
 
 const RULES = /^(INVARIANTS?|PROPERTY|PROPERTIES|CHECK_DEADLOCK)$/;
 
@@ -34,14 +33,9 @@ function tlc(dir: string, module: string, cfg: string) {
   const run = `alone-${fs.readdirSync(dir).length}`;
   const file = path.join(dir, `${run}.cfg`);
   fs.writeFileSync(file, cfg);
-  const tmp = path.join(dir, `${run}-tmp`);
-  fs.mkdirSync(tmp);
   const r = spawnSync(
-    process.env.JAVA ?? "java",
+    String(process.env.TLA_RS),
     [
-      `-Djava.io.tmpdir=${tmp}`,
-      "-cp",
-      jar ?? "",
       "tlc2.TLC",
       ...PINNED_FLAGS,
       "-config",

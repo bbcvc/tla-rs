@@ -11,7 +11,7 @@ import { readMessages } from "../frontends/messages.ts";
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 const corpus = path.join(here, "corpus");
-const skip = !process.env.TLA2TOOLS && "set TLA2TOOLS to the path of tla2tools.jar to run TLC";
+const skip = !process.env.TLA_RS && "set TLA_RS to the path of tla-rs to run it";
 const read = (file: string) => fs.readFileSync(file, "utf8");
 const maybe = (file: string) => (fs.existsSync(file) ? read(file) : "");
 const plain = (text: string) => [...plainText(readMessages(text))].join("");
@@ -21,6 +21,7 @@ const steady = (text: string) =>
     .replace(/"chart-[0-9a-f]{32}"/g, '"chart"')
     .replace(/\bfp \d+ and seed -?\d+/g, "fp _ and seed _")
     .replace(/\[pid: \d+\]/g, "[pid: _]")
+    .replace(/\/tlc-\d+\//g, "/tlc-_/")
     .replace(/\d{4}-\d\d-\d\d \d\d:\d\d:\d\d/g, "_")
     .replace(/ \([\d,]+ d?s\/min\)/g, "")
     .replace(/ in (?:\d+d \d\dh|\d\dh \d\dmin|\d\dmin \d\ds|\d\ds) at /g, " in _ at ");
@@ -50,8 +51,8 @@ test(
             {
               env: {
                 ...process.env,
-                JAVA: path.join(here, "java.ts"),
-                STATECHART_JAVA: process.env.JAVA ?? "java",
+                TLA_RS: path.join(here, "java.ts"),
+                STATECHART_TLA_RS: process.env.TLA_RS ?? "tla-rs",
                 STATECHART_RECORD: tool,
                 STATECHART_PLAIN: twin,
               },

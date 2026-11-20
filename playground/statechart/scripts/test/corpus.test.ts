@@ -9,7 +9,7 @@ import { check, PINNED_FLAGS } from "../run.ts";
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 const corpus = path.join(here, "corpus");
-const skip = !process.env.TLA2TOOLS && "set TLA2TOOLS to the path of tla2tools.jar to run TLC";
+const skip = !process.env.TLA_RS && "set TLA_RS to the path of tla-rs to run it";
 const read = (file: string) => fs.readFileSync(file, "utf8");
 
 for (const name of fs.readdirSync(corpus)) {
@@ -33,8 +33,8 @@ for (const name of fs.readdirSync(corpus)) {
         encoding: "utf8",
         env: {
           ...process.env,
-          JAVA: path.join(here, "java.ts"),
-          STATECHART_JAVA: process.env.JAVA ?? "java",
+          TLA_RS: path.join(here, "java.ts"),
+          STATECHART_TLA_RS: process.env.TLA_RS ?? "tla-rs",
           STATECHART_RECORD: tlc,
         },
       },
@@ -119,10 +119,8 @@ const broken = () =>
 const plainTlc = (base: string) => {
   const name = path.basename(base);
   const r = spawnSync(
-    process.env.JAVA ?? "java",
+    String(process.env.TLA_RS),
     [
-      "-cp",
-      String(process.env.TLA2TOOLS),
       "tlc2.TLC",
       ...PINNED_FLAGS,
       "-config",
@@ -369,8 +367,8 @@ for (const [width, height, config, status, drawn, chart, header] of [
           encoding: "utf8",
           env: {
             ...process.env,
-            JAVA: path.join(here, "java.ts"),
-            STATECHART_JAVA: process.env.JAVA ?? "java",
+            TLA_RS: path.join(here, "java.ts"),
+            STATECHART_TLA_RS: process.env.TLA_RS ?? "tla-rs",
             STATECHART_RECORD: tlc,
           },
         },
@@ -413,7 +411,7 @@ for (const [what, tla, where] of [
     async () => {
       const base = writeSpec("Broken", [...tla], "INIT Init\nNEXT Next\n");
       await assert.rejects(check(`${base}.tla`, `${base}.cfg`), (error: Error) => {
-        assert.match(error.message, /^SANY could not read .*Broken\.tla \(exit 1\):\n/);
+        assert.match(error.message, /^SANY could not read .*Broken\.tla \(exit 2\):\n/);
         assert.match(error.message, where);
         assert.doesNotMatch(error.message, /^\s+at tla2sany\./m);
         return true;

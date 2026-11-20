@@ -8,7 +8,7 @@ import { fileURLToPath } from "node:url";
 import fc from "fast-check";
 
 const here = path.dirname(fileURLToPath(import.meta.url));
-const skip = !process.env.TLA2TOOLS && "set TLA2TOOLS to the path of tla2tools.jar to run TLC";
+const skip = !process.env.TLA_RS && "set TLA_RS to the path of tla-rs to run it";
 
 const PROTOTYPE_KEYS = ["constructor", "__proto__", "toString", "valueOf", "hasOwnProperty"];
 const NAMES = [
@@ -281,13 +281,9 @@ const run = (command: string, args: string[], cwd: string) =>
 
 const plainTlc = (dir: string, c: Case, name: string, lines: string[]) => {
   fs.writeFileSync(path.join(dir, `${name}.cfg`), `${[...c.base, ...lines].join("\n")}\n`);
-  fs.mkdirSync(path.join(dir, `tmp-${name}`));
   return run(
-    process.env.JAVA || "java",
+    String(process.env.TLA_RS),
     [
-      `-Djava.io.tmpdir=${path.join(dir, `tmp-${name}`)}`,
-      "-cp",
-      String(process.env.TLA2TOOLS),
       "tlc2.TLC",
       "-tool",
       "-workers",

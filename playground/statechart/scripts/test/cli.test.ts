@@ -50,8 +50,7 @@ function run(
       encoding: "utf8",
       env: {
         ...process.env,
-        JAVA: java,
-        TLA2TOOLS: "tla2tools.jar",
+        TLA_RS: java,
         STATECHART_REPLAY: dir,
         STATECHART_LOG: log,
         ...env,
@@ -240,8 +239,7 @@ function startCommand(
     {
       env: {
         ...process.env,
-        JAVA: java,
-        TLA2TOOLS: "tla2tools.jar",
+        TLA_RS: java,
         STATECHART_REPLAY: dir,
         TMPDIR: tmpdir,
       },
