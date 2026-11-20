@@ -30,6 +30,17 @@ The report gives the shortest path to the bug: you place the order, the bank tak
 payment times out, the refund job gives the money back, the bank's callback arrives, the warehouse
 ships. `statechart/references/render.md` renders `chart.mmd` as SVG.
 
+### Preview in the browser
+
+`web/` is a Vite page that runs the skill on tla-rs as you edit. Pick an example or a spec of the
+skill's corpus, edit the spec, config or view, and press Check (⌘↵): the page shows the chart, the
+report, the Mermaid text and TLC's output.
+
+```sh
+cargo build --release -p tla-tools     # the page uses target/release/tla-rs, or TLA_RS
+cd playground/web && npm install --no-package-lock && npm run dev   # http://localhost:5178
+```
+
 ### What changed from the skill
 
 - `scripts/run.ts` runs `tla-rs <main class> ...` where the skill ran

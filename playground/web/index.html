@@ -1,0 +1,41 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>tla-rs statechart</title>
+    <link rel="stylesheet" href="/style.css" />
+  </head>
+  <body>
+    <header>
+      <strong>tla-rs · statechart</strong>
+      <select id="example"></select>
+      <button id="check">Check <kbd>⌘↵</kbd></button>
+      <span id="status"></span>
+      <span id="engine"></span>
+    </header>
+    <main>
+      <section class="editor">
+        <nav id="tabs">
+          <button data-tab="tla" class="active">Spec (.tla)</button>
+          <button data-tab="cfg">Config (.cfg)</button>
+          <button data-tab="view">View (view.mjs)</button>
+        </nav>
+        <textarea id="source" spellcheck="false"></textarea>
+      </section>
+      <section class="result">
+        <nav id="outs">
+          <button data-out="chart" class="active">Chart</button>
+          <button data-out="report">Report</button>
+          <button data-out="mermaid">Mermaid</button>
+          <button data-out="tlc">tlc.out</button>
+        </nav>
+        <div id="chart" class="out"></div>
+        <pre id="report" class="out" hidden></pre>
+        <pre id="mermaid" class="out" hidden></pre>
+        <pre id="tlc" class="out" hidden></pre>
+      </section>
+    </main>
+    <script type="module" src="/main.js"></script>
+  </body>
+</html>

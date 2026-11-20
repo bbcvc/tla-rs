@@ -1,0 +1,112 @@
+:root {
+  --bg: #ffffff; --fg: #1c1c1c; --muted: #656565; --line: #d9d9d9; --panel: #f6f6f6;
+  --ok: #1f8a4c; --bad: #d0302f; --error: #b85a06; --accent: #1680f3;
+  color-scheme: light dark;
+}
+@media (prefers-color-scheme: dark) {
+  :root { --bg: #1f1f1f; --fg: #f5f5f5; --muted: #acacac; --line: #3a3a3a; --panel: #262626;
+    --ok: #4cc07f; --bad: #ff6463; --error: #ffa257; --accent: #4a9df5; }
+}
+* { box-sizing: border-box; }
+body { margin: 0; height: 100vh; display: flex; flex-direction: column; background: var(--bg); color: var(--fg);
+  font: 14px/1.45 -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; }
+header { display: flex; gap: 12px; align-items: center; flex-wrap: wrap; padding: 10px 16px; border-bottom: 1px solid var(--line); }
+#engine { margin-left: auto; color: var(--muted); font-size: 12px; font-family: ui-monospace, monospace; }
+#status.ok { color: var(--ok); } #status.bad { color: var(--bad); font-weight: 600; } #status.error { color: var(--error); }
+select, button { font: inherit; color: inherit; background: var(--panel); border: 1px solid var(--line); border-radius: 6px; padding: 4px 10px; }
+#check { background: var(--accent); color: #fff; border-color: var(--accent); }
+#check:disabled { opacity: .6; }
+kbd { font-size: 11px; opacity: .8; }
+main { flex: 1; display: grid; grid-template-columns: minmax(320px, 2fr) 3fr; min-height: 0; }
+section { display: flex; flex-direction: column; min-height: 0; min-width: 0; }
+.editor { border-right: 1px solid var(--line); }
+nav { display: flex; gap: 4px; padding: 8px 12px; border-bottom: 1px solid var(--line); }
+nav button { border-color: transparent; background: transparent; }
+nav button.active { background: var(--panel); border-color: var(--line); }
+textarea { flex: 1; resize: none; border: 0; outline: 0; padding: 12px 16px; background: var(--bg); color: var(--fg);
+  font: 13px/1.5 ui-monospace, SFMono-Regular, Menlo, monospace; tab-size: 4; white-space: pre; overflow: auto; }
+.out { flex: 1; overflow: auto; margin: 0; padding: 16px; }
+pre.out { font: 13px/1.5 ui-monospace, SFMono-Regular, Menlo, monospace; white-space: pre-wrap; }
+#chart svg { display: block; margin: 0 auto; max-width: 100%; height: auto; }
+@media (max-width: 800px) { main { grid-template-columns: 1fr; grid-auto-rows: minmax(300px, auto); } .editor { border-right: 0; border-bottom: 1px solid var(--line); } }
+
+/* Pele's colors, from statechart/references/render.md */
+.pele {
+  --pele-bg: #ffffff;
+  --pele-fg: #1c1c1c;
+  --pele-muted: #656565;
+  --pele-line: #808080;
+  --pele-surface: #fcfcfc;
+  --pele-surface-alt: #f1f1f1;
+  --pele-border: #c9c9c9;
+}
+.pele .blue rect { fill: #c3e0ff; }
+.pele .orange rect { fill: #f0d3bf; }
+.pele .purple rect { fill: #e3d5ff; }
+.pele .yellow rect { fill: #f0dcbf; }
+.pele .teal rect { fill: #bfe3df; }
+.pele .tan rect { fill: #e5d9ce; }
+.pele .pink rect { fill: #ffcbe6; }
+.pele .breaks rect {
+  fill: #ffecee !important;
+  stroke: #e72e3b !important;
+  stroke-width: 2.5px !important;
+}
+.pele .breaks text {
+  fill: #cd2834 !important;
+}
+.pele .mayBreak rect {
+  fill: #fff3e6 !important;
+  stroke: #e8730c !important;
+  stroke-width: 2.5px !important;
+}
+.pele .mayBreak text {
+  fill: #b85a06 !important;
+}
+.pele .bugPath rect {
+  stroke: #1680f3 !important;
+  stroke-width: 2.5px !important;
+}
+.pele .repeats rect {
+  stroke: #9b35d6 !important;
+  stroke-width: 2.5px !important;
+  stroke-dasharray: 6 3;
+}
+@media (prefers-color-scheme: dark) {
+  .pele {
+    --pele-bg: #1f1f1f;
+    --pele-fg: #f5f5f5;
+    --pele-muted: #acacac;
+    --pele-line: #939393;
+    --pele-surface: #121212;
+    --pele-surface-alt: #2c2c2c;
+    --pele-border: #4e4e4e;
+  }
+  .pele .blue rect { fill: #1b3857; }
+  .pele .orange rect { fill: #573117; }
+  .pele .purple rect { fill: #3c2e57; }
+  .pele .yellow rect { fill: #573d17; }
+  .pele .teal rect { fill: #174641; }
+  .pele .tan rect { fill: #3d3127; }
+  .pele .pink rect { fill: #57233e; }
+  .pele .breaks rect {
+    fill: #2e2021 !important;
+    stroke: #cf2b35 !important;
+  }
+  .pele .breaks text {
+    fill: #ff6463 !important;
+  }
+  .pele .mayBreak rect {
+    fill: #2e2619 !important;
+    stroke: #d0700f !important;
+  }
+  .pele .mayBreak text {
+    fill: #ffa257 !important;
+  }
+  .pele .bugPath rect {
+    stroke: #116dd2 !important;
+  }
+  .pele .repeats rect {
+    stroke: #9a3fcf !important;
+  }
+}
