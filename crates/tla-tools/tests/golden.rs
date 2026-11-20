@@ -160,3 +160,10 @@ golden! {
     initial_state_a_check_fails_on: "InitialStateError",
     action_property_that_fails_to_evaluate: "ActionPropertyError",
 }
+
+/// A syntax error, in the words of SANY's parser. TLC itself wasn't at hand to record it under
+/// `-tool`.
+#[test]
+fn syntax_error() {
+    check("ParseError", ".out", &[]);
+}

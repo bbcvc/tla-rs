@@ -269,7 +269,7 @@ impl Resolver<'_> {
         };
         let source: Arc<str> = source.into();
         let modules = tla_tools_parser::parse_modules(&source)
-            .map_err(|error| ResolveError::syntax(name.symbol, error))?;
+            .map_err(|error| ResolveError::syntax(name.symbol, &source, error))?;
         if modules[0].name.symbol != name.symbol {
             let message =
                 format!("File for module {} holds module {}.", name.symbol, modules[0].name.symbol);

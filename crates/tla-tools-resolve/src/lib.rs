@@ -63,7 +63,8 @@ pub struct ResolveError {
 /// Which part of SANY reports an error.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ErrorKind {
-    /// The parser rejects the text of a module.
+    /// The parser rejects the text of a module. The error's message is what SANY prints for
+    /// it, its parser's report under its `***Parse Error***` heading or its lexer's error.
     Syntax,
     /// The semantic analysis or the level checking of a module rejects it.
     Semantic,
@@ -88,10 +89,10 @@ impl ResolveError {
         Self { message: message.into(), module, span, line, column, end_line, end_column, kind }
     }
 
-    /// A syntax error the parser reports in `module`.
-    fn syntax(module: Symbol, error: tla_tools_parser::ParseError) -> Self {
+    /// A syntax error the parser reports in `module`, whose text is `source`.
+    fn syntax(module: Symbol, source: &str, error: tla_tools_parser::ParseError) -> Self {
         Self {
-            message: error.message,
+            message: error.sany_report(source),
             module,
             span: error.span,
             line: error.line,
@@ -177,7 +178,7 @@ pub fn analyze(source: &str, loader: &mut dyn ModuleLoader) -> Analysis {
     };
     let modules = match tla_tools_parser::parse_modules(source) {
         Ok(modules) => modules,
-        Err(error) => return fail(ResolveError::syntax(Symbol::intern(""), error)),
+        Err(error) => return fail(ResolveError::syntax(Symbol::intern(""), source, error)),
     };
     let mut resolver = Resolver {
         loader,

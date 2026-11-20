@@ -1,8 +1,8 @@
 //! What SANY prints as TLC runs it on a spec: the file it parses each module from, each module it
 //! analyzes and lints, and why it rejects the spec.
 //!
-//! tla-rs parses with tree-sitter rather than SANY's parser, so a syntax error is reported at
-//! tree-sitter's position in tree-sitter's words, inside SANY's report of it.
+//! tla-rs parses with tree-sitter rather than SANY's parser. Where the parse fails, it reports
+//! the error in the words of SANY's own parser, which tla-tools-parser emulates.
 
 use std::fmt::Write;
 use std::path::{Path, PathBuf};
@@ -93,7 +93,8 @@ pub fn accepted(modules: &Modules, spec_path: &Path) -> String {
     out
 }
 
-/// What SANY prints for a spec it rejects, where `spec_name` is the name TLC gives SANY.
+/// What SANY prints for a spec it rejects, where `spec_name` is the name TLC gives SANY, or the
+/// file name XMLExporter is given.
 pub fn rejected(failure: &ParseFailure, spec_path: &Path, spec_name: &str) -> String {
     let mut out = String::new();
     let modules = &failure.modules;
@@ -105,20 +106,24 @@ pub fn rejected(failure: &ParseFailure, spec_path: &Path, spec_name: &str) -> St
     };
     match error.kind {
         ErrorKind::Syntax => {
-            let module = match error.module.as_str() {
-                "" => spec_name.to_owned(),
-                name => name.to_owned(),
+            // SANY names the root module's file as it was given.
+            let (module, file) = match error.module.as_str() {
+                "" => {
+                    let stem = spec_path.file_stem().unwrap_or_default();
+                    let file = match spec_name.ends_with(".tla") {
+                        true => spec_name.to_owned(),
+                        false => format!("{spec_name}.tla"),
+                    };
+                    (stem.to_string_lossy().into_owned(), file)
+                }
+                name => (name.to_owned(), format!("{name}.tla")),
             };
             let parsed = &modules.order.parsed;
             let end =
                 parsed.iter().position(|name| *name == module).map_or(parsed.len(), |at| at + 1);
             files.parsed(&parsed[..end], &mut out);
-            let _ = writeln!(
-                out,
-                "***Parse Error***\n{} at line {}, column {}\n",
-                error.message, error.line, error.column
-            );
-            let message = format!("Could not parse module {module} from file {module}.tla");
+            let _ = writeln!(out, "{}", error.message);
+            let message = format!("Could not parse module {module} from file {file}");
             fatal(spec_name, &module, &message, &mut out);
         }
         ErrorKind::Fatal => {

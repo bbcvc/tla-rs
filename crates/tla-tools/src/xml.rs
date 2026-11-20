@@ -101,7 +101,6 @@ pub fn main(args: &[String]) -> i32 {
         .map(|directory| directory.join(&file))
         .find(|path| path.is_file())
         .unwrap_or_else(|| PathBuf::from(&file));
-    let name = path.file_stem().unwrap_or_default().to_string_lossy().into_owned();
     let read = match load::load_spec(&path, &Library::new(&options.includes)) {
         Ok(mut read) => {
             without_warnings(&mut read.modules);
@@ -109,7 +108,8 @@ pub fn main(args: &[String]) -> i32 {
         }
         Err(mut failure) => {
             without_warnings(&mut failure.modules);
-            eprint!("{}", sany::rejected(&failure, &path, &name));
+            // XMLExporter gives SANY the file name it was given.
+            eprint!("{}", sany::rejected(&failure, &path, &options.file));
             eprintln!("ERROR: Failed to parse module.");
             return SPEC_PARSING_FAILURE;
         }

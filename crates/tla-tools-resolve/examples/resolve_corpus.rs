@@ -11,7 +11,9 @@
 //!
 //! With tla-ts's conformance records, ids relative to `DIR`, it also compares the results:
 //! `--sany` against SANY's verdict on each module, and `--expected` against TLC's result for
-//! each model, where only a model TLC reports as an error should fail to resolve.
+//! each model, where only a model TLC reports as an error should fail to resolve. With
+//! `--sany`, it also checks that tla-tools-parser's emulation of SANY's parser reports each
+//! syntax error SANY reports, in the same words, and none for a module SANY parses.
 
 use std::collections::{BTreeMap, HashMap};
 use std::path::{Path, PathBuf};
@@ -128,6 +130,7 @@ fn main() {
 
     if let Some(path) = &options.sany {
         compare_with_sany(path, &results);
+        compare_parse_errors(path, &options.root);
     }
     if let Some(path) = &options.expected {
         compare_with_tlc(path, &results);
@@ -160,7 +163,7 @@ fn compare_with_sany(path: &Path, results: &BTreeMap<String, Option<String>>) {
         compared += 1;
         match (record["status"] == "ok", failure) {
             (true, None) | (false, Some(_)) => agreed += 1,
-            (true, Some(message)) => mismatches.push(format!("rejects {id}: {message}")),
+            (true, Some(message)) => mismatches.push(format!("rejects {id}: {}", reason(message))),
             (false, None) => {
                 let error = record["error"].as_str().unwrap_or_default();
                 mismatches.push(format!("accepts {id}: SANY says {}", reason(error)));
@@ -168,6 +171,46 @@ fn compare_with_sany(path: &Path, results: &BTreeMap<String, Option<String>>) {
         }
     }
     println!("\nAgrees with SANY on {agreed} of {compared} modules");
+    mismatches.iter().for_each(|mismatch| println!("  {mismatch}"));
+}
+
+/// Checks `tla_tools_parser::sany_parse_error` against the parse errors SANY reports for the
+/// modules in `root`: the text it prints before its fatal error, for the module it names.
+fn compare_parse_errors(path: &Path, root: &Path) {
+    let (mut reported, mut accepted, mut mismatches) = (0, 0, Vec::new());
+    for record in records(path) {
+        let id = record["id"].as_str().unwrap();
+        let error = record["error"].as_str().unwrap_or_default();
+        let module = error
+            .split_once("Could not parse module ")
+            .and_then(|(_, rest)| rest.split_once(' '))
+            .map(|(name, _)| name);
+        let file = root.join(id);
+        let (file, expected) = match module {
+            Some(name) => {
+                let module = file.with_file_name(format!("{name}.tla"));
+                (module, error.split_once("\n\nFatal errors").map(|(report, _)| report))
+            }
+            None => (file, None),
+        };
+        let Ok(source) = std::fs::read_to_string(&file) else { continue };
+        let actual = tla_tools_parser::sany_parse_error(&source);
+        match expected {
+            Some(_) => reported += 1,
+            None => accepted += 1,
+        }
+        if actual.as_deref() != expected {
+            let actual = actual.as_deref().unwrap_or("nothing");
+            let expected = expected.unwrap_or("nothing");
+            mismatches.push(format!("{id}:\n    SANY: {expected:?}\n    tla-rs: {actual:?}"));
+        }
+    }
+    let compared = reported + accepted;
+    println!(
+        "\nMatches SANY's parse report on {} of {compared} modules ({reported} SANY rejects, \
+         {accepted} it parses)",
+        compared - mismatches.len()
+    );
     mismatches.iter().for_each(|mismatch| println!("  {mismatch}"));
 }
 

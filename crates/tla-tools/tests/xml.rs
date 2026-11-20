@@ -163,6 +163,54 @@ fn reports_a_spec_sany_rejects() {
     assert!(errors.ends_with("ERROR: Failed to parse module.\n"), "{errors}");
 }
 
+/// What tla-ts's XMLExporter prints for a module SANY's parser rejects, after the files SANY
+/// parses.
+const SYNTAX_ERROR_REPORT: &str = r#"***Parse Error***
+Was expecting "==== or more Module body"
+Encountered "0" at line 3, column 15 and token "=" 
+
+Residual stack trace follows:
+Module definition starting at line 1, column 1.
+
+
+Fatal errors while parsing TLA+ spec in file Broken.tla
+
+In module Broken
+
+Could not parse module Broken from file Broken.tla
+*** Errors: 1
+
+In module Broken
+
+Could not parse module Broken from file Broken.tla
+
+
+
+ERROR: Failed to parse module.
+"#;
+
+#[test]
+fn reports_a_syntax_error_in_the_words_of_sany_s_parser() {
+    let directory = std::env::temp_dir().join(format!("tla-rs-xml-syntax-{}", std::process::id()));
+    std::fs::create_dir_all(&directory).unwrap();
+    let source = "---- MODULE Broken ----\nVARIABLE x\nInit == x = = 0\nNext == x' = x\n====\n";
+    std::fs::write(directory.join("Broken.tla"), source).unwrap();
+    let output = Command::new(env!("CARGO_BIN_EXE_tla-rs"))
+        .args(["tla2sany.xml.XMLExporter", "-o", "Broken.tla"])
+        .current_dir(&directory)
+        .output()
+        .unwrap();
+    assert_eq!(output.status.code(), Some(2));
+    assert!(output.stdout.is_empty());
+    let errors = String::from_utf8(output.stderr).unwrap();
+    let report: String = errors
+        .lines()
+        .filter(|line| !line.starts_with("Parsing file"))
+        .map(|line| format!("{line}\n"))
+        .collect();
+    assert_eq!(report, SYNTAX_ERROR_REPORT);
+}
+
 #[test]
 fn leaves_out_theorems_and_assumptions() {
     let directory = std::env::temp_dir().join(format!("tla-rs-xml-thm-{}", std::process::id()));

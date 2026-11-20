@@ -175,10 +175,11 @@ The conformance runner checks each model in its own process and compares the res
 - [x] `-dump`: the states found, or the state graph in TLC's DOT format with `dot,colorize,actionlabels,snapshot`, checked against the graphs TLC 1.8.0 writes
 - [x] SANY's XML export (`tla-rs tla2sany.xml.XMLExporter`), with the modules, declarations, definitions and levels that tools read, the same as SANY's export on the 769 specs of the conformance corpus both read
 - [x] Every semantic and level error of a spec in SANY's order rather than the first, and SANY's warnings: definitions made twice, and the linter's record fields named like definitions
+- [x] A syntax error in SANY's words, from an emulation of SANY's parser, the same as SANY on the 45 syntax errors of the conformance corpus
 
 **Next**
 
-- [ ] SANY's own words for a syntax error, and for the semantic errors SANY words differently, such as an operator given the wrong number of arguments
+- [ ] SANY's own words for the semantic errors SANY words differently, such as an operator given the wrong number of arguments
 - [ ] TLC's fingerprint stack trace, for an error in a value TLC evaluates lazily
 - [ ] The rest of SANY's XML export: the bodies of definitions, the built-in operators, the definitions of instances (`I!Op`), theorems and assumptions
 - [ ] Cut per-call evaluation overhead; about ten large models (VR_*, S2C, MoveRange) are still around 2× slower than TLC

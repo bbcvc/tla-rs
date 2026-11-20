@@ -144,11 +144,14 @@ crates/tla-tools/scripts/smoke.py $C --per-status 8 --tla-ts ../tla-ts/packages/
   and prints SANY's warnings and its linter's. Some errors are still in tla-rs's own words where
   SANY words them differently, such as an operator given the wrong number of arguments, and
   tla-rs doesn't check proofs, so it reports none of SANY's errors in them. A module that only
-  an `INSTANCE` with substitutions uses isn't linted. With a semantic error, tla-rs reports no level errors,
-  where SANY still level-checks the modules it analyzed before it, and two errors with the same
-  text at the same place are reported once. tla-rs parses with tree-sitter, so a
-  syntax error is reported inside SANY's report of it, but in tree-sitter's words and at the
-  position tree-sitter finds it.
+  an `INSTANCE` with substitutions uses isn't linted. With a semantic error, tla-rs reports no
+  level errors, where SANY still level-checks the modules it analyzed before it, and two errors
+  with the same text at the same place are reported once. tla-rs parses with tree-sitter, and
+  where that fails, it runs an emulation of SANY's parser over the module to report the error
+  in SANY's words, at SANY's position. A module the grammar can't read but SANY's parser
+  accepts, such as one with a record field named `Nat`, is reported in tree-sitter's words, and
+  a few that SANY's parser rejects and the grammar reads, such as `a = b = c`, go on to the
+  semantic analysis.
 - With temporal properties to check, a spec's `Print` and `PrintT` may print more or fewer
   times while the search runs than in TLC, which evaluates the actions again for the liveness
   checker. Without them, and in a counterexample, they print as in TLC.

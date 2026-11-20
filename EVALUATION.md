@@ -106,7 +106,7 @@ cargo run --release -p tla-tools-resolve --example resolve_corpus -- $C/.corpora
 cargo run --release -p tla-tools-resolve --example resolve_corpus -- $C/.corpora $L --expected $C/expected.json
 ```
 
-The parser and resolver agree with SANY on 1,865 of the 1,873 modules SANY was recorded on. Every one of the 823 models TLC was recorded on that TLC checks resolves.
+The parser and resolver agree with SANY on 1,865 of the 1,873 modules SANY was recorded on. Every one of the 823 models TLC was recorded on that TLC checks resolves. Where tree-sitter fails to parse a module, `tla-tools-parser` runs an emulation of SANY's parser, ported from tla-ts's `src/sany/parse-error.ts`, to report the error in SANY's words. `--sany` also runs it on every module: it prints SANY's recorded report, word for word, for all 45 modules SANY rejects with a syntax error, and nothing for the 1,828 others.
 
 The 9 disagreements with SANY:
 
