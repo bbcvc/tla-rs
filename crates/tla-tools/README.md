@@ -149,7 +149,7 @@ crates/tla-tools/scripts/smoke.py $C --per-status 8 --tla-ts ../tla-ts/packages/
   with the same text at the same place are reported once. tla-rs parses with tree-sitter, and
   where that fails, it runs an emulation of SANY's parser over the module to report the error
   in SANY's words, at SANY's position. A module the grammar can't read but SANY's parser
-  accepts, such as one with a record field named `Nat`, is reported in tree-sitter's words, and
+  accepts, such as one with a decimal number like `1.5`, is reported in tla-rs's own words, and
   a few that SANY's parser rejects and the grammar reads, such as `a = b = c`, go on to the
   semantic analysis.
 - With temporal properties to check, a spec's `Print` and `PrintT` may print more or fewer

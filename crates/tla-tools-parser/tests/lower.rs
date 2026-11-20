@@ -394,3 +394,27 @@ fn parses_every_module_in_a_file() {
     assert!(matches!(&modules[1].units[0],
         Unit::Theorem(theorem) if theorem.statement.as_ref().unwrap().kind == ExprKind::Bool(true)));
 }
+
+#[test]
+fn reads_a_keyword_of_the_grammar_as_the_first_field_of_a_record_like_sany() {
+    let source = r#"---- MODULE Fields ----
+(* [Nat |-> 1] in a comment *)
+R == [Nat |-> 1, Int |-> 2]
+S == [TRUE : {1}, b : {2}]
+T == "[STRING |-> 3]"
+====
+"#;
+    let module = parse(source);
+    let field_names = |name| match body(&module, name) {
+        ExprKind::Record(fields) | ExprKind::RecordSet(fields) => {
+            fields.iter().map(|(field, _)| field.symbol.as_str().to_owned()).collect::<Vec<_>>()
+        }
+        other => panic!("{name} is {other:?}"),
+    };
+    assert_eq!(field_names("R"), ["Nat", "Int"]);
+    assert_eq!(field_names("S"), ["TRUE", "b"]);
+    assert_eq!(body(&module, "T"), &ExprKind::Str(Symbol::intern("[STRING |-> 3]")));
+    // The keyword still names its set where a record can't have it as a field.
+    parse_module("---- MODULE Set ----\nF == [Nat -> Nat]\n====\n").unwrap();
+    parse_module("---- MODULE Broken ----\nF == [Nat |-> ]\n====\n").unwrap_err();
+}
