@@ -611,7 +611,7 @@ dependencies = [
 
 [[package]]
 name = "tla-tools"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "chrono",
  "clap",
@@ -623,14 +623,14 @@ dependencies = [
 
 [[package]]
 name = "tla-tools-ast"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "tla-tools-intern",
 ]
 
 [[package]]
 name = "tla-tools-checker"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "foldhash",
  "hashbrown 0.17.1",
@@ -644,7 +644,7 @@ dependencies = [
 
 [[package]]
 name = "tla-tools-eval"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "serde_json",
  "stacker",
@@ -657,14 +657,14 @@ dependencies = [
 
 [[package]]
 name = "tla-tools-intern"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "lasso",
 ]
 
 [[package]]
 name = "tla-tools-parser"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "thiserror",
  "tla-tools-ast",
@@ -674,7 +674,7 @@ dependencies = [
 
 [[package]]
 name = "tla-tools-resolve"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "serde_json",
  "thiserror",
@@ -684,7 +684,7 @@ dependencies = [
 
 [[package]]
 name = "tla-tools-value"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "thiserror",
  "tla-tools-intern",
