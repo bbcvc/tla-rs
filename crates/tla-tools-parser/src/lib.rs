@@ -4,6 +4,7 @@
 mod config;
 mod expr;
 mod lower;
+mod sany;
 
 pub use config::{
     ConfigError, ConfigValue, ConstantAssignment, ConstantSubstitution, ModelConfig, parse_config,
@@ -28,6 +29,26 @@ impl ParseError {
         let (line, column) = span.line_column(source);
         Self { message: message.into(), span, line, column }
     }
+
+    /// What SANY prints for the module `source` this error is in: the report of SANY's own
+    /// parser, or where SANY's parser would accept the module, as for an error SANY finds
+    /// after parsing or a construct the grammar doesn't read, this error's message at its
+    /// position under SANY's heading.
+    pub fn sany_report(&self, source: &str) -> String {
+        sany::parse_error(source).unwrap_or_else(|| {
+            format!(
+                "***Parse Error***\n{} at line {}, column {}\n",
+                self.message, self.line, self.column
+            )
+        })
+    }
+}
+
+/// What SANY reports for a module its lexer or parser rejects, in SANY's words: the
+/// `***Parse Error***` report of `TLAplusParser`, or the lexer's error. `None` if SANY's parser
+/// accepts the module.
+pub fn sany_parse_error(source: &str) -> Option<String> {
+    sany::parse_error(source)
 }
 
 /// Parses the first module in `source`. Text before and after the module is ignored, as SANY
