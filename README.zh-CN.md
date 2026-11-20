@@ -6,7 +6,7 @@
 
 <p align="center">
   <a href="LICENSE"><img alt="License" src="https://img.shields.io/badge/license-MIT-blue"></a>
-  <img alt="Rust" src="https://img.shields.io/badge/rust-1.85%2B-orange">
+  <img alt="Rust" src="https://img.shields.io/badge/rust-1.90%2B-orange">
   <img alt="Conformance" src="https://img.shields.io/badge/TLC%20conformance-766%2F772%20match%2C%200%20mismatch-brightgreen">
 </p>
 
@@ -79,7 +79,7 @@ Finished in 04s at (2026-11-05 14:35:30)
 
 ```shell
 npm install -g tla-rs        # 或者直接运行：npx tla-rs Spec.tla
-cargo install tla-tools      # 从源码编译，需要 Rust 1.85 或更高版本
+cargo install tla-tools      # 从源码编译，需要 Rust 1.90 或更高版本
 ```
 
 | 渠道 | 包名 | 说明 |

@@ -111,6 +111,15 @@ impl Evaluator {
     }
 
     fn eval_node(&self, expr: &Expr, env: &mut Env<'_>) -> Result<Value> {
+        // A primed variable of an instantiated module, in the operand of its ENABLED, that
+        // the instance substitutes an expression for.
+        if env.enabled == Enabled::Primed
+            && matches!(expr.kind, ExprKind::Call { .. })
+            && let Some(&(slot, name)) =
+                self.instance_enabled.variables.get(&(expr as *const Expr as usize))
+        {
+            return self.instance_variable(slot, name, expr, env);
+        }
         match &expr.kind {
             ExprKind::Bool(value) => Ok(Value::Bool(*value)),
             ExprKind::Int(value) => self.int(*value, expr, env),
@@ -118,15 +127,6 @@ impl Evaluator {
             ExprKind::Var(id) => self.var(*id, expr, env),
             ExprKind::Const(id) => self.constant(*id, expr, env),
             ExprKind::Local(local) => self.local(*local, expr, env),
-            // A primed variable of an instantiated module, in the operand of its ENABLED, that
-            // the instance substitutes an expression for.
-            ExprKind::Call { .. }
-                if env.enabled == Enabled::Primed
-                    && let Some(&(slot, name)) =
-                        self.instance_enabled.variables.get(&(expr as *const Expr as usize)) =>
-            {
-                self.instance_variable(slot, name, expr, env)
-            }
             ExprKind::Call { def, scope, args } => self.call(*def, scope, args, expr, env),
             ExprKind::CallParam { param, args } => self.call_param(*param, args, expr, env),
             ExprKind::CallConst { id, args } => self.call_const(*id, args, expr, env),

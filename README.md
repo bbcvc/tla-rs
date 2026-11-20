@@ -6,7 +6,7 @@
 
 <p align="center">
   <a href="LICENSE"><img alt="License" src="https://img.shields.io/badge/license-MIT-blue"></a>
-  <img alt="Rust" src="https://img.shields.io/badge/rust-1.85%2B-orange">
+  <img alt="Rust" src="https://img.shields.io/badge/rust-1.90%2B-orange">
   <img alt="Conformance" src="https://img.shields.io/badge/TLC%20conformance-766%2F772%20match%2C%200%20mismatch-brightgreen">
 </p>
 
@@ -79,7 +79,7 @@ Other Rust TLA+ checkers either target a subset of the language (`fabracht/tla-r
 
 ```shell
 npm install -g tla-rs        # or run it once: npx tla-rs Spec.tla
-cargo install tla-tools      # builds from source; needs Rust 1.85 or newer
+cargo install tla-tools      # builds from source; needs Rust 1.90 or newer
 ```
 
 | Channel | Package | Notes |

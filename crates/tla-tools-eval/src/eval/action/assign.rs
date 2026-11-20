@@ -40,11 +40,13 @@ impl Evaluator {
         if depth > MAXIMUM_TARGET_DEPTH {
             return Ok(None);
         }
+        if !is_primed && let Some(slot) = self.instance_slot(target, site) {
+            return Ok(Some(slot));
+        }
         match &target.kind {
             ExprKind::Builtin { op: Builtin::Prime, args } if is_primed => {
                 self.target_at(&args[0], site, run, false, depth + 1)
             }
-            _ if !is_primed && let Some(slot) = self.instance_slot(target, site) => Ok(Some(slot)),
             ExprKind::Var(var) if !is_primed => Ok(Some(var.index())),
             ExprKind::Local(local) => match &site.frame.up(local.hops).slots[local.slot] {
                 Slot::Thunk(thunk) if Arc::ptr_eq(thunk.expr.spec(), &self.spec) => {
@@ -183,13 +185,12 @@ impl Evaluator {
                     return self.keep(thunk.expr.get(), &origin, run, action, rest, depth + 1);
                 }
             }
-            ExprKind::Call { def, scope, args }
-                if args.is_empty()
-                    && let Some(target) = self.walked(*def, 0) =>
-            {
-                let DefBody::Expr(body) = &self.spec.def(target).body else { unreachable!() };
-                let callee = self.entered(*def, target, scope, args, site, run)?;
-                return self.keep(body, &callee, run, action, rest, depth + 1);
+            ExprKind::Call { def, scope, args } if args.is_empty() => {
+                if let Some(target) = self.walked(*def, 0) {
+                    let DefBody::Expr(body) = &self.spec.def(target).body else { unreachable!() };
+                    let callee = self.entered(*def, target, scope, args, site, run)?;
+                    return self.keep(body, &callee, run, action, rest, depth + 1);
+                }
             }
             _ => {}
         }
