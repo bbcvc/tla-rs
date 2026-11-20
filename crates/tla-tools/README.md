@@ -144,7 +144,9 @@ crates/tla-tools/scripts/smoke.py $C --per-status 8 --tla-ts ../tla-ts/packages/
   and prints SANY's warnings and its linter's. Some errors are still in tla-rs's own words where
   SANY words them differently, such as an operator given the wrong number of arguments, and
   tla-rs doesn't check proofs, so it reports none of SANY's errors in them. A module that only
-  an `INSTANCE` with substitutions uses isn't linted. tla-rs parses with tree-sitter, so a
+  an `INSTANCE` with substitutions uses isn't linted. With a semantic error, tla-rs reports no level errors,
+  where SANY still level-checks the modules it analyzed before it, and two errors with the same
+  text at the same place are reported once. tla-rs parses with tree-sitter, so a
   syntax error is reported inside SANY's report of it, but in tree-sitter's words and at the
   position tree-sitter finds it.
 - With temporal properties to check, a spec's `Print` and `PrintT` may print more or fewer
