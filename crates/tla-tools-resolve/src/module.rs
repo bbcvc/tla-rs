@@ -8,7 +8,7 @@ use std::sync::Arc;
 use tla_tools_ast::{Module, Name, Op, OpDecl, Span, Symbol, Unit};
 
 use crate::ErrorKind;
-use crate::expr::{FrameScope, apply, builtin_of};
+use crate::expr::{Claim, FrameScope, apply, builtin_of};
 use crate::ir::{
     Builtin, ConstId, Declaration, Def, DefBody, DefId, Expr, ExprKind, Local, ModuleId,
     ModuleInfo, OpRef, Scope, VarId,
@@ -52,6 +52,9 @@ pub(crate) struct Entry {
     /// Where the symbol was declared or defined. Two entries from the same place are the same
     /// symbol reached two ways, which isn't a conflict.
     pub origin: Option<(ModuleId, Span)>,
+    /// Where SANY locates the symbol in a message about it: a definition from its name to the
+    /// end of its body, and what an `INSTANCE` brings in at the `INSTANCE`.
+    pub location: (ModuleId, Span),
     pub is_local: bool,
 }
 
@@ -86,6 +89,7 @@ impl Context {
                     kind: SymbolKind::Builtin,
                     arity: builtin.arity(),
                     origin: None,
+                    location: (ModuleId(0), Span::default()),
                     is_local: false,
                 };
                 (Symbol::intern(name), entry)
@@ -95,28 +99,44 @@ impl Context {
     }
 }
 
+/// How a symbol joins the names that already have one bound to its name.
+pub(crate) enum Bind {
+    /// The name is free.
+    New,
+    /// The same symbol reached another way.
+    Same,
+    /// Another symbol of the same kind and arity, which SANY warns about and keeps the first of.
+    Duplicate,
+}
+
+/// Why a symbol can't join the names, as SANY reports it.
+pub(crate) enum Conflict {
+    BuiltIn,
+    Multiply,
+}
+
 /// Checks `added` against a symbol already bound to the same name, following SANY's
-/// `SymbolTable.addSymbol`. Returns whether `added` should replace nothing and be bound.
+/// `SymbolTable.addSymbol`.
 pub(crate) fn is_bindable(
-    name: Symbol,
     current: Option<&Entry>,
     added: &Entry,
     is_bound_variable: bool,
-) -> std::result::Result<bool, String> {
-    let Some(current) = current else { return Ok(true) };
-    if current.origin.is_some() && current.origin == added.origin {
-        return Ok(false);
+) -> std::result::Result<Bind, Conflict> {
+    let Some(current) = current else { return Ok(Bind::New) };
+    let is_same_def = matches!(
+        (&current.binding, &added.binding),
+        (Binding::Def(current), Binding::Def(added)) if current == added
+    );
+    if is_same_def || (current.origin.is_some() && current.origin == added.origin) {
+        return Ok(Bind::Same);
     }
     if current.kind == SymbolKind::Builtin {
-        return Err(format!("Symbol {name} is a built-in operator, and cannot be redefined."));
+        return Err(Conflict::BuiltIn);
     }
     if is_bound_variable || current.kind != added.kind || current.arity != added.arity {
-        return Err(format!(
-            "Multiply-defined symbol '{name}': this definition or declaration conflicts with an earlier one."
-        ));
+        return Err(Conflict::Multiply);
     }
-    // SANY only warns about a second definition of the same kind and arity, and keeps the first.
-    Ok(false)
+    Ok(Bind::Duplicate)
 }
 
 /// The substitutions of one instantiation, by the name of each constant and variable.
@@ -145,28 +165,65 @@ pub(crate) struct Elab {
     /// made the definition it selects from.
     pub id: usize,
     pub module: ModuleId,
-    pub name: Symbol,
     pub context: Context,
     pub depth: usize,
     pub substitution: Option<Rc<Substitution>>,
     pub parsed: Rc<ParsedModule>,
 }
 
-impl Elab {
-    pub fn add(&mut self, name: Name, entry: Entry, source: &str) -> Result<()> {
-        let current = self.context.names.get(&name.symbol);
-        match is_bindable(name.symbol, current, &entry, false) {
-            Ok(true) => {
-                self.context.names.insert(name.symbol, entry);
-                Ok(())
+impl Resolver<'_> {
+    /// Binds `name` at the top level of the module being elaborated.
+    pub(crate) fn add(&mut self, elab: &mut Elab, name: Symbol, entry: Entry) -> Result<()> {
+        let current = elab.context.names.get(&name);
+        if self.binds(elab.module, name, current, &entry, false)? {
+            elab.context.names.insert(name, entry);
+        }
+        Ok(())
+    }
+
+    /// Whether `added` should be bound to `name`, which `current` is bound to: an error if they
+    /// conflict, and a warning if both are kept as SANY keeps them.
+    pub(crate) fn binds(
+        &mut self,
+        analyzed: ModuleId,
+        name: Symbol,
+        current: Option<&Entry>,
+        added: &Entry,
+        is_bound_variable: bool,
+    ) -> Result<bool> {
+        let (module, span) = added.location;
+        let earlier = |resolver: &Self| {
+            let (module, span) =
+                current.map_or((ModuleId(0), Span::default()), |entry| entry.location);
+            resolver.location(module, span)
+        };
+        match is_bindable(current, added, is_bound_variable) {
+            Ok(Bind::New) => Ok(true),
+            Ok(Bind::Same) => Ok(false),
+            Ok(Bind::Duplicate) => {
+                let message = format!(
+                    "Multiple declarations or definitions for symbol {name}.  \nThis duplicates the one at {}.",
+                    earlier(self)
+                );
+                let warning = self.error(module, span, message);
+                self.report(analyzed, warning, true);
+                Ok(false)
             }
-            Ok(false) => Ok(()),
-            Err(message) => Err(ResolveError::new(self.name, source, name.span, message)),
+            Err(Conflict::BuiltIn) => Err(self.error(
+                module,
+                span,
+                format!("Symbol {name} is a built-in operator, and cannot be redefined."),
+            )),
+            Err(Conflict::Multiply) => {
+                let message = format!(
+                    "Multiply-defined symbol '{name}': this definition or declaration conflicts \nwith the one at {}.",
+                    earlier(self)
+                );
+                Err(self.error(module, span, message))
+            }
         }
     }
-}
 
-impl Resolver<'_> {
     pub(crate) fn source(&self, module: ModuleId) -> Arc<str> {
         self.spec.modules[module.index()].source.clone()
     }
@@ -177,12 +234,7 @@ impl Resolver<'_> {
         span: Span,
         message: impl Into<String>,
     ) -> ResolveError {
-        ResolveError::new(
-            self.spec.modules[module.index()].name,
-            &self.source(module),
-            span,
-            message,
-        )
+        ResolveError::new(self.file_module(module), &self.source(module), span, message)
     }
 
     pub(crate) fn add_module(
@@ -274,11 +326,7 @@ impl Resolver<'_> {
             return Ok(parameters.clone());
         }
         if self.in_progress.contains(&module.id) {
-            return Err(self.error(
-                module.id,
-                module.ast.name.span,
-                format!("Circular dependency involving module {}.", module.ast.name.symbol),
-            ));
+            return Err(self.circular(module));
         }
         self.in_progress.push(module.id);
         let mut parameters: Vec<Parameter> = Vec::new();
@@ -350,11 +398,7 @@ impl Resolver<'_> {
         depth: usize,
     ) -> Result<Rc<Context>> {
         if self.in_progress.contains(&module.id) {
-            return Err(self.error(
-                module.id,
-                module.ast.name.span,
-                format!("Circular dependency involving module {}.", module.ast.name.symbol),
-            ));
+            return Err(self.circular(module));
         }
         self.in_progress.push(module.id);
         let visible_from = std::mem::replace(&mut self.visible_from, self.frames.len());
@@ -382,13 +426,11 @@ impl Resolver<'_> {
         elab_id: usize,
     ) -> Result<Context> {
         let id = module.id;
-        let source = self.source(id);
         self.register_inner(&module.ast, id)?;
         let mut elab = Elab {
             id: elab_id,
             parsed: module.clone(),
             module: id,
-            name: module.ast.name.symbol,
             // A nested module sees what its enclosing module defines before it, without
             // exporting it.
             context: self
@@ -408,12 +450,17 @@ impl Resolver<'_> {
             };
             for (name, entry) in &context.names {
                 if !entry.is_local && entry.kind != SymbolKind::Builtin {
-                    elab.add(Name { symbol: *name, span: extended.span }, entry.clone(), &source)?;
+                    let at = self.checkpoint();
+                    let added = self.add(&mut elab, *name, entry.clone());
+                    self.recover(at, id, added, || ())?;
                 }
             }
         }
         for (index, unit) in module.ast.units.iter().enumerate() {
-            self.unit(&mut elab, index, unit, &source)?;
+            // SANY leaves out a unit it finds an error in, and goes on with the next.
+            let at = self.unit_checkpoint();
+            let resolved = self.unit(&mut elab, index, unit);
+            self.recover(at, id, resolved, || ())?;
         }
         Ok(elab.context)
     }
@@ -435,7 +482,7 @@ impl Resolver<'_> {
         Ok(context)
     }
 
-    fn unit(&mut self, elab: &mut Elab, index: usize, unit: &Unit, source: &str) -> Result<()> {
+    fn unit(&mut self, elab: &mut Elab, index: usize, unit: &Unit) -> Result<()> {
         let origin = Origin { parsed: elab.parsed.clone(), unit: index, elab: elab.id };
         match unit {
             Unit::Variables(names) => {
@@ -457,9 +504,10 @@ impl Resolver<'_> {
                         kind: SymbolKind::Variable,
                         arity: 0,
                         origin: Some((elab.module, name.span)),
+                        location: (elab.module, name.span),
                         is_local: false,
                     };
-                    elab.add(*name, entry, source)?;
+                    self.add(elab, name.symbol, entry)?;
                 }
             }
             Unit::Constants(decls) => {
@@ -476,24 +524,25 @@ impl Resolver<'_> {
                             Binding::Const(ConstId(self.spec.constants.len() as u32 - 1))
                         }
                     };
+                    let extent = self.declaration_extent(elab.module, decl.name.span);
                     let entry = Entry {
                         binding,
                         kind: SymbolKind::Constant,
                         arity: decl.arity,
                         origin: Some((elab.module, decl.name.span)),
+                        location: (elab.module, extent),
                         is_local: false,
                     };
-                    elab.add(decl.name, entry, source)?;
+                    self.add(elab, decl.name.symbol, entry)?;
                 }
             }
             Unit::Recursive(decls) => {
                 for decl in decls {
                     let def = self.declare_recursive(elab.module, decl, elab.depth);
-                    elab.add(
-                        decl.name,
-                        self.operator_entry(elab.module, decl.name, decl.arity, def, false),
-                        source,
-                    )?;
+                    let extent = self.declaration_extent(elab.module, decl.name.span);
+                    let entry =
+                        self.operator_entry(elab.module, decl.name, extent, decl.arity, def, false);
+                    self.add(elab, decl.name.symbol, entry)?;
                 }
             }
             Unit::Operator(definition) => {
@@ -502,19 +551,29 @@ impl Resolver<'_> {
                 let entry = self.operator_entry(
                     elab.module,
                     definition.name,
+                    crate::expr::operator_extent(definition),
                     definition.params.len(),
                     def,
                     definition.is_local,
                 );
-                elab.add(definition.name, entry, source)?;
+                self.add(elab, definition.name.symbol, entry)?;
             }
             Unit::Function(definition) => {
                 let extent = crate::expr::function_extent(definition);
-                let def = self.claim_def(elab, definition.name, extent, Vec::new(), true)?;
-                let entry =
-                    self.operator_entry(elab.module, definition.name, 0, def, definition.is_local);
-                elab.add(definition.name, entry, source)?;
-                self.function(elab, def, definition)?;
+                let (def, claim) =
+                    self.claim_def(elab, definition.name, extent, Vec::new(), true)?;
+                let entry = self.operator_entry(
+                    elab.module,
+                    definition.name,
+                    extent,
+                    0,
+                    def,
+                    definition.is_local,
+                );
+                if claim == Claim::New {
+                    self.add(elab, definition.name.symbol, entry)?;
+                }
+                self.function(elab, def, definition, claim)?;
             }
             Unit::Instance(instance) => {
                 let context = self.instantiate(elab, instance, instance.span)?;
@@ -522,12 +581,12 @@ impl Resolver<'_> {
                     let is_exported =
                         matches!(entry.kind, SymbolKind::Operator | SymbolKind::Module);
                     if !entry.is_local && is_exported {
-                        let entry = Entry { is_local: instance.is_local, ..entry.clone() };
-                        elab.add(
-                            Name { symbol: *name, span: instance.module.span },
-                            entry,
-                            source,
-                        )?;
+                        let entry = Entry {
+                            is_local: instance.is_local,
+                            location: (elab.module, instance.span),
+                            ..entry.clone()
+                        };
+                        self.add(elab, *name, entry)?;
                     }
                 }
             }
@@ -538,9 +597,10 @@ impl Resolver<'_> {
                     kind: SymbolKind::Module,
                     arity: definition.params.len(),
                     origin: Some((elab.module, definition.name.span)),
+                    location: (elab.module, join(definition.name.span, definition.instance.span)),
                     is_local: definition.is_local,
                 };
-                elab.add(definition.name, entry, source)?;
+                self.add(elab, definition.name.symbol, entry)?;
             }
             Unit::Assume(assume) => {
                 let def = self.statement(elab, assume.name, &assume.expr)?;
@@ -552,7 +612,9 @@ impl Resolver<'_> {
                     self.spec.assumptions.push(def);
                 }
                 if let Some(name) = assume.name {
-                    elab.add(name, self.operator_entry(elab.module, name, 0, def, false), source)?;
+                    let extent = join(name.span, assume.expr.span);
+                    let entry = self.operator_entry(elab.module, name, extent, 0, def, false);
+                    self.add(elab, name.symbol, entry)?;
                 }
             }
             Unit::Theorem(theorem) => {
@@ -560,7 +622,8 @@ impl Resolver<'_> {
                     let def = self.statement(elab, Some(name), statement)?;
                     self.origins.insert(def, origin);
                     self.statements.insert(def);
-                    elab.add(name, self.operator_entry(elab.module, name, 0, def, false), source)?;
+                    let entry = self.operator_entry(elab.module, name, theorem.span, 0, def, false);
+                    self.add(elab, name.symbol, entry)?;
                 }
                 for hide in &theorem.hides {
                     self.check_hide(elab, hide)?;
@@ -623,10 +686,12 @@ impl Resolver<'_> {
         Ok(def)
     }
 
+    /// The entry of a definition, which SANY locates at `extent`.
     pub(crate) fn operator_entry(
         &self,
         module: ModuleId,
         name: Name,
+        extent: Span,
         arity: usize,
         def: DefId,
         is_local: bool,
@@ -636,6 +701,7 @@ impl Resolver<'_> {
             kind: SymbolKind::Operator,
             arity,
             origin: Some((module, name.span)),
+            location: (module, extent),
             is_local,
         }
     }
@@ -759,17 +825,21 @@ impl Resolver<'_> {
                 tla_tools_ast::ExprKind::Apply { name, args: Vec::new() },
                 instance.module.span,
             );
-            let binding =
-                self.substitute(elab, name, parameter.arity, &implicit, depth).map_err(|_| {
-                    self.error(
-                        elab.module,
-                        instance.module.span,
-                        format!(
-                            "The INSTANCE of module {} has no substitution for {}.",
-                            instance.module.symbol, parameter.name
-                        ),
-                    )
-                })?;
+            // A name the instancing module doesn't define is a missing substitution, not an
+            // unknown name.
+            self.speculative += 1;
+            let implicit = self.substitute(elab, name, parameter.arity, &implicit, depth);
+            self.speculative -= 1;
+            let binding = implicit.map_err(|_| {
+                self.error(
+                    elab.module,
+                    instance.module.span,
+                    format!(
+                        "The INSTANCE of module {} has no substitution for {}.",
+                        instance.module.symbol, parameter.name
+                    ),
+                )
+            })?;
             substitution.insert(parameter.name, binding);
         }
         if parameters.is_empty() {

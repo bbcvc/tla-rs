@@ -139,10 +139,14 @@ crates/tla-tools/scripts/smoke.py $C --per-status 8 --tla-ts ../tla-ts/packages/
 
 - SANY's report follows SANY's: the file it parses each module from, each module it analyzes
   and lints, and a semantic or fatal error. A standard module is reported as copied into a
-  directory of its own, as TLC does, without the path of `tla2tools.jar`. tla-rs reports the
-  first semantic error of a spec, where SANY goes on and reports every one, and none of SANY's
-  warnings. tla-rs parses with tree-sitter, so a syntax error is reported inside SANY's report
-  of it, but in tree-sitter's words and at the position tree-sitter finds it.
+  directory of its own, as TLC does, without the path of `tla2tools.jar`. Like SANY, tla-rs
+  goes on after a semantic error and reports every one, after the module SANY analyzes it in,
+  and prints SANY's warnings. Some errors are still in tla-rs's own words where
+  SANY words them differently, such as an operator given the wrong number of arguments, and
+  tla-rs doesn't check proofs, so it reports none of SANY's errors in them. tla-rs doesn't
+  run SANY's linter. tla-rs parses with tree-sitter, so a
+  syntax error is reported inside SANY's report of it, but in tree-sitter's words and at the
+  position tree-sitter finds it.
 - With temporal properties to check, a spec's `Print` and `PrintT` may print more or fewer
   times while the search runs than in TLC, which evaluates the actions again for the liveness
   checker. Without them, and in a counterexample, they print as in TLC.

@@ -32,36 +32,40 @@ use crate::ir::{DefId, DefLevels, ModuleId, Spec};
 use crate::module::{Binding, Context, SymbolKind};
 use crate::{Resolver, Result};
 
-/// The first level error SANY reports, if any, and otherwise the levels of the definitions.
+/// The level errors SANY reports, in the order it finds them, if any, and otherwise the levels of
+/// the definitions.
 fn check(
     spec: &Spec,
     layout: &layout::Layout,
     scopes: &HashMap<ModuleId, ModuleScope>,
     kept: usize,
-) -> std::result::Result<Vec<DefLevels>, Found> {
+) -> std::result::Result<Vec<DefLevels>, Vec<Found>> {
     let mut analyzer = Analyzer::new(spec, layout);
     analyzer.run();
     Instances::new(scopes).check(&mut analyzer);
     let errors = std::mem::take(&mut analyzer.errors);
-    let first = errors
-        .into_iter()
-        .enumerate()
-        .filter(|(_, error)| error.is_reported)
-        .min_by_key(|(found, error)| (error.order, *found));
-    if let Some((_, error)) = first {
-        return Err(error);
+    let mut reported: Vec<(usize, Found)> =
+        errors.into_iter().enumerate().filter(|(_, error)| error.is_reported).collect();
+    if !reported.is_empty() {
+        reported.sort_by_key(|(found, error)| (error.order, *found));
+        return Err(reported.into_iter().map(|(_, error)| error).collect());
     }
     Ok((0..kept).map(|index| analyzer.def_levels(DefId(index as u32))).collect())
 }
 
 impl Resolver<'_> {
-    /// Computes the levels of the definitions and reports SANY's first level error.
-    pub(crate) fn check_levels(&mut self) -> Result<()> {
+    /// Computes the levels of the definitions and reports SANY's level errors.
+    pub(crate) fn check_levels(&mut self) {
         let defs = self.spec.defs.len();
         let constants = self.spec.constants.len();
         let variables = self.spec.variables.len();
         let assumptions = self.spec.assumptions.len();
+        // An error elaborating a module by itself isn't SANY's: resolution elaborated it under
+        // substitutions, where it found no error.
+        self.speculative += 1;
         self.elaborate_standalone();
+        self.speculative -= 1;
+        self.is_level_checked = true;
         let scopes = self.module_scopes();
         let checked = check(&self.spec, &self.layout, &scopes, defs);
         self.spec.defs.truncate(defs);
@@ -69,11 +73,13 @@ impl Resolver<'_> {
         self.spec.variables.truncate(variables);
         self.spec.assumptions.truncate(assumptions);
         match checked {
-            Ok(levels) => {
-                self.spec.levels = levels;
-                Ok(())
+            Ok(levels) => self.spec.levels = levels,
+            Err(errors) => {
+                for found in errors {
+                    let error = self.error(found.module, found.span, found.message);
+                    self.report(found.module, error, false);
+                }
             }
-            Err(found) => Err(self.error(found.module, found.span, found.message)),
         }
     }
 

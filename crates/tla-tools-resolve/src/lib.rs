@@ -7,6 +7,9 @@
 //! `LOCAL` definitions aren't exported, and a name can't be defined twice with a different
 //! meaning.
 //!
+//! [`analyze`] goes on after an error, as SANY does, and returns every error and warning SANY
+//! reports.
+//!
 //! TLC's standard modules are bundled. A loader supplies the other modules, and a module it
 //! supplies takes precedence over a standard module of the same name.
 
@@ -15,6 +18,7 @@ mod ir;
 mod levels;
 mod module;
 mod order;
+mod recover;
 mod selection;
 mod stdlib;
 
@@ -100,10 +104,77 @@ impl ResolveError {
 
 pub(crate) type Result<T> = std::result::Result<T, ResolveError>;
 
-/// Parses `source` as the root module and resolves it with the modules it uses.
+/// A message SANY prints about a spec, an error or a warning, with the module it was analyzing
+/// when it found it, after which it prints it.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Message {
+    pub error: ResolveError,
+    /// The module SANY was analyzing, which may not be the one the message is located in.
+    pub analyzed: Symbol,
+    pub is_warning: bool,
+}
+
+/// What SANY makes of a spec: every error and warning it reports, and the spec when there is no
+/// error.
+#[derive(Debug)]
+pub struct Analysis {
+    pub spec: Option<Spec>,
+    /// The messages in the order resolution found them. [`Analysis::in_sany_order`] puts them in
+    /// SANY's.
+    pub messages: Vec<Message>,
+    /// Whether the errors are level errors, which SANY reports for one module only.
+    pub is_level_checked: bool,
+}
+
+impl Analysis {
+    pub fn errors(&self) -> impl Iterator<Item = &ResolveError> {
+        self.messages.iter().filter(|message| !message.is_warning).map(|message| &message.error)
+    }
+
+    pub fn warnings(&self) -> impl Iterator<Item = &ResolveError> {
+        self.messages.iter().filter(|message| message.is_warning).map(|message| &message.error)
+    }
+
+    /// Puts the messages in the order SANY reports them, given the order it analyzes the
+    /// modules in: a module's messages after those of the modules analyzed before it. SANY
+    /// level-checks a module only while it has found no error, so it reports the level errors of
+    /// the first module that has any.
+    pub fn in_sany_order(&mut self, analyzed: &[String]) {
+        let rank = |message: &Message| {
+            analyzed.iter().position(|name| name == message.analyzed.as_str()).unwrap_or(usize::MAX)
+        };
+        self.messages.sort_by_key(rank);
+        if self.is_level_checked {
+            let errors = self.messages.iter().filter(|message| !message.is_warning);
+            if let Some(first) = errors.map(rank).min() {
+                self.messages.retain(|message| message.is_warning || rank(message) == first);
+            }
+        }
+    }
+}
+
+/// Parses `source` as the root module and resolves it with the modules it uses, stopping at the
+/// first error.
 pub fn resolve(source: &str, loader: &mut dyn ModuleLoader) -> Result<Spec> {
-    let modules = tla_tools_parser::parse_modules(source)
-        .map_err(|error| ResolveError::syntax(Symbol::intern(""), error))?;
+    let analysis = analyze(source, loader);
+    match analysis.spec {
+        Some(spec) => Ok(spec),
+        None => Err(analysis.errors().next().cloned().expect("a spec without errors resolves")),
+    }
+}
+
+/// Parses `source` as the root module and resolves it with the modules it uses, going on after
+/// an error where SANY does, to report every error and warning SANY reports.
+pub fn analyze(source: &str, loader: &mut dyn ModuleLoader) -> Analysis {
+    let fail = |error: ResolveError| Analysis {
+        spec: None,
+        messages: vec![Message { analyzed: error.module, error, is_warning: false }],
+        is_level_checked: false,
+    };
+    let modules = match tla_tools_parser::parse_modules(source) {
+        Ok(modules) => modules,
+        Err(error) => return fail(ResolveError::syntax(Symbol::intern(""), error)),
+    };
     let mut resolver = Resolver {
         loader,
         spec: Spec {
@@ -144,37 +215,62 @@ pub fn resolve(source: &str, loader: &mut dyn ModuleLoader) -> Result<Spec> {
         origins: HashMap::new(),
         statements: HashSet::new(),
         replaying: 0,
+        messages: Vec::new(),
+        speculative: 0,
+        is_level_checked: false,
+        is_circular: false,
     };
-    let root = resolver.add_file(modules, source.into(), false);
-    let context = resolver.plain(&root)?;
-    let extended = resolver.extends_closure(&root);
-    let defs = &resolver.spec.defs;
-    resolver.spec.assumptions.retain(|def| extended.contains(&defs[def.index()].module));
-    if let Some(&def) = resolver.pending.iter().min() {
-        let def = resolver.spec.def(def);
-        let message =
-            format!("The operator {} was declared RECURSIVE but never defined.", def.name);
-        return Err(resolver.error(def.module, def.span, message));
+    let resolved = resolver.run(modules, source);
+    let mut messages = std::mem::take(&mut resolver.messages);
+    match resolved {
+        Ok(()) => {}
+        // SANY reads every module before it analyzes any, so an error reading one is its only.
+        Err(error) if !resolver.is_recoverable(&error) => return fail(error),
+        Err(error) => messages.push(Message { analyzed: error.module, error, is_warning: false }),
     }
-    resolver.spec.root = context
-        .names
-        .iter()
-        .filter_map(|(name, entry)| {
-            let root = match entry.binding {
-                Binding::Var(id) => RootName::Var(id),
-                Binding::Const(id) => RootName::Const(id),
-                Binding::Def(id) => RootName::Def(id),
-                _ => return None,
-            };
-            Some((*name, root))
-        })
-        .collect();
-    resolver.check_levels()?;
-    resolver.spec.statements = std::mem::take(&mut resolver.statements);
-    Ok(resolver.spec)
+    let is_accepted = messages.iter().all(|message| message.is_warning);
+    let spec = is_accepted.then_some(resolver.spec);
+    Analysis { spec, messages, is_level_checked: resolver.is_level_checked }
 }
 
 impl Resolver<'_> {
+    fn run(&mut self, modules: Vec<tla_tools_ast::Module>, source: &str) -> Result<()> {
+        let root = self.add_file(modules, source.into(), false);
+        let context = self.plain(&root)?;
+        let extended = self.extends_closure(&root);
+        let defs = &self.spec.defs;
+        self.spec.assumptions.retain(|def| extended.contains(&defs[def.index()].module));
+        let mut pending: Vec<DefId> = self.pending.iter().copied().collect();
+        pending.sort();
+        for def in pending {
+            let def = self.spec.def(def);
+            let (module, span) = (def.module, def.span);
+            let message =
+                format!("Symbol {} declared in RECURSIVE statement but not defined.", def.name);
+            let error = self.error(module, self.declaration_extent(module, span), message);
+            self.report(module, error, false);
+        }
+        if self.messages.iter().any(|message| !message.is_warning) {
+            return Ok(());
+        }
+        self.spec.root = context
+            .names
+            .iter()
+            .filter_map(|(name, entry)| {
+                let root = match entry.binding {
+                    Binding::Var(id) => RootName::Var(id),
+                    Binding::Const(id) => RootName::Const(id),
+                    Binding::Def(id) => RootName::Def(id),
+                    _ => return None,
+                };
+                Some((*name, root))
+            })
+            .collect();
+        self.check_levels();
+        self.spec.statements = std::mem::take(&mut self.statements);
+        Ok(())
+    }
+
     /// `root` and the modules it extends, directly or not.
     fn extends_closure(&self, root: &ParsedModule) -> HashSet<ModuleId> {
         let mut closure = HashSet::from([root.id]);
@@ -243,6 +339,15 @@ pub(crate) struct Resolver<'l> {
     replaying: usize,
     /// The definitions of theorems and assumptions, named or not. A `HIDE` may cite a named one.
     statements: HashSet<DefId>,
+    /// The errors and warnings found so far.
+    messages: Vec<Message>,
+    /// Whether resolution is trying something whose errors aren't SANY's, which therefore stop
+    /// it rather than being reported.
+    speculative: usize,
+    /// Whether the level checking ran, which it does only when there is no other error.
+    is_level_checked: bool,
+    /// Whether a module was found to depend on itself, which stops resolution.
+    is_circular: bool,
 }
 
 /// Whether TLC bundles a module of this name. A loader shouldn't supply one from a library

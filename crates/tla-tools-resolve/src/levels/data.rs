@@ -228,6 +228,8 @@ pub(crate) struct Operand {
     pub operator: Option<Rc<Operator>>,
     /// The parameter and its arity, when the argument is an operator parameter or constant.
     pub declared: Option<(Param, usize)>,
+    /// Whether SANY finds the argument not level-correct.
+    pub is_incorrect: bool,
 }
 
 impl Operand {
@@ -342,6 +344,9 @@ fn check_arguments(op: &Operator, operands: &[Operand], ranges: &[Data]) -> Opti
         )
     };
     for (index, operand) in operands.iter().enumerate() {
+        if operand.is_incorrect {
+            continue;
+        }
         if operand.data.level > op.max_level(index) {
             return Some(exceeding(index));
         }
@@ -360,7 +365,8 @@ fn check_arguments(op: &Operator, operands: &[Operand], ranges: &[Data]) -> Opti
         for (other_index, other) in operands.iter().enumerate() {
             for position in 0..argument.arity {
                 let is_bounded = op.has_condition(index, other_index, position);
-                if is_bounded && other.data.level > argument.max_level(position) {
+                let is_exceeded = other.data.level > argument.max_level(position);
+                if is_bounded && is_exceeded && !other.is_incorrect {
                     return Some(exceeding(other_index));
                 }
             }

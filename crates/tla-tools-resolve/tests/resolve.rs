@@ -231,7 +231,7 @@ Next == C!Inc \/ P(7)!Inc \/ Inc
 fn follows_sany_visibility_rules() {
     assert_eq!(
         error("---- MODULE A ----\nEXTENDS Sequences\nX == 1 + 2\n====\n", &[]),
-        "Unknown operator: `+'."
+        "Could not find declaration or definition of symbol '+'."
     );
     assert!(
         error("---- MODULE A ----\nX == Y\nY == 1\n====\n", &[]).starts_with("Unknown operator")
@@ -252,9 +252,10 @@ fn follows_sany_visibility_rules() {
         )
         .contains("no substitution for Max")
     );
-    assert!(error("---- MODULE A ----\nx \\in y == 1\n====\n", &[]).contains("built-in operator"));
+    assert!(error("---- MODULE A ----\nx \\in y == 1\n====\n", &[]).contains("already defined"));
     assert!(
-        error("---- MODULE A ----\nRECURSIVE F(_)\nX == 1\n====\n", &[]).contains("never defined")
+        error("---- MODULE A ----\nRECURSIVE F(_)\nX == 1\n====\n", &[])
+            .contains("declared in RECURSIVE statement but not defined")
     );
 
     let diamond = spec("---- MODULE A ----\nEXTENDS Naturals, Integers\nX == 1 + 2\n====\n", &[]);
@@ -404,4 +405,12 @@ fn records_the_names_and_places_tlc_reports_actions_by() {
     assert_eq!(names, ["n"]);
     let (module, span) = spec.instance_spans[step];
     assert_eq!(text(module, span), "I == INSTANCE Inner WITH u <- x");
+}
+
+#[test]
+fn stops_at_a_circular_dependency_as_its_only_error() {
+    let source = "---- MODULE Self ----\nVARIABLE y\nX == u\nI == INSTANCE Self\nZ == w\n====\n";
+    let analysis = tla_tools_resolve::analyze(source, &mut |_: &str| None);
+    let errors: Vec<&str> = analysis.errors().map(|error| error.message.as_str()).collect();
+    assert_eq!(errors, ["Circular dependency involving module Self."]);
 }

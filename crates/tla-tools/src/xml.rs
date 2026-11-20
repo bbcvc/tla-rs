@@ -103,8 +103,12 @@ pub fn main(args: &[String]) -> i32 {
         .unwrap_or_else(|| PathBuf::from(&file));
     let name = path.file_stem().unwrap_or_default().to_string_lossy().into_owned();
     let read = match load::load_spec(&path, &Library::new(&options.includes)) {
-        Ok(read) => read,
-        Err(failure) => {
+        Ok(mut read) => {
+            without_warnings(&mut read.modules);
+            read
+        }
+        Err(mut failure) => {
+            without_warnings(&mut failure.modules);
             eprint!("{}", sany::rejected(&failure, &path, &name));
             eprintln!("ERROR: Failed to parse module.");
             return SPEC_PARSING_FAILURE;
@@ -454,6 +458,12 @@ fn symbol_element(numbering: &Numbering<'_>, node: Node) -> Element {
         }
         Node::Module(_) => unreachable!("a module is exported by module_element"),
     }
+}
+
+/// SANY prints its warnings only to the output XMLExporter leaves out, so it prints only SANY's
+/// errors.
+fn without_warnings(modules: &mut load::Modules) {
+    modules.messages.retain(|message| !message.is_warning);
 }
 
 #[cfg(test)]

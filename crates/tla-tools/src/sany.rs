@@ -8,7 +8,9 @@ use std::fmt::Write;
 use std::path::{Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use tla_tools_checker::load::{ErrorKind, Modules, ParseFailure, ResolveError, is_standard_module};
+use tla_tools_checker::load::{
+    ErrorKind, Message, Modules, ParseFailure, ResolveError, is_standard_module,
+};
 
 /// The standard modules SANY doesn't lint (`tla2sany.semantic.StandardModules`).
 const UNLINTED_MODULES: &[&str] = &[
@@ -72,9 +74,7 @@ fn canonical(path: &Path) -> PathBuf {
 pub fn accepted(modules: &Modules, spec_path: &Path) -> String {
     let mut out = String::new();
     Files::new(modules, spec_path).parsed(&modules.order.parsed, &mut out);
-    for name in &modules.order.analyzed {
-        let _ = writeln!(out, "Semantic processing of module {name}");
-    }
+    analysis_report(&modules.order.analyzed, &modules.messages, &mut out);
     for name in &modules.order.analyzed {
         if !UNLINTED_MODULES.contains(&name.as_str()) {
             let _ = writeln!(out, "Linting of module {name}");
@@ -127,7 +127,7 @@ pub fn rejected(failure: &ParseFailure, spec_path: &Path, spec_name: &str) -> St
         }
         ErrorKind::Semantic => {
             files.parsed(&modules.order.parsed, &mut out);
-            semantic_error(&modules.order.analyzed, error, &mut out);
+            analysis_report(&modules.order.analyzed, &modules.messages, &mut out);
         }
     }
     out
@@ -141,26 +141,51 @@ fn fatal(spec_name: &str, module: &str, message: &str, out: &mut String) {
     let _ = writeln!(out, "*** Errors: 1\n\n{details}\n\n\n");
 }
 
-/// SANY's report of a semantic error: it goes on analyzing the modules after the one with the
-/// error, and prints the errors so far after each.
-fn semantic_error(analyzed: &[String], error: &ResolveError, out: &mut String) {
-    let location = format!(
-        "line {}, col {} to line {}, col {} of module {}",
-        error.line, error.column, error.end_line, error.end_column, error.module
-    );
-    let report =
-        format!("Semantic errors:\n\n*** Errors: 1\n\n{location}\n\n{}\n\n", error.message);
-    let start = analyzed.iter().position(|name| name == error.module.as_str());
+/// SANY's report of its semantic analysis: after each module it analyzes, every warning and then
+/// every error so far (`SANY.frontEndSemanticAnalysis`). A message comes after the module SANY was
+/// analyzing when it found it.
+fn analysis_report(analyzed: &[String], messages: &[Message], out: &mut String) {
+    let rank =
+        |message: &Message| analyzed.iter().position(|name| name == message.analyzed.as_str());
     for (index, name) in analyzed.iter().enumerate() {
         let _ = writeln!(out, "Semantic processing of module {name}");
-        if start.is_some_and(|start| index >= start) {
-            let _ = writeln!(out, "{report}");
-        }
+        let so_far: Vec<&Message> =
+            messages.iter().filter(|message| rank(message).is_some_and(|at| at <= index)).collect();
+        messages_so_far(&so_far, out);
     }
-    if start.is_none() {
-        let _ = writeln!(out, "{report}");
+    if messages.iter().any(|message| rank(message).is_none()) {
+        messages_so_far(&messages.iter().collect::<Vec<_>>(), out);
     }
 }
+
+/// Errors.toString as SANY prints it after a module: the warnings, then the errors.
+fn messages_so_far(messages: &[&Message], out: &mut String) {
+    let (warnings, errors): (Vec<&Message>, Vec<&Message>) =
+        messages.iter().partition(|message| message.is_warning);
+    if !warnings.is_empty() {
+        let _ = writeln!(out, "*** Warnings: {}\n", warnings.len());
+        for warning in warnings {
+            let _ = writeln!(out, "{}\n\n\n", details(&warning.error));
+        }
+    }
+    if !errors.is_empty() {
+        let _ = writeln!(out, "Semantic errors:\n\n*** Errors: {}\n", errors.len());
+        for error in errors {
+            let _ = writeln!(out, "{}\n\n", details(&error.error));
+        }
+    }
+}
+
+/// ErrorDetails.toString: where the message is, and the message.
+fn details(error: &ResolveError) -> String {
+    format!(
+        "line {}, col {} to line {}, col {} of module {}\n\n{}",
+        error.line, error.column, error.end_line, error.end_column, error.module, error.message
+    )
+}
+
+#[cfg(test)]
+mod report_tests;
 
 #[cfg(test)]
 mod tests {
@@ -172,7 +197,7 @@ mod tests {
         let names = |names: &[&str]| names.iter().map(|name| name.to_string()).collect();
         let order =
             SanyModuleOrder { parsed: names(parsed), analyzed: names(analyzed), error: None };
-        Modules { order, files: Vec::new() }
+        Modules { order, files: Vec::new(), messages: Vec::new() }
     }
 
     #[test]
@@ -204,8 +229,9 @@ mod tests {
             end_column: 6,
             kind: ErrorKind::Semantic,
         };
+        let message = Message { analyzed: error.module, error, is_warning: false };
         let mut out = String::new();
-        semantic_error(&["Naturals".into(), "M".into(), "R".into()], &error, &mut out);
+        analysis_report(&["Naturals".into(), "M".into(), "R".into()], &[message], &mut out);
         let report = "Semantic errors:\n\n*** Errors: 1\n\nline 3, col 6 to line 3, col 6 of module M\n\nUnknown operator: `z'.\n\n\n";
         let expected = format!(
             "Semantic processing of module Naturals\nSemantic processing of module M\n{report}Semantic processing of module R\n{report}"

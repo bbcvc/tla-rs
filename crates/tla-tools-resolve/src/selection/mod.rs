@@ -241,7 +241,6 @@ impl Resolver<'_> {
                 owned = Elab {
                     id: origin.elab,
                     module: origin.parsed.id,
-                    name: origin.parsed.ast.name.symbol,
                     context: (**context).clone(),
                     depth,
                     substitution: None,
@@ -317,6 +316,7 @@ impl Resolver<'_> {
             kind: SymbolKind::Parameter,
             arity,
             origin: Some((elab.module, name.span)),
+            location: (elab.module, name.span),
             is_local: true,
         };
         self.frames.last_mut().unwrap().names.push((name.symbol, entry));

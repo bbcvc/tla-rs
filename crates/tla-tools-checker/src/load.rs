@@ -7,7 +7,9 @@ use std::path::{Path, PathBuf};
 
 use tla_tools_parser::ModelConfig;
 use tla_tools_resolve::Spec;
-pub use tla_tools_resolve::{ErrorKind, ResolveError, SanyModuleOrder, is_standard_module};
+pub use tla_tools_resolve::{
+    ErrorKind, Message, ResolveError, SanyModuleOrder, is_standard_module,
+};
 
 /// The modules of the library directories, by name: TLC's `TLA-Library`.
 #[derive(Clone, Debug, Default)]
@@ -57,6 +59,7 @@ fn collect(path: &Path, files: &mut Vec<PathBuf>) {
 
 /// Why a model couldn't be read, with TLC's wording.
 #[derive(Clone, Debug, PartialEq, Eq)]
+#[allow(clippy::large_enum_variant, reason = "made once per run")]
 pub enum LoadError {
     /// The configuration can't be read or parsed.
     Config(String),
@@ -89,6 +92,8 @@ pub struct Modules {
     pub order: SanyModuleOrder,
     /// The files the modules were read from, by module name, in the order they were first read.
     pub files: Vec<(String, PathBuf)>,
+    /// The errors and warnings SANY reports as it analyzes the modules, in its order.
+    pub messages: Vec<Message>,
 }
 
 /// A spec and its model configuration, read.
@@ -108,6 +113,7 @@ pub struct Loaded {
 /// TLC orders strings by when it reads them, which every sorted set and record built from here
 /// on depends on. That order is the process's ([`tla_tools_eval::value::set_order`]), so a process
 /// loads one model.
+#[allow(clippy::result_large_err, reason = "read once per run")]
 pub fn load(spec_path: &Path, config_path: &Path, library: &Library) -> Result<Loaded, LoadError> {
     let config = std::fs::read_to_string(config_path)
         .map_err(|error| LoadError::Config(format!("{}: {error}", config_path.display())))?;
@@ -179,14 +185,14 @@ fn read(
     }
     let variable_order = tla_tools_resolve::tlc_variable_order(&source, &mut loader).ok();
     let order = tla_tools_resolve::sany_module_order(&source, &mut loader);
-    let resolved = tla_tools_resolve::resolve(&source, &mut loader);
-    let modules = Modules { order, files };
-    let spec = match resolved {
-        Ok(spec) => spec,
-        Err(error) => {
-            let message = error.to_string();
-            return Err(ParseFailure { message, error: Some(error), modules });
-        }
+    let mut analysis = tla_tools_resolve::analyze(&source, &mut loader);
+    analysis.in_sany_order(&order.analyzed);
+    let first = analysis.errors().next().cloned();
+    let modules = Modules { order, files, messages: analysis.messages };
+    let Some(spec) = analysis.spec else {
+        let error = first.expect("a spec without errors resolves");
+        let message = error.to_string();
+        return Err(ParseFailure { message, error: Some(error), modules });
     };
     // TLC requires the root module to be named after its file.
     let stem = stem(spec_path);

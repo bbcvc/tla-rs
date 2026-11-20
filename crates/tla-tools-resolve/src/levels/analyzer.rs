@@ -1,7 +1,7 @@
 //! Computes SANY's level information for each definition, following tla-ts `levels.ts`, and the
 //! order SANY checks `RECURSIVE` sections in (`ModuleNode.levelCheck`).
 
-use std::collections::{BTreeMap, BTreeSet, HashMap};
+use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::rc::Rc;
 
 use tla_tools_ast::Span;
@@ -96,6 +96,10 @@ pub(crate) struct Analyzer<'a> {
     /// `INSTANCE` copies.
     originals: HashMap<DefId, DefId>,
     pub errors: Vec<Found>,
+    /// The expressions SANY finds not level-correct, by definition and span: an expression with
+    /// a level error or with an argument that has one. SANY doesn't report an argument above the
+    /// level its operator allows when the argument isn't level-correct itself.
+    pub incorrect: HashSet<(Option<DefId>, Span)>,
 }
 
 impl<'a> Analyzer<'a> {
@@ -108,6 +112,7 @@ impl<'a> Analyzer<'a> {
             instance_views: HashMap::new(),
             originals: originals(spec, layout),
             errors: Vec::new(),
+            incorrect: HashSet::new(),
         }
     }
 
@@ -121,6 +126,7 @@ impl<'a> Analyzer<'a> {
 
     /// Records a level error in a definition. A value outside any definition has none.
     pub fn error(&mut self, def: Option<DefId>, span: Span, message: impl Into<String>) {
+        self.incorrect.insert((def, span));
         let Some(def) = def else { return };
         let is_reported = !self.layout.defs[def.index()].is_instantiated;
         self.errors.push(Found {

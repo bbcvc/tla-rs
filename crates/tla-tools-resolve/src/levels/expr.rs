@@ -264,6 +264,9 @@ impl Analyzer<'_> {
         if let Some(message) = error {
             self.error(body.def, span, message);
         }
+        if operands.iter().any(|operand| operand.is_incorrect) {
+            self.incorrect.insert((body.def, span));
+        }
         data
     }
 
@@ -346,7 +349,9 @@ impl Analyzer<'_> {
     /// An argument: an operator when it passes one, as tla-ts `toOperand`.
     pub(super) fn operand(&mut self, body: &Body, expr: &Expr) -> Operand {
         let ExprKind::OpArg(op) = &expr.kind else {
-            return Operand::value(self.expr(body, expr));
+            let data = self.expr(body, expr);
+            let is_incorrect = self.incorrect.contains(&(body.def, expr.span));
+            return Operand { is_incorrect, ..Operand::value(data) };
         };
         match op {
             OpRef::Def { def, scope } => {
@@ -358,13 +363,21 @@ impl Analyzer<'_> {
                     scope = parent;
                 }
                 let operator = self.info(*def).own.clone();
-                Operand { data: operator.data.clone(), operator: Some(operator), declared: None }
+                Operand {
+                    data: operator.data.clone(),
+                    operator: Some(operator),
+                    ..Operand::default()
+                }
             }
             OpRef::Param(local) => self.declared(body.param(*local)),
             OpRef::Const(id) => self.declared(Param::Const(*id)),
             OpRef::Builtin(builtin) => {
                 let operator = self.builtin(builtin_name(*builtin));
-                Operand { data: operator.data.clone(), operator: Some(operator), declared: None }
+                Operand {
+                    data: operator.data.clone(),
+                    operator: Some(operator),
+                    ..Operand::default()
+                }
             }
         }
     }
@@ -372,7 +385,7 @@ impl Analyzer<'_> {
     fn declared(&self, param: Param) -> Operand {
         let mut data = Data::default();
         data.params.insert(param);
-        Operand { data, operator: None, declared: Some((param, self.arity(param))) }
+        Operand { data, declared: Some((param, self.arity(param))), ..Operand::default() }
     }
 
     /// The operator a call applies, and the arguments of the parameterized instances around the

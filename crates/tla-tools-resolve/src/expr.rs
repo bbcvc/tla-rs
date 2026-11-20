@@ -5,12 +5,25 @@ use std::rc::Rc;
 use tla_tools_ast::{self as ast, Component, Name, Op, Span, Symbol, Unit};
 
 use crate::ir::{
-    Bound, Builtin, DefBody, DefId, ExceptKey, ExceptUpdate, Expr, ExprKind, Local, OpRef, Pattern,
-    Scope,
+    Bound, Builtin, DefBody, DefId, ExceptKey, ExceptUpdate, Expr, ExprKind, Local, ModuleId,
+    OpRef, Pattern, Scope,
 };
-use crate::module::{Binding, Elab, Entry, InstanceInfo, SymbolKind, is_bindable};
+use crate::levels::join;
+use crate::module::{Binding, Elab, Entry, InstanceInfo, SymbolKind};
 use crate::selection::Reference;
 use crate::{Resolver, Result};
+
+/// What a definition claims of its name.
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub(crate) enum Claim {
+    /// The name is the definition's, to bind.
+    New,
+    /// The name is taken by another definition, so the definition isn't bound to it.
+    Unbound,
+    /// The name is taken by something other than a definition, so SANY doesn't bind a
+    /// function's bound identifiers in its body either.
+    Unnamed,
+}
 
 /// The names one frame binds so far and how many slots it uses.
 #[derive(Default)]
@@ -123,14 +136,10 @@ impl Resolver<'_> {
         let current = self.lookup(elab, name.symbol).map(|(entry, _)| entry);
         // A part of a definition resolved again may hide names defined after it.
         let current = current.filter(|_| self.replaying == 0);
-        match is_bindable(name.symbol, current.as_ref(), &entry, is_bound_variable) {
-            Ok(true) => {
-                self.frames.last_mut().unwrap().names.push((name.symbol, entry));
-                Ok(())
-            }
-            Ok(false) => Ok(()),
-            Err(message) => Err(self.error(elab.module, name.span, message)),
+        if self.binds(elab.module, name.symbol, current.as_ref(), &entry, is_bound_variable)? {
+            self.frames.last_mut().unwrap().names.push((name.symbol, entry));
         }
+        Ok(())
     }
 
     /// Binds a parameter or bound variable to a new slot of the current frame.
@@ -141,21 +150,30 @@ impl Resolver<'_> {
             kind: SymbolKind::Parameter,
             arity,
             origin: Some((elab.module, name.span)),
+            location: (elab.module, name.span),
             is_local: true,
         };
         self.bind_local(elab, name, entry, true)?;
         Ok(slot)
     }
 
-    fn bind_def(&mut self, elab: &Elab, name: Name, arity: usize, def: DefId) -> Result<()> {
-        let entry = self.operator_entry(elab.module, name, arity, def, true);
+    fn bind_def(
+        &mut self,
+        elab: &Elab,
+        name: Name,
+        extent: Span,
+        arity: usize,
+        def: DefId,
+    ) -> Result<()> {
+        let entry = self.operator_entry(elab.module, name, extent, arity, def, true);
         self.bind_local(elab, name, entry, false)
     }
 
-    /// Resolves an operator definition, at module level or in a `LET`.
     /// Claims `name` for an operator or function defined at the current depth: the `RECURSIVE`
-    /// declaration awaiting it, or else a new definition. Like SANY's `Generator`, rejects a
-    /// definition of a name that is already visible, at `extent`, where the definition is.
+    /// declaration awaiting it, or else a new definition. Like SANY's `Generator`, reports a
+    /// definition of a name that is already visible, at `extent`, where the definition is, and
+    /// goes on. Returns the definition and whether it is a new one with a name of its own to
+    /// bind, which a function whose name is taken doesn't have.
     pub(crate) fn claim_def(
         &mut self,
         elab: &Elab,
@@ -163,51 +181,76 @@ impl Resolver<'_> {
         extent: Span,
         params: Vec<usize>,
         is_function: bool,
-    ) -> Result<DefId> {
+    ) -> Result<(DefId, Claim)> {
         let depth = self.depth();
         if let Some(def) = self.recursive.remove(&(elab.module, name.symbol, depth)) {
-            if self.spec.def(def).params.len() != params.len() {
+            let declared = self.spec.def(def).params.len();
+            if is_function && declared != 0 {
+                // SANY leaves the declaration undefined.
                 let message = format!(
-                    "The RECURSIVE declaration of {} has a different number of arguments.",
+                    "Function {} has operator arguments in its RECURSIVE declaration.",
                     name.symbol
                 );
-                return Err(self.error(elab.module, name.span, message));
+                self.report_here(elab.module, extent, message)?;
+                return Ok((self.new_def(elab.module, name, params, depth), Claim::Unbound));
+            }
+            if declared != params.len() {
+                let message = format!(
+                    "Definition of {} has different arity than its RECURSIVE declaration.",
+                    name.symbol
+                );
+                self.report_here(elab.module, extent, message)?;
             }
             self.spec.defs[def.index()].params = params;
-            return Ok(def);
+            return Ok((def, Claim::New));
         }
         let visible = self.lookup(elab, name.symbol).filter(|_| self.replaying == 0);
+        let mut claim = Claim::New;
         if let Some((entry, _)) = visible {
             let is_pending =
                 matches!(entry.binding, Binding::Def(def) if self.pending.contains(&def));
+            let kind = if is_function { "function" } else { "operator" };
             let message = match entry.kind {
-                SymbolKind::Builtin => {
-                    format!(
-                        "Symbol {} is a built-in operator, and cannot be redefined.",
-                        name.symbol
-                    )
-                }
                 _ if is_pending => {
-                    format!("Recursive operator {} defined at wrong LET/IN level.", name.symbol)
+                    format!("Recursive {kind} {} defined at wrong LET/IN level.", name.symbol)
                 }
                 _ if is_function => {
                     format!("Function name `{}' already defined or declared.", name.symbol)
                 }
                 _ => format!("Operator {} already defined or declared.", name.symbol),
             };
-            return Err(self.error(elab.module, extent, message));
+            // SANY goes on to make the definition. It binds an operator's name, which may be
+            // another error or a warning, but not a function's, whose bound identifiers it binds
+            // in the body only if the name it has is a definition.
+            self.report_here(elab.module, extent, message)?;
+            let is_def = entry.kind == SymbolKind::Operator
+                && matches!(entry.binding, Binding::Def(_))
+                && !is_pending;
+            claim = match is_def {
+                true => Claim::Unbound,
+                false => Claim::Unnamed,
+            };
         }
         let def = self.new_def(elab.module, name, params, depth);
         self.layout.defs[def.index()].section = self.pending_section(elab.module);
-        Ok(def)
+        Ok((def, claim))
+    }
+
+    /// Reports an error SANY goes on after, unless resolution is speculative, where it fails.
+    fn report_here(&mut self, module: ModuleId, span: Span, message: String) -> Result<()> {
+        let error = self.error(module, span, message);
+        if self.speculative > 0 {
+            return Err(error);
+        }
+        self.report(module, error, false);
+        Ok(())
     }
 
     /// Resolves an operator definition, at module level or in a `LET`.
     pub(crate) fn operator(&mut self, elab: &Elab, definition: &ast::OperatorDef) -> Result<DefId> {
         let arities = definition.params.iter().map(|param| param.arity).collect();
-        let extent =
-            Span::new(definition.name.span.start as usize, definition.body.span.end as usize);
-        let def = self.claim_def(elab, definition.name, extent, arities, false)?;
+        let extent = operator_extent(definition);
+        let (def, _) = self.claim_def(elab, definition.name, extent, arities, false)?;
         let names = definition.params.iter().map(|param| param.name.symbol).collect();
         self.spec.param_names.insert(def, names);
         self.push_frame(Vec::new());
@@ -227,9 +270,13 @@ impl Resolver<'_> {
         elab: &Elab,
         def: DefId,
         definition: &ast::FunctionDef,
+        claim: Claim,
     ) -> Result<()> {
         self.push_frame(Vec::new());
         let resolved = self.bounds(elab, &definition.bounds).and_then(|bounds| {
+            if claim == Claim::Unnamed {
+                self.frames.last_mut().unwrap().names.clear();
+            }
             let body = self.expr(elab, &definition.body)?;
             Ok(DefBody::Function { bounds, body })
         });
@@ -246,7 +293,16 @@ impl Resolver<'_> {
         self.expr(elab, expr).map(Box::new)
     }
 
+    /// Resolves an expression. SANY goes on after most errors in it, reporting the error and
+    /// resolving the rest, so the expression in error becomes a placeholder: the spec isn't
+    /// checked once there is an error.
     pub(crate) fn expr(&mut self, elab: &Elab, expr: &ast::Expr) -> Result<Expr> {
+        let at = self.checkpoint();
+        let resolved = self.resolve_expr(elab, expr);
+        self.recover(at, elab.module, resolved, || Expr::new(ExprKind::Bool(false), expr.span))
+    }
+
+    fn resolve_expr(&mut self, elab: &Elab, expr: &ast::Expr) -> Result<Expr> {
         use ast::ExprKind as A;
         let span = expr.span;
         let kind = match &expr.kind {
@@ -288,18 +344,36 @@ impl Resolver<'_> {
                     "A LAMBDA expression can only be an argument of an operator.",
                 ));
             }
-            A::Prefix { op, arg } | A::Postfix { op, arg } => match builtin_of(*op) {
+            A::Prefix { op, arg } => match builtin_of(*op) {
                 Some(builtin) => {
                     ExprKind::Builtin { op: builtin, args: vec![self.expr(elab, arg)?] }
                 }
-                None => return self.apply_op(elab, *op, std::slice::from_ref(arg.as_ref()), span),
+                None => {
+                    let token = Span::new(span.start as usize, arg.span.start as usize);
+                    let args = std::slice::from_ref(arg.as_ref());
+                    return self.apply_op(elab, *op, args, span, (token, "prefix"));
+                }
+            },
+            A::Postfix { op, arg } => match builtin_of(*op) {
+                Some(builtin) => {
+                    ExprKind::Builtin { op: builtin, args: vec![self.expr(elab, arg)?] }
+                }
+                None => {
+                    let token = Span::new(arg.span.end as usize, span.end as usize);
+                    let args = std::slice::from_ref(arg.as_ref());
+                    return self.apply_op(elab, *op, args, span, (token, "postfix"));
+                }
             },
             A::Infix { op, lhs, rhs } => match builtin_of(*op) {
                 Some(builtin) => ExprKind::Builtin {
                     op: builtin,
                     args: vec![self.expr(elab, lhs)?, self.expr(elab, rhs)?],
                 },
-                None => return self.apply_op(elab, *op, &[(**lhs).clone(), (**rhs).clone()], span),
+                None => {
+                    let token = Span::new(lhs.span.end as usize, rhs.span.start as usize);
+                    let args = [(**lhs).clone(), (**rhs).clone()];
+                    return self.apply_op(elab, *op, &args, span, (token, "infix"));
+                }
             },
             A::And(items) => ExprKind::And(self.exprs(elab, items)?),
             A::Or(items) => ExprKind::Or(self.exprs(elab, items)?),
@@ -493,19 +567,24 @@ impl Resolver<'_> {
                 Unit::Recursive(decls) => {
                     for decl in decls {
                         let def = self.declare_recursive(elab.module, decl, self.depth());
-                        self.bind_def(elab, decl.name, decl.arity, def)?;
+                        let extent = self.declaration_extent(elab.module, decl.name.span);
+                        self.bind_def(elab, decl.name, extent, decl.arity, def)?;
                     }
                 }
                 Unit::Operator(definition) => {
                     let def = self.operator(elab, definition)?;
-                    self.bind_def(elab, definition.name, definition.params.len(), def)?;
+                    let extent = operator_extent(definition);
+                    self.bind_def(elab, definition.name, extent, definition.params.len(), def)?;
                     self.frames.last_mut().unwrap().lets.push(def);
                 }
                 Unit::Function(definition) => {
                     let extent = function_extent(definition);
-                    let def = self.claim_def(elab, definition.name, extent, Vec::new(), true)?;
-                    self.bind_def(elab, definition.name, 0, def)?;
-                    self.function(elab, def, definition)?;
+                    let (def, claim) =
+                        self.claim_def(elab, definition.name, extent, Vec::new(), true)?;
+                    if claim == Claim::New {
+                        self.bind_def(elab, definition.name, extent, 0, def)?;
+                    }
+                    self.function(elab, def, definition, claim)?;
                     self.frames.last_mut().unwrap().lets.push(def);
                 }
                 Unit::ModuleDef(definition) => {
@@ -515,6 +594,10 @@ impl Resolver<'_> {
                         kind: SymbolKind::Module,
                         arity: definition.params.len(),
                         origin: Some((elab.module, definition.name.span)),
+                        location: (
+                            elab.module,
+                            join(definition.name.span, definition.instance.span),
+                        ),
                         is_local: true,
                     };
                     self.bind_local(elab, definition.name, entry, false)?;
@@ -549,14 +632,45 @@ impl Resolver<'_> {
             .collect()
     }
 
+    /// Applies an operator written as a symbol, between `gap`, the text from its operand to the
+    /// other operand or the end, which holds its token. SANY reports a symbol nothing defines
+    /// by its token, as it is spelled, and then the application.
     fn apply_op(
         &mut self,
         elab: &Elab,
         op: Op,
         args: &[ast::Expr],
         span: tla_tools_ast::Span,
+        (gap, fixity): (Span, &str),
     ) -> Result<Expr> {
-        self.apply_name(elab, Name { symbol: Symbol::intern(op.name()), span }, args, span)
+        let symbol = Symbol::intern(op.name());
+        if self.lookup(elab, symbol).is_none() {
+            // SANY reports an operator applied like a function, as `op(a, b)`, as unknown.
+            let first = args.first().map_or(span, |arg| arg.span);
+            let before = Span::new(span.start as usize, first.start as usize);
+            let source = self.source(elab.module);
+            let text = &source[before.start as usize..before.end as usize];
+            let head = text.trim_end().strip_suffix('(').map(str::trim_end);
+            let head = head.filter(|_| fixity != "prefix");
+            if let Some(head) = head.filter(|head| !head.trim_start_matches('(').is_empty()) {
+                let token = Span::new(span.start as usize, span.start as usize + head.len());
+                let message = format!("Unknown operator: `{head}'.");
+                return Err(self.error(elab.module, token, message));
+            }
+            let token = self.token_in(elab.module, gap);
+            let source = self.source(elab.module);
+            let text = &source[token.start as usize..token.end as usize];
+            let text = if fixity == "prefix" && text == "-" { "-." } else { text };
+            let message = format!("Could not find declaration or definition of symbol '{text}'.");
+            let error = self.error(elab.module, token, message);
+            if self.speculative > 0 {
+                return Err(error);
+            }
+            self.report(elab.module, error, false);
+            let message = format!("Couldn't resolve {fixity} operator symbol `{text}'.");
+            return Err(self.error(elab.module, span, message));
+        }
+        self.apply_name(elab, Name { symbol, span }, args, span)
     }
 
     fn apply_name(
@@ -794,7 +908,18 @@ impl Resolver<'_> {
         args: &[ast::Expr],
     ) -> Result<ExprKind> {
         let (info, scope, defs_depth) = self.instance_path(elab, path)?;
-        let entry = self.member(elab, &info, name)?;
+        // SANY names an operator an instance lacks by the whole reference, `I!Op`.
+        let Some(entry) =
+            info.context.names.get(&name.symbol).filter(|entry| !entry.is_local).cloned()
+        else {
+            let mut qualified = String::new();
+            for component in path {
+                qualified.push_str(&format!("{}!", component.name.symbol));
+            }
+            let span = join(path.first().map_or(name.span, |first| first.name.span), name.span);
+            let message = format!("Unknown operator: `{qualified}{}'.", name.symbol);
+            return Err(self.error(elab.module, span, message));
+        };
         let expected = match &entry.binding {
             Binding::Def(def) => self.spec.def(*def).params.len(),
             _ => entry.arity,
@@ -841,6 +966,11 @@ fn body_span(unit: &Unit) -> tla_tools_ast::Span {
         Unit::Constants(decls) => decls.first().map(|decl| decl.name.span).unwrap_or_default(),
         _ => tla_tools_ast::Span::default(),
     }
+}
+
+/// Where an operator definition is: from its name to the end of its body.
+pub(crate) fn operator_extent(definition: &ast::OperatorDef) -> Span {
+    Span::new(definition.name.span.start as usize, definition.body.span.end as usize)
 }
 
 /// Where a function definition is: from its name to the end of its body.
