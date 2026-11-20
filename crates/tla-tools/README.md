@@ -141,10 +141,10 @@ crates/tla-tools/scripts/smoke.py $C --per-status 8 --tla-ts ../tla-ts/packages/
   and lints, and a semantic or fatal error. A standard module is reported as copied into a
   directory of its own, as TLC does, without the path of `tla2tools.jar`. Like SANY, tla-rs
   goes on after a semantic error and reports every one, after the module SANY analyzes it in,
-  and prints SANY's warnings. Some errors are still in tla-rs's own words where
+  and prints SANY's warnings and its linter's. Some errors are still in tla-rs's own words where
   SANY words them differently, such as an operator given the wrong number of arguments, and
-  tla-rs doesn't check proofs, so it reports none of SANY's errors in them. tla-rs doesn't
-  run SANY's linter. tla-rs parses with tree-sitter, so a
+  tla-rs doesn't check proofs, so it reports none of SANY's errors in them. A module that only
+  an `INSTANCE` with substitutions uses isn't linted. tla-rs parses with tree-sitter, so a
   syntax error is reported inside SANY's report of it, but in tree-sitter's words and at the
   position tree-sitter finds it.
 - With temporal properties to check, a spec's `Print` and `PrintT` may print more or fewer

@@ -75,9 +75,19 @@ pub fn accepted(modules: &Modules, spec_path: &Path) -> String {
     let mut out = String::new();
     Files::new(modules, spec_path).parsed(&modules.order.parsed, &mut out);
     analysis_report(&modules.order.analyzed, &modules.messages, &mut out);
-    for name in &modules.order.analyzed {
-        if !UNLINTED_MODULES.contains(&name.as_str()) {
-            let _ = writeln!(out, "Linting of module {name}");
+    let linted: Vec<&String> = modules
+        .order
+        .analyzed
+        .iter()
+        .filter(|name| !UNLINTED_MODULES.contains(&name.as_str()))
+        .collect();
+    for name in &linted {
+        let _ = writeln!(out, "Linting of module {name}");
+    }
+    // SANY.frontEndLinting prints the warnings of each module it lints, after them all.
+    for name in linted {
+        for lint in modules.lints.iter().filter(|lint| lint.analyzed.as_str() == name) {
+            let _ = writeln!(out, "{}\n\n\n", details(&lint.error));
         }
     }
     out
@@ -197,7 +207,7 @@ mod tests {
         let names = |names: &[&str]| names.iter().map(|name| name.to_string()).collect();
         let order =
             SanyModuleOrder { parsed: names(parsed), analyzed: names(analyzed), error: None };
-        Modules { order, files: Vec::new(), messages: Vec::new() }
+        Modules { order, files: Vec::new(), messages: Vec::new(), lints: Vec::new() }
     }
 
     #[test]

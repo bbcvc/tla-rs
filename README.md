@@ -174,7 +174,7 @@ The conformance runner checks each model in its own process and compares the res
 - [x] `-tool`: TLC's messages framed with their codes and levels, checked against TLC 1.8.0's own output
 - [x] `-dump`: the states found, or the state graph in TLC's DOT format with `dot,colorize,actionlabels,snapshot`, checked against the graphs TLC 1.8.0 writes
 - [x] SANY's XML export (`tla-rs tla2sany.xml.XMLExporter`), with the modules, declarations, definitions and levels that tools read, the same as SANY's export on the 769 specs of the conformance corpus both read
-- [x] Every semantic and level error of a spec in SANY's order rather than the first, and SANY's warnings of definitions made twice
+- [x] Every semantic and level error of a spec in SANY's order rather than the first, and SANY's warnings: definitions made twice, and the linter's record fields named like definitions
 
 **Next**
 

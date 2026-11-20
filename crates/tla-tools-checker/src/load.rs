@@ -94,6 +94,8 @@ pub struct Modules {
     pub files: Vec<(String, PathBuf)>,
     /// The errors and warnings SANY reports as it analyzes the modules, in its order.
     pub messages: Vec<Message>,
+    /// The warnings of SANY's linter, for a spec SANY accepts.
+    pub lints: Vec<Message>,
 }
 
 /// A spec and its model configuration, read.
@@ -188,7 +190,8 @@ fn read(
     let mut analysis = tla_tools_resolve::analyze(&source, &mut loader);
     analysis.in_sany_order(&order.analyzed);
     let first = analysis.errors().next().cloned();
-    let modules = Modules { order, files, messages: analysis.messages };
+    let lints = analysis.lints;
+    let modules = Modules { order, files, messages: analysis.messages, lints };
     let Some(spec) = analysis.spec else {
         let error = first.expect("a spec without errors resolves");
         let message = error.to_string();

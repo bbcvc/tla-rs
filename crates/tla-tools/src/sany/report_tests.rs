@@ -11,7 +11,7 @@ use super::*;
 
 /// Writes each module to its own file, then reports on the first one as tla-ts's `getSanyReport`
 /// does without the lines that name the files and modules: the messages of the semantic
-/// analysis after each module. Returns whether SANY rejects the spec.
+/// analysis after each module, then the linter's. Returns whether SANY rejects the spec.
 fn report(modules: &[(&str, &str)]) -> (String, bool) {
     static RUNS: AtomicUsize = AtomicUsize::new(0);
     let run = RUNS.fetch_add(1, Ordering::Relaxed);
@@ -37,9 +37,14 @@ fn report(modules: &[(&str, &str)]) -> (String, bool) {
 fn text(modules: &Modules) -> String {
     let mut out = String::new();
     analysis_report(&modules.order.analyzed, &modules.messages, &mut out);
-    out.split_inclusive('\n')
+    let mut text: String = out
+        .split_inclusive('\n')
         .filter(|line| !line.starts_with("Semantic processing of module "))
-        .collect()
+        .collect();
+    for lint in &modules.lints {
+        text.push_str(&format!("{}\n\n\n\n", details(&lint.error)));
+    }
+    text
 }
 
 fn lines(lines: &[&str]) -> String {
@@ -161,6 +166,33 @@ fn reads_a_definition_of_a_built_in_prefix_operator_and_rejects_it() {
             "{operator}"
         );
     }
+}
+
+#[test]
+fn warns_about_a_record_field_named_like_a_definition() {
+    let (text, is_failed) = report(&[("Fields", &module("Fields", "foo == 1\nr == [foo |-> 2]"))]);
+    assert!(!is_failed);
+    assert_eq!(
+        text,
+        lines(&[
+            "line 3, col 7 to line 3, col 9 of module Fields",
+            "",
+            "The field name \"foo\" in the record constructor is identical to the existing definition or declaration",
+            "named foo, located at line 2, col 1 to line 2, col 8 of module Fields.",
+            "The field in the record will not take the value of the foo definition or declaration.",
+            "In TLA+, field names in records are strings, regardless of any similarly named declarations or definitions.",
+            "Therefore, DOMAIN [foo |-> ...] = {\"foo\"} holds true.",
+            "",
+            "",
+            "",
+        ])
+    );
+}
+
+#[test]
+fn spares_a_record_whose_fields_are_built_from_declarations() {
+    let body = "VARIABLE foo\nr == [foo |-> foo]\ns == [foo |-> 1]";
+    assert_eq!(report(&[("Fields", &module("Fields", body))]), (String::new(), false));
 }
 
 #[test]

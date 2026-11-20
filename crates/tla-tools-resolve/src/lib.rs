@@ -8,7 +8,7 @@
 //! meaning.
 //!
 //! [`analyze`] goes on after an error, as SANY does, and returns every error and warning SANY
-//! reports.
+//! reports, with the warnings of SANY's linter for a spec it accepts.
 //!
 //! TLC's standard modules are bundled. A loader supplies the other modules, and a module it
 //! supplies takes precedence over a standard module of the same name.
@@ -16,6 +16,7 @@
 mod expr;
 mod ir;
 mod levels;
+mod lint;
 mod module;
 mod order;
 mod recover;
@@ -124,6 +125,8 @@ pub struct Analysis {
     pub messages: Vec<Message>,
     /// Whether the errors are level errors, which SANY reports for one module only.
     pub is_level_checked: bool,
+    /// The warnings of SANY's linter, which lints a spec it accepts.
+    pub lints: Vec<Message>,
 }
 
 impl Analysis {
@@ -170,6 +173,7 @@ pub fn analyze(source: &str, loader: &mut dyn ModuleLoader) -> Analysis {
         spec: None,
         messages: vec![Message { analyzed: error.module, error, is_warning: false }],
         is_level_checked: false,
+        lints: Vec::new(),
     };
     let modules = match tla_tools_parser::parse_modules(source) {
         Ok(modules) => modules,
@@ -219,6 +223,8 @@ pub fn analyze(source: &str, loader: &mut dyn ModuleLoader) -> Analysis {
         speculative: 0,
         is_level_checked: false,
         is_circular: false,
+        records: Vec::new(),
+        record_spans: HashSet::new(),
     };
     let resolved = resolver.run(modules, source);
     let mut messages = std::mem::take(&mut resolver.messages);
@@ -229,8 +235,9 @@ pub fn analyze(source: &str, loader: &mut dyn ModuleLoader) -> Analysis {
         Err(error) => messages.push(Message { analyzed: error.module, error, is_warning: false }),
     }
     let is_accepted = messages.iter().all(|message| message.is_warning);
+    let lints = if is_accepted { resolver.lint() } else { Vec::new() };
     let spec = is_accepted.then_some(resolver.spec);
-    Analysis { spec, messages, is_level_checked: resolver.is_level_checked }
+    Analysis { spec, messages, is_level_checked: resolver.is_level_checked, lints }
 }
 
 impl Resolver<'_> {
@@ -348,6 +355,9 @@ pub(crate) struct Resolver<'l> {
     is_level_checked: bool,
     /// Whether a module was found to depend on itself, which stops resolution.
     is_circular: bool,
+    /// The records the linter checks, and where they are, to keep each once.
+    records: Vec<lint::Record>,
+    record_spans: HashSet<(ModuleId, Span)>,
 }
 
 /// Whether TLC bundles a module of this name. A loader shouldn't supply one from a library

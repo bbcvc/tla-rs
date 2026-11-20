@@ -460,10 +460,11 @@ fn symbol_element(numbering: &Numbering<'_>, node: Node) -> Element {
     }
 }
 
-/// SANY prints its warnings only to the output XMLExporter leaves out, so it prints only SANY's
-/// errors.
+/// XMLExporter runs SANY with settings that don't lint the modules, and SANY prints its
+/// warnings only to the output XMLExporter leaves out, so it prints only SANY's errors.
 fn without_warnings(modules: &mut load::Modules) {
     modules.messages.retain(|message| !message.is_warning);
+    modules.lints.clear();
 }
 
 #[cfg(test)]

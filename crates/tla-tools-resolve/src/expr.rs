@@ -449,8 +449,8 @@ impl Resolver<'_> {
                 ExprKind::Function { bounds, body }
             }
             A::Tuple(items) => ExprKind::Tuple(self.exprs(elab, items)?),
-            A::Record(fields) => ExprKind::Record(self.fields(elab, fields)?),
-            A::RecordSet(fields) => ExprKind::RecordSet(self.fields(elab, fields)?),
+            A::Record(fields) => ExprKind::Record(self.fields(elab, fields, span)?),
+            A::RecordSet(fields) => ExprKind::RecordSet(self.fields(elab, fields, span)?),
             A::FuncSet { domain, range } => ExprKind::FuncSet {
                 domain: self.boxed(elab, domain)?,
                 range: self.boxed(elab, range)?,
@@ -490,7 +490,12 @@ impl Resolver<'_> {
         Ok(Expr::new(kind, span))
     }
 
-    fn fields(&mut self, elab: &Elab, fields: &[(Name, ast::Expr)]) -> Result<Vec<(Symbol, Expr)>> {
+    fn fields(
+        &mut self,
+        elab: &Elab,
+        fields: &[(Name, ast::Expr)],
+        span: Span,
+    ) -> Result<Vec<(Symbol, Expr)>> {
         for (index, (name, _)) in fields.iter().enumerate() {
             if fields[..index].iter().any(|(earlier, _)| earlier.symbol == name.symbol) {
                 return Err(self.error(
@@ -500,7 +505,12 @@ impl Resolver<'_> {
                 ));
             }
         }
-        fields.iter().map(|(name, value)| Ok((name.symbol, self.expr(elab, value)?))).collect()
+        let resolved = fields
+            .iter()
+            .map(|(name, value)| Ok((name.symbol, self.expr(elab, value)?)))
+            .collect::<Result<Vec<_>>>()?;
+        self.keep_record(elab.module, span, fields, &resolved);
+        Ok(resolved)
     }
 
     /// Resolves the sets of the bounds, then binds their names, which the sets can't see. The
